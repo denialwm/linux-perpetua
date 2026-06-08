@@ -675,6 +675,17 @@ config DRM_PANEL_NOVATEK_NT36536
 	  display panels, such as the one found in the LENOVO Legion Y700
 	  Gen4.
 
+config DRM_PANEL_ONEPLUS_ICELAND_NT36536
+	tristate "OnePlus Pad 4 NT36536 panel driver"
+	depends on OF
+	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
+	select DRM_DISPLAY_HELPER
+	help
+	  Say Y here if you want to enable support for the CSOT panel built
+	  around the Novatek NT36536 display controller in OnePlus Pad 4
+	  tablets.
+
 config DRM_PANEL_NOVATEK_NT36672A
 	tristate "Novatek NT36672A DSI panel"
 	depends on GPIOLIB
