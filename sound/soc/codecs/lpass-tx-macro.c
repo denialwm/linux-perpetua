@@ -188,7 +188,8 @@
 #define CDC_TX7_TX_PATH_SEC4		(0x07A0)
 #define CDC_TX7_TX_PATH_SEC5		(0x07A4)
 #define CDC_TX7_TX_PATH_SEC6		(0x07A8)
-#define TX_MAX_OFFSET			(0x07A8)
+#define CDC_TXn_ADPT_CTRL(n)		(0x0800 + 0x80 * n)
+#define TX_MAX_OFFSET			(0x0B80)
 
 #define TX_MACRO_RATES (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |\
 			SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_48000 |\
@@ -437,6 +438,14 @@ static struct reg_default tx_defaults[] = {
 	{ CDC_TX7_TX_PATH_SEC4, 0x20},
 	{ CDC_TX7_TX_PATH_SEC5, 0x00},
 	{ CDC_TX7_TX_PATH_SEC6, 0x00},
+	{ CDC_TXn_ADPT_CTRL(0), 0x51},
+	{ CDC_TXn_ADPT_CTRL(1), 0x51},
+	{ CDC_TXn_ADPT_CTRL(2), 0x51},
+	{ CDC_TXn_ADPT_CTRL(3), 0x51},
+	{ CDC_TXn_ADPT_CTRL(4), 0x51},
+	{ CDC_TXn_ADPT_CTRL(5), 0x51},
+	{ CDC_TXn_ADPT_CTRL(6), 0x51},
+	{ CDC_TXn_ADPT_CTRL(7), 0x51},
 };
 
 static bool tx_is_volatile_register(struct device *dev, unsigned int reg)
@@ -596,6 +605,14 @@ static bool tx_is_rw_register(struct device *dev, unsigned int reg)
 	case CDC_TX7_TX_PATH_SEC4:
 	case CDC_TX7_TX_PATH_SEC5:
 	case CDC_TX7_TX_PATH_SEC6:
+	case CDC_TXn_ADPT_CTRL(0):
+	case CDC_TXn_ADPT_CTRL(1):
+	case CDC_TXn_ADPT_CTRL(2):
+	case CDC_TXn_ADPT_CTRL(3):
+	case CDC_TXn_ADPT_CTRL(4):
+	case CDC_TXn_ADPT_CTRL(5):
+	case CDC_TXn_ADPT_CTRL(6):
+	case CDC_TXn_ADPT_CTRL(7):
 		return true;
 	}
 
@@ -1040,6 +1057,15 @@ static int tx_macro_enable_dec(struct snd_soc_dapm_widget *w,
 			return ret;
 		break;
 	case SND_SOC_DAPM_POST_PMU:
+		/*
+		 * LPASS codec 2.8+ has an adaptive block per decimator that is
+		 * enabled out of reset. Without its board tuning it lifts the
+		 * recording's noise floor; disable it, as downstream does when
+		 * no tuning is given.
+		 */
+		if (lpass_macro_get_codec_version() >= LPASS_CODEC_VERSION_2_8)
+			snd_soc_component_write(component,
+						CDC_TXn_ADPT_CTRL(decimator), 0x00);
 		snd_soc_component_write_field(component, tx_vol_ctl_reg,
 					     CDC_TXn_CLK_EN_MASK, 0x1);
 		if (!is_amic_enabled(component, tx, decimator)) {
