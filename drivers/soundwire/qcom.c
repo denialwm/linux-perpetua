@@ -1441,22 +1441,31 @@ static int qcom_swrm_get_port_config(struct qcom_swrm_ctrl *ctrl)
 	ctrl->num_dout_ports = FIELD_GET(SWRM_COMP_PARAMS_DOUT_PORTS_MASK, val);
 	ctrl->num_din_ports = FIELD_GET(SWRM_COMP_PARAMS_DIN_PORTS_MASK, val);
 
+	/*
+	 * The DT may describe a subset of the controller's ports (only the
+	 * ones the board uses); only more ports than the hardware has is an
+	 * error.
+	 */
 	ret = of_property_read_u32(np, "qcom,din-ports", &val);
 	if (!ret) { /* only if present */
-		if (val != ctrl->num_din_ports) {
+		if (val > ctrl->num_din_ports)
 			dev_err(ctrl->dev, "din-ports (%d) mismatch with controller (%d)",
 				val, ctrl->num_din_ports);
-		}
+		else if (val < ctrl->num_din_ports)
+			dev_dbg(ctrl->dev, "DT uses %d of the controller's %d din-ports\n",
+				val, ctrl->num_din_ports);
 
 		ctrl->num_din_ports = val;
 	}
 
 	ret = of_property_read_u32(np, "qcom,dout-ports", &val);
 	if (!ret) { /* only if present */
-		if (val != ctrl->num_dout_ports) {
+		if (val > ctrl->num_dout_ports)
 			dev_err(ctrl->dev, "dout-ports (%d) mismatch with controller (%d)",
 				val, ctrl->num_dout_ports);
-		}
+		else if (val < ctrl->num_dout_ports)
+			dev_dbg(ctrl->dev, "DT uses %d of the controller's %d dout-ports\n",
+				val, ctrl->num_dout_ports);
 
 		ctrl->num_dout_ports = val;
 	}
