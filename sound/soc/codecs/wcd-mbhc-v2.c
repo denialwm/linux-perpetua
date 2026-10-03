@@ -516,6 +516,17 @@ static void mbhc_plug_detect_fn(struct work_struct *work)
 	struct snd_soc_component *component = mbhc->component;
 	enum snd_jack_types jack_type;
 	bool detection_type;
+	int ret;
+
+	/* resume the codec and its SoundWire devices for the register access */
+	ret = pm_runtime_get_sync(component->dev);
+	if (ret < 0 && ret != -EACCES) {
+		dev_err_ratelimited(component->dev,
+				    "pm_runtime_get_sync failed in %s, ret %d\n",
+				    __func__, ret);
+		pm_runtime_put_noidle(component->dev);
+		return;
+	}
 
 	mutex_lock(&mbhc->lock);
 
@@ -579,6 +590,7 @@ static void mbhc_plug_detect_fn(struct work_struct *work)
 exit:
 	mbhc->in_swch_irq_handler = false;
 	mutex_unlock(&mbhc->lock);
+	pm_runtime_put_autosuspend(component->dev);
 }
 
 static irqreturn_t wcd_mbhc_mech_plug_detect_irq(int irq, void *data)
