@@ -126,14 +126,20 @@ int wcd_interrupt_callback(struct sdw_slave *slave, struct irq_domain *slave_irq
 		unsigned int wcd_intr_status2)
 {
 	struct regmap *regmap = dev_get_regmap(&slave->dev, NULL);
-	u32 sts1, sts2, sts3;
+	u32 sts1 = 0, sts2 = 0, sts3 = 0;
 
 	do {
 		handle_nested_irq(irq_find_mapping(slave_irq, 0));
-		regmap_read(regmap, wcd_intr_status0, &sts1);
-		regmap_read(regmap, wcd_intr_status1, &sts2);
-		regmap_read(regmap, wcd_intr_status2, &sts3);
-
+		/*
+		 * Stop when the status cannot be read (no regmap, or a
+		 * cache-only regmap while the device is suspended or not
+		 * attached): the values would be undefined.
+		 */
+		if (!regmap ||
+		    regmap_read(regmap, wcd_intr_status0, &sts1) ||
+		    regmap_read(regmap, wcd_intr_status1, &sts2) ||
+		    regmap_read(regmap, wcd_intr_status2, &sts3))
+			break;
 	} while (sts1 || sts2 || sts3);
 
 	return IRQ_HANDLED;
