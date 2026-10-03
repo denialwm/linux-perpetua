@@ -2164,6 +2164,17 @@ static void wcd939x_wcd_mbhc_calc_impedance(struct snd_soc_component *component,
 	bool is_fsm_disable = false;
 	s32 z1l, z1r, z1ls;
 
+	/*
+	 * The result registers are volatile: while the TX device is
+	 * suspended or not attached the regmap is cache-only and every read
+	 * fails, which would run the measurement loops to their limits.
+	 */
+	if (regmap_read(wcd939x->regmap, WCD939X_ANA_MBHC_RESULT_2, &reg0)) {
+		dev_dbg(component->dev, "impedance not measured: MBHC result unreadable\n");
+		*zl = *zr = 0;
+		return;
+	}
+
 	reg0 = snd_soc_component_read(component, WCD939X_ANA_MBHC_BTN5);
 	reg1 = snd_soc_component_read(component, WCD939X_ANA_MBHC_BTN6);
 	reg2 = snd_soc_component_read(component, WCD939X_ANA_MBHC_BTN7);
