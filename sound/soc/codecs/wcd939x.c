@@ -2029,26 +2029,49 @@ static const struct zdet_param wcd939x_mbhc_zdet_param = {
 	.btn7 = 0x78,
 };
 
+/*
+ * One field of an MBHC result register, with the read error checked: the
+ * result registers are volatile and cannot be read while the TX device is
+ * suspended or not attached.
+ */
+static bool wcd939x_mbhc_read_result(struct snd_soc_component *component,
+				     unsigned int reg, unsigned int mask, int *val)
+{
+	struct wcd939x_priv *wcd939x = dev_get_drvdata(component->dev);
+	unsigned int v;
+
+	if (regmap_read(wcd939x->regmap, reg, &v)) {
+		dev_warn_ratelimited(component->dev,
+				     "MBHC result unreadable, impedance measurement stopped\n");
+		return false;
+	}
+	*val = (v & mask) >> __ffs(mask);
+	return true;
+}
+
 static void wcd939x_mbhc_get_result_params(struct snd_soc_component *component,
 					   int32_t *zdet)
 {
 	const struct zdet_param *zdet_param = &wcd939x_mbhc_zdet_param;
 	s32 x1, d1, denom;
-	int val;
+	int val, lsb, msb;
 	s16 c1;
 	int i;
 
 	snd_soc_component_write_field(component, WCD939X_ANA_MBHC_ZDET,
 				      WCD939X_MBHC_ZDET_ZDET_CHG_EN, true);
 	for (i = 0; i < WCD939X_ZDET_NUM_MEASUREMENTS; i++) {
-		val = snd_soc_component_read_field(component, WCD939X_ANA_MBHC_RESULT_2,
-						   WCD939X_MBHC_RESULT_2_Z_RESULT_MSB);
+		if (!wcd939x_mbhc_read_result(component, WCD939X_ANA_MBHC_RESULT_2,
+					      WCD939X_MBHC_RESULT_2_Z_RESULT_MSB, &val))
+			goto unreadable;
 		if (val & BIT(7))
 			break;
 	}
 	val = val << 8;
-	val |= snd_soc_component_read_field(component, WCD939X_ANA_MBHC_RESULT_1,
-					    WCD939X_MBHC_RESULT_1_Z_RESULT_LSB);
+	if (!wcd939x_mbhc_read_result(component, WCD939X_ANA_MBHC_RESULT_1,
+				      WCD939X_MBHC_RESULT_1_Z_RESULT_LSB, &lsb))
+		goto unreadable;
+	val |= lsb;
 	snd_soc_component_write_field(component, WCD939X_ANA_MBHC_ZDET,
 				      WCD939X_MBHC_ZDET_ZDET_CHG_EN, false);
 	x1 = WCD939X_MBHC_GET_X1(val);
@@ -2077,15 +2100,22 @@ static void wcd939x_mbhc_get_result_params(struct snd_soc_component *component,
 ramp_down:
 	i = 0;
 	while (x1) {
-		val = snd_soc_component_read_field(component, WCD939X_ANA_MBHC_RESULT_1,
-						   WCD939X_MBHC_RESULT_1_Z_RESULT_LSB) << 8;
-		val |= snd_soc_component_read_field(component, WCD939X_ANA_MBHC_RESULT_2,
-						    WCD939X_MBHC_RESULT_2_Z_RESULT_MSB);
+		if (!wcd939x_mbhc_read_result(component, WCD939X_ANA_MBHC_RESULT_1,
+					      WCD939X_MBHC_RESULT_1_Z_RESULT_LSB, &lsb) ||
+		    !wcd939x_mbhc_read_result(component, WCD939X_ANA_MBHC_RESULT_2,
+					      WCD939X_MBHC_RESULT_2_Z_RESULT_MSB, &msb))
+			break;
+		val = (lsb << 8) | msb;
 		x1 = WCD939X_MBHC_GET_X1(val);
 		i++;
 		if (i == WCD939X_ZDET_NUM_MEASUREMENTS)
 			break;
 	}
+	return;
+
+unreadable:
+	snd_soc_component_write_field(component, WCD939X_ANA_MBHC_ZDET,
+				      WCD939X_MBHC_ZDET_ZDET_CHG_EN, false);
 }
 
 static void wcd939x_mbhc_zdet_ramp(struct snd_soc_component *component,
@@ -2155,8 +2185,8 @@ static void wcd939x_wcd_mbhc_qfuse_cal(struct snd_soc_component *component,
 		*z_val = ((*z_val) * 10000) / q1_cal;
 }
 
-static void wcd939x_wcd_mbhc_calc_impedance(struct snd_soc_component *component,
-					    u32 *zl, uint32_t *zr)
+static void __wcd939x_wcd_mbhc_calc_impedance(struct snd_soc_component *component,
+					      u32 *zl, uint32_t *zr)
 {
 	struct wcd939x_priv *wcd939x = dev_get_drvdata(component->dev);
 	unsigned int reg0, reg1, reg2, reg3, reg4;
@@ -2305,6 +2335,30 @@ zdet_complete:
 	if (is_fsm_disable)
 		snd_soc_component_write_field(component, WCD939X_ANA_MBHC_ELECT,
 					      WCD939X_MBHC_ELECT_FSM_EN, true);
+}
+
+/*
+ * The measurement reads volatile result registers through the TX device's
+ * regmap: keep that device resumed for all of it. The codec's own runtime-PM
+ * reference does not pin it when the codec is already active.
+ */
+static void wcd939x_wcd_mbhc_calc_impedance(struct snd_soc_component *component,
+					    u32 *zl, uint32_t *zr)
+{
+	struct wcd939x_priv *wcd939x = dev_get_drvdata(component->dev);
+	int ret;
+
+	ret = pm_runtime_resume_and_get(wcd939x->txdev);
+	if (ret < 0 && ret != -EACCES) {
+		dev_dbg(component->dev, "impedance not measured: TX device not resumed (%d)\n", ret);
+		*zl = *zr = 0;
+		return;
+	}
+
+	__wcd939x_wcd_mbhc_calc_impedance(component, zl, zr);
+
+	if (ret >= 0)
+		pm_runtime_put_autosuspend(wcd939x->txdev);
 }
 
 static void wcd939x_mbhc_gnd_det_ctrl(struct snd_soc_component *component,
