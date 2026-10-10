@@ -379,8 +379,19 @@ static int qrtr_node_enqueue(struct qrtr_node *node, struct sk_buff *skb,
 	mutex_lock(&node->ep_lock);
 	if (!node->hello_sent && type == QRTR_TYPE_DATA) {
 		mutex_unlock(&node->ep_lock);
-		kfree_skb(skb);
-		return -EAGAIN;
+
+		/* Our HELLO may still be backing off while the remote
+		 * already talks to us: send it now.
+		 */
+		mod_delayed_work(system_percpu_wq, &node->say_hello, 0);
+		flush_delayed_work(&node->say_hello);
+
+		mutex_lock(&node->ep_lock);
+		if (!node->hello_sent) {
+			mutex_unlock(&node->ep_lock);
+			kfree_skb(skb);
+			return -EAGAIN;
+		}
 	}
 	mutex_unlock(&node->ep_lock);
 
