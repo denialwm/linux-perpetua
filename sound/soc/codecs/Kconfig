@@ -747,6 +747,18 @@ config SND_SOC_AW88399
 	  digital Smart K audio amplifier and SKTune speaker
 	  protection algorithms.
 
+config SND_SOC_AW88461
+	tristate "Soc Audio for awinic aw88461"
+	depends on I2C
+	select REGMAP_I2C
+	select GPIOLIB
+	select SND_SOC_AW88395_LIB
+	help
+	  This option enables support for aw88461 Smart PA.
+	  The awinic AW88461 is an I2S input, high efficiency
+	  digital Smart K audio amplifier. It shares the ACF
+	  firmware container format with the AW88395 family.
+
 config SND_SOC_BD28623
 	tristate "ROHM BD28623 CODEC"
 	help
