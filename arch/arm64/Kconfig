@@ -2549,6 +2549,29 @@ config CMDLINE_FORCE
 
 endchoice
 
+config ARM64_FDT_HANDOFF
+	bool "Replace the device tree of vendor bootloaders"
+	depends on OF_EARLY_FLATTREE
+	select GENERIC_BUILTIN_DTB
+	help
+	  The Android bootloaders of many phones and tablets only boot a
+	  vendor device tree taken from their own images. With this option
+	  the kernel boots the device tree built into the image instead, when
+	  that tree describes the bootloader's in its /chosen/fdt-handoff
+	  node. It carries over the memory map, the firmware reservations,
+	  the initramfs and the board addresses, which only the bootloader
+	  knows. Any other bootloader tree boots as usual.
+
+	  If unsure, say N.
+
+config BUILTIN_DTB_NAME
+	string "Built-in device tree"
+	depends on ARM64_FDT_HANDOFF
+	help
+	  The device tree of the device this image is built for, relative to
+	  arch/arm64/boot/dts and without the .dtb suffix, for example
+	  "qcom/eliza-motorola-roadstr".
+
 config EFI_STUB
 	bool
 

@@ -167,6 +167,35 @@ static void __init smp_build_mpidr_hash(void)
 		pr_warn("Large number of MPIDR hash buckets detected\n");
 }
 
+/*
+ * Swaps the bootloader's device tree for a built-in one on the devices that
+ * fdt_handoff() knows, and returns the physical address of the tree to boot.
+ */
+static phys_addr_t __init setup_fdt_handoff(phys_addr_t dt_phys,
+					    void **dt_virt, int *size)
+{
+	void *fdt = fdt_handoff(*dt_virt, __pa_symbol(_text), __pa_symbol(_end));
+
+	if (!fdt)
+		return dt_phys;
+
+	/*
+	 * The fixmap still maps the bootloader's tree, and init_pte() refuses
+	 * to change the page of a live entry. Clear the whole old window,
+	 * including its offset into the first page, before mapping the new
+	 * tree. clear_fixmap() also flushes the TLB entries.
+	 */
+	for (int i = 0;
+	     i < DIV_ROUND_UP(offset_in_page(dt_phys) + *size, PAGE_SIZE); i++)
+		clear_fixmap(FIX_FDT - i);
+
+	dt_phys = __pa_symbol(fdt);
+	*dt_virt = fixmap_remap_fdt(dt_phys, size, PAGE_KERNEL);
+	if (*dt_virt)
+		memblock_reserve(dt_phys, *size);
+	return dt_phys;
+}
+
 static void __init setup_machine_fdt(phys_addr_t dt_phys)
 {
 	int size = 0;
@@ -175,6 +204,9 @@ static void __init setup_machine_fdt(phys_addr_t dt_phys)
 
 	if (dt_virt)
 		memblock_reserve(dt_phys, size);
+
+	if (IS_ENABLED(CONFIG_ARM64_FDT_HANDOFF) && dt_virt)
+		dt_phys = setup_fdt_handoff(dt_phys, &dt_virt, &size);
 
 	/*
 	 * dt_virt is a fixmap address, hence __pa(dt_virt) can't be used.

@@ -13,6 +13,9 @@
 extern phys_addr_t __fdt_pointer __initdata;
 extern u64 __cacheline_aligned boot_args[4];
 
+void *fdt_handoff(const void *stock, phys_addr_t kernel_start,
+		  phys_addr_t kernel_end);
+
 static inline bool arch_parse_debug_rodata(char *arg)
 {
 	extern bool rodata_enabled;
