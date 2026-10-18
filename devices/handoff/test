@@ -1,0 +1,31 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Usage: devices/handoff/test BUILTIN.dtb STOCK.dtb KERNEL-START KERNEL-END [OUTPUT.dtb]
+#
+# Runs the kernel's device tree handoff on this host, with the device tree
+# built into a device's kernel and a tree its bootloader passed (for example
+# /sys/firmware/fdt read on that device). KERNEL-START and KERNEL-END are the
+# physical bounds the kernel image occupies on the device, as /proc/iomem
+# shows them there. OUTPUT.dtb receives the tree the kernel would boot.
+#
+# Exits 0 when the kernel would boot its built-in tree, 2 when it would boot
+# the bootloader's tree because that tree is not this device's, and 1 when
+# the device cannot be handed off and the kernel would stop.
+
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+tree=$(cd "$here/../.." && pwd)
+[ $# -eq 4 ] || [ $# -eq 5 ] || { sed -n 's/^# \{0,1\}//; 3,14p' "$0" >&2; exit 1; }
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+build() {
+	${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -g "$@" \
+		-I "$here/shim" -I "$tree/scripts/dtc/libfdt" -I "$tree/arch/arm64/kernel" \
+		-o "$work/test" "$here/test.c" "$tree"/scripts/dtc/libfdt/fdt*.c
+}
+# Sanitizers catch out-of-bounds reads of a malformed tree when available.
+build -fsanitize=address,undefined -fno-sanitize-recover=all 2>/dev/null || build
+# Not exec: the trap removes the build. set -e keeps the test's status.
+ASAN_OPTIONS=detect_leaks=0 "$work/test" "$@"

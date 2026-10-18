@@ -81,12 +81,37 @@ devices/boot holds one tool per boot chain that writes the images:
                 image, keeping its header and AVB properties.
 
 
+Checks
+------
+
+  devices/check DEVICE OBJDIR [BASE]
+        checks that DEVICE is registered completely: its device entry,
+        fragments, device tree, binding, handoff description and built-in
+        tree, and that its handoff description cannot match another
+        device's bootloader tree. With BASE, it also checks the code added
+        since BASE for board checks in drivers, textually included code and
+        module parameters.
+
+  devices/handoff/test BUILTIN.dtb STOCK.dtb KERNEL-START KERNEL-END [OUTPUT.dtb]
+        runs the kernel's handoff on the host, with a device's built tree
+        and a tree its bootloader passed, and tells whether the kernel
+        would boot the built-in tree, the bootloader's or stop.
+
+
 Adding a device
 ---------------
 
-1. Add its device tree, with a /chosen/fdt-handoff node, and its
-   dt-bindings compatible.
-2. Add devices/<codename>/device and devices/<codename>/kernel.config.
-   A new SoC also needs arch/arm64/configs/<soc>.config, and a new vendor
-   arch/arm64/configs/<vendor>.config.
-3. Run devices/config, build, and boot it with the tool of its boot chain.
+A device is added in three steps, each closed by checks:
+
+1. Import what this tree is missing for it: its device tree, the drivers
+   of its components that this tree has no driver for, its handoff
+   description and its devices/ entry. Nothing else.
+2. Boot it as is.
+3. Fix only what step 2 shows broken, one fix at a time.
+
+The device's own kernel, whatever its version, is the reference for what
+the device needs and what works on it, never a base: fixes from it are
+not imported because they exist there, and vendor stacks are not imported
+at all. .claude/skills/add-device/SKILL.md describes the procedure and its
+checks in full, and record.md next to it is the record kept for each
+device.
