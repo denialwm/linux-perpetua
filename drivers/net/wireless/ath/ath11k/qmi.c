@@ -2262,6 +2262,14 @@ static int ath11k_qmi_request_target_cap(struct ath11k_base *ab)
 		strscpy(ab->qmi.target.fw_build_id, resp.fw_build_id,
 			sizeof(ab->qmi.target.fw_build_id));
 
+	if (resp.voltage_mv_valid) {
+		ath11k_dbg(ab, ATH11K_DBG_QMI, "cpr voltage %u mV\n",
+			   resp.voltage_mv);
+		r = ath11k_hif_set_cpr_voltage(ab, resp.voltage_mv);
+		if (r)
+			ath11k_warn(ab, "failed to set cpr voltage: %d\n", r);
+	}
+
 	if (resp.eeprom_read_timeout_valid) {
 		ab->qmi.target.eeprom_caldata =
 					resp.eeprom_read_timeout;

@@ -4,6 +4,8 @@
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
+#include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
@@ -17,7 +19,9 @@
 #include "hif.h"
 #include "qmi.h"
 #include <linux/remoteproc.h>
+#include <linux/remoteproc/qcom_rproc.h>
 #include "pcic.h"
+#include <linux/soc/qcom/qcom_aoss.h>
 #include <linux/soc/qcom/smem.h>
 #include <linux/soc/qcom/smem_state.h>
 
@@ -806,6 +810,8 @@ static const struct ath11k_hif_ops ath11k_ahb_hif_ops_ipq8074 = {
 	.power_up = ath11k_ahb_power_up,
 };
 
+static int ath11k_ahb_set_cpr_voltage(struct ath11k_base *ab, u32 voltage_mv);
+
 static const struct ath11k_hif_ops ath11k_ahb_hif_ops_wcn6750 = {
 	.start = ath11k_pcic_start,
 	.stop = ath11k_pcic_stop,
@@ -823,6 +829,7 @@ static const struct ath11k_hif_ops ath11k_ahb_hif_ops_wcn6750 = {
 	.resume = ath11k_ahb_hif_resume,
 	.ce_irq_enable = ath11k_pci_enable_ce_irqs_except_wake_irq,
 	.ce_irq_disable = ath11k_pci_disable_ce_irqs_except_wake_irq,
+	.set_cpr_voltage = ath11k_ahb_set_cpr_voltage,
 };
 
 static int ath11k_core_get_rproc(struct ath11k_base *ab)
@@ -921,6 +928,111 @@ static void ath11k_ahb_release_smp2p_handle(struct ath11k_base *ab)
 		return;
 
 	qcom_smem_state_put(ab_ahb->smp2p_info.smem_state);
+}
+
+/*
+ * The WCN6750 WPSS firmware raises WLAN_EN itself, and refuses to start
+ * when it finds the chip already powered: "EP not Powered up properly".
+ * A crashed WPSS leaves WLAN_EN high, so power the chip off before every
+ * WPSS boot.
+ */
+static int ath11k_ahb_wpss_ssr_notify(struct notifier_block *nb,
+				      unsigned long event, void *data)
+{
+	struct ath11k_ahb *ab_ahb = container_of(nb, struct ath11k_ahb, ssr_nb);
+
+	if (event != QCOM_SSR_BEFORE_POWERUP)
+		return NOTIFY_DONE;
+
+	if (gpiod_get_value_cansleep(ab_ahb->wlan_en)) {
+		gpiod_direction_output(ab_ahb->wlan_en, 0);
+		msleep(50);
+	}
+
+	return NOTIFY_OK;
+}
+
+static int ath11k_ahb_setup_wlan_en(struct ath11k_base *ab)
+{
+	struct ath11k_ahb *ab_ahb = ath11k_ahb_priv(ab);
+	struct rproc *rproc = ab_ahb->tgt_rproc;
+	void *notifier;
+
+	ab_ahb->wlan_en = devm_gpiod_get_optional(ab->dev, "wlan-en",
+						  GPIOD_ASIS);
+	if (IS_ERR(ab_ahb->wlan_en))
+		return dev_err_probe(ab->dev, PTR_ERR(ab_ahb->wlan_en),
+				     "failed to get wlan-en gpio\n");
+	if (!ab_ahb->wlan_en)
+		return 0;
+
+	ab_ahb->ssr_nb.notifier_call = ath11k_ahb_wpss_ssr_notify;
+	notifier = qcom_register_ssr_notifier(rproc->name, &ab_ahb->ssr_nb);
+	if (IS_ERR(notifier))
+		return dev_err_probe(ab->dev, PTR_ERR(notifier),
+				     "failed to register %s ssr notifier\n",
+				     rproc->name);
+	ab_ahb->ssr_notifier = notifier;
+
+	return 0;
+}
+
+static void ath11k_ahb_release_wlan_en(struct ath11k_base *ab)
+{
+	struct ath11k_ahb *ab_ahb = ath11k_ahb_priv(ab);
+
+	if (!ab_ahb->ssr_notifier)
+		return;
+
+	qcom_unregister_ssr_notifier(ab_ahb->ssr_notifier, &ab_ahb->ssr_nb);
+	ab_ahb->ssr_notifier = NULL;
+}
+
+/*
+ * WCN6750 reports the open-loop CPR voltage of its CX/MX rail at boot; the
+ * host hands it to the AOP, which applies it to the rail's WLAN PDC vote.
+ */
+static int ath11k_ahb_set_cpr_voltage(struct ath11k_base *ab, u32 voltage_mv)
+{
+	struct ath11k_ahb *ab_ahb = ath11k_ahb_priv(ab);
+
+	if (!ab_ahb->qmp)
+		return 0;
+
+	/* The rail also carries Bluetooth, which needs at least 900 mV. */
+	voltage_mv = max(voltage_mv, 900U);
+
+	return qmp_send(ab_ahb->qmp, "{class: wlan_pdc, res: %s.v, upval: %u}",
+			ab_ahb->ol_cpr_vreg, voltage_mv);
+}
+
+static int ath11k_ahb_setup_cpr(struct ath11k_base *ab)
+{
+	struct ath11k_ahb *ab_ahb = ath11k_ahb_priv(ab);
+	struct qmp *qmp;
+
+	if (of_property_read_string(ab->dev->of_node, "qcom,vreg-ol-cpr",
+				    &ab_ahb->ol_cpr_vreg))
+		return 0;
+
+	qmp = qmp_get(ab->dev);
+	if (IS_ERR(qmp))
+		return dev_err_probe(ab->dev, PTR_ERR(qmp),
+				     "failed to get aoss qmp\n");
+	ab_ahb->qmp = qmp;
+
+	return 0;
+}
+
+static void ath11k_ahb_release_cpr(struct ath11k_base *ab)
+{
+	struct ath11k_ahb *ab_ahb = ath11k_ahb_priv(ab);
+
+	if (!ab_ahb->qmp)
+		return;
+
+	qmp_put(ab_ahb->qmp);
+	ab_ahb->qmp = NULL;
 }
 
 static int ath11k_ahb_setup_resources(struct ath11k_base *ab)
@@ -1223,21 +1335,35 @@ static int ath11k_ahb_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_ce_free;
 
+	ret = ath11k_ahb_setup_wlan_en(ab);
+	if (ret)
+		goto err_ce_free;
+
+	ret = ath11k_ahb_setup_cpr(ab);
+	if (ret)
+		goto err_release_wlan_en;
+
 	ret = ath11k_core_init(ab);
 	if (ret) {
 		ath11k_err(ab, "failed to init core: %d\n", ret);
-		goto err_ce_free;
+		goto err_release_cpr;
 	}
 
 	ret = ath11k_ahb_config_irq(ab);
 	if (ret) {
 		ath11k_err(ab, "failed to configure irq: %d\n", ret);
-		goto err_ce_free;
+		goto err_release_cpr;
 	}
 
 	ath11k_qmi_fwreset_from_cold_boot(ab);
 
 	return 0;
+
+err_release_cpr:
+	ath11k_ahb_release_cpr(ab);
+
+err_release_wlan_en:
+	ath11k_ahb_release_wlan_en(ab);
 
 err_ce_free:
 	ath11k_ce_free_pipes(ab);
@@ -1281,6 +1407,8 @@ static void ath11k_ahb_free_resources(struct ath11k_base *ab)
 {
 	struct platform_device *pdev = ab->pdev;
 
+	ath11k_ahb_release_cpr(ab);
+	ath11k_ahb_release_wlan_en(ab);
 	ath11k_ahb_free_irq(ab);
 	ath11k_hal_srng_deinit(ab);
 	ath11k_ahb_release_smp2p_handle(ab);

@@ -37,6 +37,11 @@ struct ath11k_ahb {
 		unsigned int smem_bit;
 		struct qcom_smem_state *smem_state;
 	} smp2p_info;
+	struct gpio_desc *wlan_en;
+	struct qmp *qmp;
+	const char *ol_cpr_vreg;
+	struct notifier_block ssr_nb;
+	void *ssr_notifier;
 };
 
 static inline struct ath11k_ahb *ath11k_ahb_priv(struct ath11k_base *ab)
