@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/panel/novatek,nt37706.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Novatek NT37706 based AMOLED DSI panels
+
+maintainers:
+  - Doctor Logix <doctor.logix@gmail.com>
+
+description:
+  The Novatek NT37706 is a display driver IC for AMOLED panels. The CSOT
+  6.67" 1220x2712 panel of the Motorola Edge 70 runs it in video mode with
+  DSC at 10 bits per component; v3 is the revision of its initialization
+  sequence.
+
+allOf:
+  - $ref: panel-common.yaml#
+
+properties:
+  compatible:
+    items:
+      - enum:
+          - csot,nt37706-v3
+      - const: novatek,nt37706
+
+  reg:
+    maxItems: 1
+    description: DSI virtual channel
+
+  vci-supply: true
+  vdd-supply: true
+  vddio-supply: true
+  port: true
+  reset-gpios: true
+
+required:
+  - compatible
+  - reg
+  - vci-supply
+  - vdd-supply
+  - vddio-supply
+  - port
+  - reset-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    dsi {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        panel@0 {
+            compatible = "csot,nt37706-v3", "novatek,nt37706";
+            reg = <0>;
+
+            vci-supply = <&vreg_l19b>;
+            vdd-supply = <&vreg_l1g>;
+            vddio-supply = <&vreg_l8b>;
+
+            reset-gpios = <&tlmm 12 GPIO_ACTIVE_LOW>;
+
+            port {
+                endpoint {
+                    remote-endpoint = <&mdss_dsi0_out>;
+                };
+            };
+        };
+    };
+...
