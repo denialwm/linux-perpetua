@@ -44,6 +44,7 @@
 			device_type = "cpu";
 			compatible = "qcom,oryon";
 			reg = <0x0 0x0>;
+			capacity-dmips-mhz = <1792>;
 			enable-method = "psci";
 			d-cache-size = <0x10000>;
 			d-cache-line-size = <64>;
@@ -70,6 +71,7 @@
 			device_type = "cpu";
 			compatible = "qcom,oryon";
 			reg = <0x0 0x100>;
+			capacity-dmips-mhz = <1792>;
 			enable-method = "psci";
 			d-cache-size = <0x10000>;
 			d-cache-line-size = <64>;
@@ -87,6 +89,7 @@
 			device_type = "cpu";
 			compatible = "qcom,oryon";
 			reg = <0x0 0x200>;
+			capacity-dmips-mhz = <1792>;
 			enable-method = "psci";
 			d-cache-size = <0x10000>;
 			d-cache-line-size = <64>;
@@ -104,6 +107,7 @@
 			device_type = "cpu";
 			compatible = "qcom,oryon";
 			reg = <0x0 0x300>;
+			capacity-dmips-mhz = <1792>;
 			enable-method = "psci";
 			d-cache-size = <0x10000>;
 			d-cache-line-size = <64>;
@@ -121,6 +125,7 @@
 			device_type = "cpu";
 			compatible = "qcom,oryon";
 			reg = <0x0 0x400>;
+			capacity-dmips-mhz = <1792>;
 			enable-method = "psci";
 			d-cache-size = <0x10000>;
 			d-cache-line-size = <64>;
@@ -138,6 +143,7 @@
 			device_type = "cpu";
 			compatible = "qcom,oryon";
 			reg = <0x0 0x500>;
+			capacity-dmips-mhz = <1792>;
 			enable-method = "psci";
 			d-cache-size = <0x10000>;
 			d-cache-line-size = <64>;
@@ -155,6 +161,7 @@
 			device_type = "cpu";
 			compatible = "qcom,oryon";
 			reg = <0x0 0x10000>;
+			capacity-dmips-mhz = <1894>;
 			enable-method = "psci";
 			d-cache-size = <0x18000>;
 			d-cache-line-size = <64>;
@@ -181,6 +188,7 @@
 			device_type = "cpu";
 			compatible = "qcom,oryon";
 			reg = <0x0 0x10100>;
+			capacity-dmips-mhz = <1894>;
 			enable-method = "psci";
 			d-cache-size = <0x18000>;
 			d-cache-line-size = <64>;
