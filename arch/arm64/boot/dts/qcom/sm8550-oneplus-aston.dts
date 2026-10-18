@@ -66,6 +66,17 @@
 		voltage-min-design-microvolt = <6700000>;
 	};
 
+	chosen {
+		bootargs = "rdinit=/init panic=0 loglevel=7 log_buf_len=2M bootconfig";
+
+		fdt-handoff {
+			stock-compatible = "qcom,kalama";
+			stock-bootargs = "oplusboot.prjname=23801",
+					 "oplusboot.prjname=23861";
+			keep-initrd;
+		};
+	};
+
 	gpio-keys {
 		compatible = "gpio-keys";
 
