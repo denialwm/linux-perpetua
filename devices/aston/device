@@ -1,0 +1,5 @@
+# OnePlus Ace 3 / OnePlus 12R
+name='OnePlus Ace 3'
+vendor=qcom
+soc=sm8550
+boot=android-gki
