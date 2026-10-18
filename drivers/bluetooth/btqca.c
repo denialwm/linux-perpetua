@@ -7,11 +7,18 @@
 #include <linux/module.h>
 #include <linux/firmware.h>
 #include <linux/vmalloc.h>
+#include <linux/of.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
 
 #include "btqca.h"
+
+static bool pad4_factory_nvm;
+module_param(pad4_factory_nvm, bool, 0400);
+MODULE_PARM_DESC(pad4_factory_nvm, "Use exact-factory new NVM transport format on OnePlus iceland");
+
+#include "pad4_nvm_format.h"
 
 int qca_read_soc_version(struct hci_dev *hdev, struct qca_btsoc_version *ver,
 			 enum qca_btsoc_type soc_type)
@@ -302,6 +309,8 @@ static int qca_tlv_check_data(struct hci_dev *hdev,
 	struct tlv_type_nvm *tlv_nvm;
 	uint8_t nvm_baud_rate = config->user_baud_rate;
 	u8 type;
+	bool pad4_nvm = pad4_factory_nvm && soc_type == QCA_WCN7860 &&
+		of_machine_is_compatible("oneplus,iceland");
 
 	config->dnld_mode = QCA_SKIP_EVT_NONE;
 	config->dnld_type = QCA_SKIP_EVT_NONE;
@@ -404,6 +413,18 @@ static int qca_tlv_check_data(struct hci_dev *hdev,
 
 			if (length < idx + sizeof(struct tlv_type_nvm) + tag_len)
 				return -EINVAL;
+
+			if (pad4_nvm && (tag_id == EDL_TAG_ID_HCI ||
+					 tag_id == EDL_TAG_ID_DEEP_SLEEP)) {
+				int ret = pad4_nvm_transport_tag(tag_id, tlv_nvm->data,
+							 tag_len, nvm_baud_rate);
+
+				if (ret)
+					return ret;
+				bt_dev_info(hdev, "Pad4 factory Bluetooth NVM tag %u", tag_id);
+				idx += sizeof(struct tlv_type_nvm) + tag_len;
+				continue;
+			}
 
 			/* Update NVM tags as needed */
 			switch (tag_id) {

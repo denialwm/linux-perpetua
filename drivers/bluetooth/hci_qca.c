@@ -16,6 +16,8 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/firmware.h>
+#include <linux/crc32.h>
 #include <linux/clk.h>
 #include <linux/completion.h>
 #include <linux/debugfs.h>
@@ -39,6 +41,25 @@
 
 #include "hci_uart.h"
 #include "btqca.h"
+
+/* Diagnostic restricted to this board; no firmware download or reset. */
+static bool pad4_peri_probe;
+module_param(pad4_peri_probe, bool, 0400);
+MODULE_PARM_DESC(pad4_peri_probe, "Read WCN7860 Peri version during Pad 4 setup");
+
+static bool pad4_peri_load_fw;
+module_param(pad4_peri_load_fw, bool, 0400);
+MODULE_PARM_DESC(pad4_peri_load_fw, "Experimental exact-factory Pad 4 Peri RAM firmware load");
+
+struct pad4_peri_state {
+	spinlock_t lock;
+	struct completion cmd_done, ready, active, tme_ready;
+	u16 opcode;
+	u8 subcmd, reply[258], ready_status, active_status, tme_status;
+	unsigned int reply_len;
+	bool pending;
+	int download_error;
+};
 
 /* HCI_IBS protocol messages */
 #define HCI_IBS_SLEEP_IND	0xFE
@@ -162,6 +183,10 @@ struct qca_data {
 	struct qca_memdump_info *qca_memdump;
 	unsigned long flags;
 	struct completion drop_ev_comp;
+	bool peri_probe_active;
+	struct completion peri_probe_done;
+	u8 peri_probe_cmd;
+	struct pad4_peri_state peri;
 	wait_queue_head_t suspend_wait_q;
 	enum qca_memdump_states memdump_state;
 	struct mutex hci_memdump_lock;
@@ -609,6 +634,12 @@ static int qca_open(struct hci_uart *hu)
 
 	qca->hu = hu;
 	init_completion(&qca->drop_ev_comp);
+	init_completion(&qca->peri_probe_done);
+	spin_lock_init(&qca->peri.lock);
+	init_completion(&qca->peri.cmd_done);
+	init_completion(&qca->peri.ready);
+	init_completion(&qca->peri.active);
+	init_completion(&qca->peri.tme_ready);
 
 	/* Assume we start with both sides asleep -- extra wakes OK */
 	qca->tx_ibs_state = HCI_IBS_TX_ASLEEP;
@@ -1267,6 +1298,77 @@ static int qca_recv_event(struct hci_dev *hdev, struct sk_buff *skb)
 	.lsize = 0, \
 	.maxlen = HCI_MAX_IBS_SIZE
 
+/* Factory HAL ReadHciPeriEvent: 34, route, event, payload-length, payload.
+ * Keep these private transport replies away from the Bluetooth HCI core.
+ */
+static int qca_recv_peri_probe(struct hci_dev *hdev, struct sk_buff *skb)
+{
+	struct hci_uart *hu = hci_get_drvdata(hdev);
+	struct qca_data *qca = hu->priv;
+
+	struct pad4_peri_state *p = &qca->peri;
+	unsigned long flags;
+
+	if (pad4_peri_load_fw && qca->peri_probe_active && skb->len >= 7 &&
+	    skb->data[0] == 0 && skb->data[1] == 0xff &&
+	    skb->data[2] == skb->len - 3 && skb->data[3] == 0xf0) {
+		if (skb->data[4] == 3 && skb->data[6] == 0) {
+			WRITE_ONCE(p->ready_status, skb->data[5]);
+			complete(&p->ready);
+		} else if (skb->data[4] == 3 && skb->data[6] == 3) {
+			WRITE_ONCE(p->tme_status, skb->data[5]);
+			complete(&p->tme_ready);
+		} else if (skb->data[4] == 2 && skb->data[5] == 1) {
+			WRITE_ONCE(p->active_status, skb->data[6]);
+			complete(&p->active);
+		} else if (skb->data[4] == 0 && skb->len == 9 &&
+			   get_unaligned_le16(skb->data + 7) == 0xfff1) {
+			/* Factory GetVsHciEvent class0: status, credit, opcode;
+			 * implicit subcommand0 (BT activate/deactivate). Hardware
+			 * captured ACK: 34 00 ff 06 f0 00 00 01 f1 ff.
+			 */
+			spin_lock_irqsave(&p->lock, flags);
+			if (p->pending && p->opcode == 0xfff1 && p->subcmd == 0) {
+				memset(p->reply, 0, 10);
+				p->reply_len = 10;
+				p->reply[8] = skb->data[5];
+				p->pending = false;
+				complete(&p->cmd_done);
+			}
+			spin_unlock_irqrestore(&p->lock, flags);
+		} else if (skb->data[4] == 1 && skb->len >= 10) {
+			u16 opcode = get_unaligned_le16(skb->data + 6);
+
+			if (opcode == 0xfff0 && skb->data[9] == 6 && skb->data[8])
+				WRITE_ONCE(p->download_error, skb->data[8]);
+			spin_lock_irqsave(&p->lock, flags);
+			if (p->pending && p->opcode == opcode && p->subcmd == skb->data[9]) {
+				p->reply_len = skb->len;
+				memcpy(p->reply, skb->data, skb->len);
+				p->pending = false;
+				complete(&p->cmd_done);
+			}
+			spin_unlock_irqrestore(&p->lock, flags);
+		}
+	}
+
+	if (qca->peri_probe_active) {
+		bt_dev_info(hdev, "Pad4 Peri RX (type 34, %u bytes): %*ph",
+			    skb->len, min_t(unsigned int, skb->len, 128), skb->data);
+		/* Correlate only well-formed private command replies. A rejected
+		 * query is logged too; it must not delay normal Bluetooth setup.
+		 */
+		if (skb->len >= 10 && skb->data[0] == 0 &&
+		    skb->data[1] == 0xff && skb->data[2] == skb->len - 3 &&
+		    skb->data[3] == 0xf0 && skb->data[4] == 1 &&
+		    get_unaligned_le16(skb->data + 6) == 0xfff0 &&
+		    skb->data[9] == READ_ONCE(qca->peri_probe_cmd))
+			complete(&qca->peri_probe_done);
+	}
+	kfree_skb(skb);
+	return 0;
+}
+
 static const struct h4_recv_pkt qca_recv_pkts[] = {
 	{ H4_RECV_ACL,             .recv = qca_recv_acl_data },
 	{ H4_RECV_SCO,             .recv = hci_recv_frame    },
@@ -1275,6 +1377,9 @@ static const struct h4_recv_pkt qca_recv_pkts[] = {
 	{ QCA_IBS_WAKE_IND_EVENT,  .recv = qca_ibs_wake_ind  },
 	{ QCA_IBS_WAKE_ACK_EVENT,  .recv = qca_ibs_wake_ack  },
 	{ QCA_IBS_SLEEP_IND_EVENT, .recv = qca_ibs_sleep_ind },
+	/* Last entry is enabled only by the guarded diagnostic. */
+	{ .type = 0x34, .hlen = 3, .loff = 2, .lsize = 1,
+	  .maxlen = 258, .recv = qca_recv_peri_probe },
 };
 
 static int qca_recv(struct hci_uart *hu, const void *data, int count)
@@ -1285,7 +1390,8 @@ static int qca_recv(struct hci_uart *hu, const void *data, int count)
 		return -EUNATCH;
 
 	qca->rx_skb = h4_recv_buf(hu, qca->rx_skb, data, count,
-				  qca_recv_pkts, ARRAY_SIZE(qca_recv_pkts));
+				  qca_recv_pkts, ARRAY_SIZE(qca_recv_pkts) -
+			  (qca->peri_probe_active ? 0 : 1));
 	if (IS_ERR(qca->rx_skb)) {
 		int err = PTR_ERR(qca->rx_skb);
 		bt_dev_err(hu->hdev, "Frame reassembly failed (%d)", err);
@@ -1400,6 +1506,52 @@ static inline void host_set_baudrate(struct hci_uart *hu, unsigned int speed)
 		serdev_device_set_baudrate(hu->serdev, speed);
 	else
 		hci_uart_set_baudrate(hu, speed);
+}
+
+#include "pad4_peri_loader.h"
+
+static void qca_pad4_read_peri_version(struct hci_uart *hu)
+{
+	/* Exact factory PeriPatchVerReq, GetBuildInfoReq and GetBoardIdReq.
+	 * No arbitration, patch download, reset or subsystem activation.
+	 */
+	static const struct {
+		u8 len;
+		u8 bytes[7];
+	} cmds[] = {
+		{ 7, { 0x31, 0x00, 0xf0, 0xff, 0x02, 0x05, 0x00 } },
+		{ 7, { 0x31, 0x00, 0xf0, 0xff, 0x02, 0x09, 0x00 } },
+		{ 6, { 0x31, 0x00, 0xf0, 0xff, 0x01, 0x0a } },
+	};
+	struct qca_data *qca = hu->priv;
+	struct sk_buff *skb;
+	unsigned int i;
+
+	if (!pad4_peri_probe || !hu->serdev ||
+	    !of_machine_is_compatible("oneplus,iceland"))
+		return;
+
+	qca->peri_probe_active = true;
+	if (send_hci_ibs_cmd(HCI_IBS_WAKE_IND, hu) < 0)
+		return;
+	hci_uart_tx_wakeup(hu);
+	msleep(10);
+
+	for (i = 0; i < ARRAY_SIZE(cmds); i++) {
+		skb = bt_skb_alloc(cmds[i].len, GFP_KERNEL);
+		if (!skb)
+			break;
+		skb_put_data(skb, cmds[i].bytes, cmds[i].len);
+		reinit_completion(&qca->peri_probe_done);
+		WRITE_ONCE(qca->peri_probe_cmd, cmds[i].bytes[5]);
+		bt_dev_info(hu->hdev, "Pad4 Peri read-only query %02x", cmds[i].bytes[5]);
+		skb_queue_tail(&qca->txq, skb);
+		hci_uart_tx_wakeup(hu);
+		if (!wait_for_completion_timeout(&qca->peri_probe_done,
+						msecs_to_jiffies(1000)))
+			bt_dev_warn(hu->hdev, "Pad4 Peri query %02x timed out; continuing", cmds[i].bytes[5]);
+	}
+	WRITE_ONCE(qca->peri_probe_cmd, 0xff);
 }
 
 static int peri_set_baudrate(struct hci_uart *hu, unsigned int baudrate)
@@ -2041,6 +2193,7 @@ retry:
 	}
 
 	if (soc_type == QCA_WCN7860) {
+		qca_pad4_read_peri_version(hu);
 		ret = peri_set_baudrate(hu, qca_get_speed(hu, QCA_OPER_SPEED));
 		if (ret)
 			goto out;
@@ -2075,10 +2228,22 @@ retry:
 			goto out;
 	}
 
+	if (soc_type == QCA_WCN7860 && pad4_peri_load_fw) {
+		ret = pad4_peri_load(hu, qca_baudrate);
+		if (ret) {
+			retries = MAX_INIT_RETRIES;
+			goto out;
+		}
+	}
+
 	/* Setup patch / NVM configurations */
 	ret = qca_uart_setup(hdev, qca_baudrate, soc_type, ver,
 			firmware_name, rampatch_name);
 	if (!ret) {
+		if (soc_type == QCA_WCN7860) {
+			bt_dev_info(hdev, "Pad4 Peri post-Bluetooth-firmware checkpoint");
+			qca_pad4_read_peri_version(hu);
+		}
 		clear_bit(QCA_IBS_DISABLED, &qca->flags);
 		qca_debugfs_init(hdev);
 		hu->hdev->hw_error = qca_hw_error;
