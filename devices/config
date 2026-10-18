@@ -1,0 +1,68 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
+#
+# Writes the kernel configuration of DEVICE to OBJDIR/.config: defconfig
+# merged with the mobile, vendor, SoC and device fragments, in that order.
+# Fails when Kconfig drops a value that a fragment asks for, for example
+# because of a missing dependency. --fragments only lists the files merged.
+#
+# Usage: devices/config [--fragments] DEVICE [OBJDIR]
+# Run it from the top of the source tree, with the ARCH=arm64 and LLVM or
+# CROSS_COMPILE of the build.
+set -eu
+
+list=
+if [ "${1-}" = --fragments ]; then
+	list=1
+	shift
+fi
+device=${1:?device}
+objdir=${2-}
+if [ ! -f "devices/$device/device" ]; then
+	echo "devices/config: unknown device $device" >&2
+	exit 1
+fi
+vendor= soc=
+. "./devices/$device/device"
+
+set -- arch/arm64/configs/defconfig arch/arm64/configs/mobile.config \
+	"arch/arm64/configs/$vendor.config" "arch/arm64/configs/$soc.config" \
+	"devices/$device/kernel.config"
+if [ -n "$list" ]; then
+	printf '%s\n' "$@"
+	exit
+fi
+
+mkdir -p "${objdir:?object directory}"
+scripts/kconfig/merge_config.sh -Q -O "$objdir" "$@" > "$objdir/devices-config.log"
+# defconfig asks for much that the fragments turn off; check the fragments.
+shift
+awk -v fragments=$# '
+	FNR == 1 { file++ }
+	/^CONFIG_[A-Za-z0-9_]+=/ {
+		key = substr($0, 1, index($0, "=") - 1)
+		value = substr($0, index($0, "=") + 1)
+	}
+	/^# CONFIG_[A-Za-z0-9_]+ is not set$/ {
+		key = $2
+		value = "n"
+	}
+	!key { next }
+	{
+		if (file <= fragments)
+			want[key] = value
+		else
+			have[key] = value
+		key = ""
+	}
+	END {
+		for (key in want) {
+			value = key in have ? have[key] : "n"
+			if (value != want[key]) {
+				printf "devices/config: %s is %s, not %s\n", key, value, want[key]
+				failed = 1
+			}
+		}
+		exit failed
+	}
+' "$@" "$objdir/.config" >&2

@@ -1,0 +1,5 @@
+# Motorola Edge 70
+name='Motorola Edge 70'
+vendor=qcom
+soc=eliza
+boot=android-gki

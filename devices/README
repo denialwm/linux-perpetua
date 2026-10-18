@@ -1,0 +1,92 @@
+Devices
+=======
+
+This tree builds mainline Linux for phones and tablets that ship with an
+Android bootloader. Every device has its own build: its own kernel image,
+with its own device tree built in, and its own configuration. All devices
+share the source tree and most of the configuration.
+
+
+A device
+--------
+
+devices/<codename>/ describes one device, named by its codename:
+
+  device         what the build tools need, as shell variables:
+                   name    the product name
+                   vendor  the SoC vendor's configuration fragment
+                   soc     the SoC's configuration fragment
+                   boot    the boot chain, see "Booting" below
+  kernel.config  the device's own configuration fragment. It sets
+                 CONFIG_BUILTIN_DTB_NAME to the device tree of the device
+                 and enables the drivers of its own components.
+
+The device tree itself is in arch/arm64/boot/dts. Its /chosen/fdt-handoff
+node tells the kernel which bootloader tree it replaces and what to carry
+over from it (Documentation/devicetree/bindings/arm/fdt-handoff.yaml).
+
+
+Configuration
+-------------
+
+devices/config merges, in order:
+
+  arch/arm64/configs/defconfig            upstream arm64
+  arch/arm64/configs/mobile.config        every phone and tablet
+  arch/arm64/configs/<vendor>.config      for example qcom.config
+  arch/arm64/configs/<soc>.config         for example kaanapali.config
+  devices/<codename>/kernel.config        the device
+
+A later fragment overrides an earlier one. mobile.config turns every
+platform off and the vendor fragment turns its own back on, so a device
+gets everything that defconfig builds for its vendor. Fragments only hold
+what a device needs on top of that: an SoC fragment the SoC drivers that
+must be built in, a device fragment the drivers of the device's own
+components and what its boot userspace needs before the root filesystem.
+
+devices/config fails when Kconfig drops a value that a fragment asks for,
+so a fragment cannot silently stop working after a rebase.
+
+  ARCH=arm64 LLVM=1 devices/config iceland ../build-iceland
+  make ARCH=arm64 LLVM=1 O=../build-iceland Image modules
+
+
+Build output
+------------
+
+Tools that build a device are expected to keep one layout, so that
+packaging does not depend on the device:
+
+  artifacts/Image               the kernel, with the device tree built in
+  artifacts/<codename>.dtb      the device tree, for inspection
+  artifacts/kernel.config       the configuration
+  artifacts/System.map
+  artifacts/Module.symvers
+  artifacts/modules.sha256      the SHA-256 of every module file
+  modules-root/lib/modules/<release>/
+  manifest.json                 device, release, source and SHA-256 of
+                                every artifact
+
+
+Booting
+-------
+
+The bootloader keeps booting its own images. The kernel replaces the
+bootloader's device tree with its built-in one (ARM64_FDT_HANDOFF), and
+devices/boot holds one tool per boot chain that writes the images:
+
+  android-gki   The GKI layout of Android 13 and later: a boot image with
+                only the kernel and an init_boot image with only the
+                ramdisk. It writes either from the device's own stock
+                image, keeping its header and AVB properties.
+
+
+Adding a device
+---------------
+
+1. Add its device tree, with a /chosen/fdt-handoff node, and its
+   dt-bindings compatible.
+2. Add devices/<codename>/device and devices/<codename>/kernel.config.
+   A new SoC also needs arch/arm64/configs/<soc>.config, and a new vendor
+   arch/arm64/configs/<vendor>.config.
+3. Run devices/config, build, and boot it with the tool of its boot chain.

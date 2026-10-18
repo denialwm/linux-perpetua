@@ -1,0 +1,5 @@
+# OnePlus Pad 4 (OPD2514)
+name='OnePlus Pad 4'
+vendor=qcom
+soc=kaanapali
+boot=android-gki

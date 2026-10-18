@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""Writes a boot or init_boot image for the GKI boot chain of Android 13+.
+
+The device's own stock image of the partition is the template: its version 4
+header, partition size, AVB salt and properties are kept, and only the
+payload changes, the kernel for boot or the ramdisk for init_boot. The
+image keeps an unsigned AVB hash footer, as the stock GKI images have.
+Needs avbtool and unpack_bootimg.
+
+Usage: devices/boot/android-gki boot|init_boot TEMPLATE PAYLOAD OUTPUT [EVIDENCE]
+
+EVIDENCE, when given, is a directory that receives the avbtool
+verification, the unpacked header and the unpacked image.
+"""
+import hashlib
+import json
+from pathlib import Path
+import re
+import struct
+import subprocess
+import sys
+import tempfile
+
+PAGE = 4096
+# Version 4 header offsets: the kernel and ramdisk sizes, the header
+# version and the boot signature size.
+KERNEL_SIZE, RAMDISK_SIZE, HEADER_VERSION, SIGNATURE_SIZE = 8, 12, 40, 1580
+
+
+def run(*args):
+    return subprocess.run(list(map(str, args)), check=True, capture_output=True).stdout
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def main():
+    if len(sys.argv) not in (5, 6) or sys.argv[1] not in ('boot', 'init_boot'):
+        sys.exit(__doc__)
+    partition, template, payload, output = sys.argv[1], *map(Path, sys.argv[2:5])
+    evidence = Path(sys.argv[5]) if len(sys.argv) == 6 else None
+    stock = template.read_bytes()
+    content = payload.read_bytes()
+    field, other = ((KERNEL_SIZE, RAMDISK_SIZE) if partition == 'boot'
+                    else (RAMDISK_SIZE, KERNEL_SIZE))
+
+    header = bytearray(stock[:PAGE])
+    assert header[:8] == b'ANDROID!', 'template is not an Android boot image'
+    assert struct.unpack_from('<I', header, HEADER_VERSION)[0] == 4, 'template header is not version 4'
+    assert struct.unpack_from('<I', header, SIGNATURE_SIZE)[0] == 0, 'template has a boot signature'
+    assert struct.unpack_from('<I', header, other)[0] == 0, f'template {partition} carries another payload'
+    struct.pack_into('<I', header, field, len(content))
+
+    info = run('avbtool', 'info_image', '--image', template).decode()
+    assert re.search(r'^Algorithm:\s+NONE$', info, re.M), 'template footer is signed'
+    salt = re.search(r'^\s*Salt:\s*([0-9a-f]+)\s*$', info, re.M).group(1)
+    props = re.findall(r"^\s*Prop: (\S+) -> '(.*)'$", info, re.M)
+
+    output.write_bytes(bytes(header) + content + b'\0' * (-len(content) % PAGE))
+    run('avbtool', 'add_hash_footer', '--image', output, '--partition_size', len(stock),
+        '--partition_name', partition, '--hash_algorithm', 'sha256', '--algorithm', 'NONE',
+        '--salt', salt, *[a for key, value in props for a in ('--prop', f'{key}:{value}')])
+    image = output.read_bytes()
+    assert len(image) == len(stock) and image[:PAGE] == header
+
+    with tempfile.TemporaryDirectory() as scratch:
+        # avbtool checks the hash descriptor against <partition>.img next
+        # to the image it verifies, whatever OUTPUT is called.
+        named = Path(scratch) / f'{partition}.img'
+        named.symlink_to(output.resolve())
+        verification = run('avbtool', 'verify_image', '--image', named)
+        unpacked = Path(evidence or scratch) / f'{partition}-unpacked'
+        described = run('unpack_bootimg', '--boot_img', output, '--out', unpacked)
+        name = 'kernel' if partition == 'boot' else 'ramdisk'
+        assert (unpacked / name).read_bytes() == content, 'unpacked payload differs'
+    if evidence:
+        (evidence / f'{partition}-verification.txt').write_bytes(verification)
+        (evidence / f'{partition}-header.txt').write_bytes(described)
+    print(json.dumps({'bytes': len(image), 'sha256': sha256(image),
+                      'template_sha256': sha256(stock)}))
+
+
+if __name__ == '__main__':
+    main()
