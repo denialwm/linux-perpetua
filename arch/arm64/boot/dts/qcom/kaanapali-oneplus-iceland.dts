@@ -37,7 +37,16 @@
 		serial1 = &uart18;
 	};
 
-	chosen { };
+	chosen {
+		bootargs = "rdinit=/rescue/mainline-init panic=0 loglevel=7 log_buf_len=2M bootconfig";
+
+		/* The bootloader ramdisk carries the rescue and boot userspace. */
+		fdt-handoff {
+			stock-compatible = "qcom,canoe";
+			stock-bootargs = "oplusboot.prjname=25978";
+			keep-initrd;
+		};
+	};
 
 	/* Both produced by Master KTZ8869, unfortunately gpio 14 and 15 aren't
 	 * wired to Master KTZ8869 in MP units, so vddpos and vddneg will always be active
