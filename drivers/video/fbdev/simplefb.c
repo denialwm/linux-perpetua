@@ -16,6 +16,7 @@
 #include <linux/clk.h>
 #include <linux/errno.h>
 #include <linux/fb.h>
+#include <linux/interconnect.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -529,6 +530,48 @@ static int simplefb_attach_genpds(struct simplefb_par *par,
 }
 #endif
 
+#if defined CONFIG_OF && defined CONFIG_INTERCONNECT
+/*
+ * The bootloader votes for the bandwidth its scanout needs. Once the
+ * interconnect providers sync their state those votes are dropped and the
+ * display controller underflows, so hold every listed path for as long as
+ * the framebuffer is in use. The bandwidth the boot mode needs is unknown,
+ * so request the peak.
+ */
+static int simplefb_attach_icc(struct simplefb_par *par,
+			       struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	int i, count, ret;
+
+	count = of_count_phandle_with_args(dev->of_node, "interconnects",
+					   "#interconnect-cells");
+	if (count < 0)
+		return 0;
+
+	/* Each path is a source and destination pair. */
+	for (i = 0; i < count / 2; i++) {
+		struct icc_path *path = devm_of_icc_get_by_index(dev, i);
+
+		if (IS_ERR(path))
+			return dev_err_probe(dev, PTR_ERR(path),
+					     "failed to get interconnect path %d\n", i);
+		ret = icc_set_bw(path, 0, UINT_MAX);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "failed to vote interconnect path %d\n", i);
+	}
+
+	return 0;
+}
+#else
+static int simplefb_attach_icc(struct simplefb_par *par,
+			       struct platform_device *pdev)
+{
+	return 0;
+}
+#endif
+
 static int simplefb_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -616,6 +659,10 @@ static int simplefb_probe(struct platform_device *pdev)
 		goto error_clocks;
 
 	ret = simplefb_attach_genpds(par, pdev);
+	if (ret < 0)
+		goto error_regulators;
+
+	ret = simplefb_attach_icc(par, pdev);
 	if (ret < 0)
 		goto error_regulators;
 
