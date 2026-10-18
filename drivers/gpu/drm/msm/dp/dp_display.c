@@ -409,19 +409,21 @@ static int msm_dp_display_handle_irq_hpd(struct msm_dp_display_private *dp)
 static int msm_dp_hpd_plug_handle(struct msm_dp_display_private *dp)
 {
 	int ret;
+	bool was_plugged;
 	struct platform_device *pdev = dp->msm_dp_display.pdev;
 
 	drm_dbg_dp(dp->drm_dev, "Before, type=%d sink_count=%d\n",
 			dp->msm_dp_display.connector_type,
 			dp->link->sink_count);
 
-	guard(mutex)(&dp->plugged_lock);
-
 	ret = pm_runtime_resume_and_get(&pdev->dev);
 	if (ret) {
 		DRM_ERROR("failed to pm_runtime_resume\n");
 		return ret;
 	}
+
+	mutex_lock(&dp->plugged_lock);
+	was_plugged = dp->plugged;
 
 	msm_dp_aux_enable_xfers(dp->aux, true);
 
@@ -434,6 +436,11 @@ static int msm_dp_hpd_plug_handle(struct msm_dp_display_private *dp)
 			dp->link->sink_count);
 
 	dp->plugged = true;
+	mutex_unlock(&dp->plugged_lock);
+
+	/* Transfer the temporary reference only for a new connection. */
+	if (was_plugged)
+		pm_runtime_put_sync(&pdev->dev);
 
 	return ret;
 };
@@ -452,9 +459,9 @@ static void msm_dp_display_handle_plugged_change(struct msm_dp *msm_dp_display,
 							plugged);
 }
 
-static int msm_dp_hpd_unplug_handle(struct msm_dp_display_private *dp)
+static bool msm_dp_display_unplug_locked(struct msm_dp_display_private *dp)
 {
-	struct platform_device *pdev = dp->msm_dp_display.pdev;
+	lockdep_assert_held(&dp->plugged_lock);
 
 	dp->panel->video_test = false;
 
@@ -464,16 +471,15 @@ static int msm_dp_hpd_unplug_handle(struct msm_dp_display_private *dp)
 			dp->msm_dp_display.connector_type,
 			dp->link->sink_count);
 
-	guard(mutex)(&dp->plugged_lock);
 	if (!dp->plugged)
-		return 0;
+		return false;
 
 	/* Don't forget modes for eDP */
 	if (!dp->msm_dp_display.is_edp)
 		drm_edid_connector_update(dp->msm_dp_display.connector, NULL);
 
 	/* triggered by irq_hdp with sink_count = 0 */
-	if (dp->link->sink_count == 0)
+	if (dp->link->sink_count == 0 || !dp->msm_dp_display.power_on)
 		msm_dp_display_host_phy_exit(dp);
 
 	/*
@@ -493,10 +499,21 @@ static int msm_dp_hpd_unplug_handle(struct msm_dp_display_private *dp)
 			dp->msm_dp_display.connector_type,
 			dp->link->sink_count);
 
-	if (dp->plugged) {
-		pm_runtime_put_sync(&pdev->dev);
-		dp->plugged = false;
-	}
+	dp->plugged = false;
+
+	return true;
+}
+
+static int msm_dp_hpd_unplug_handle(struct msm_dp_display_private *dp)
+{
+	bool was_plugged;
+
+	mutex_lock(&dp->plugged_lock);
+	was_plugged = msm_dp_display_unplug_locked(dp);
+	mutex_unlock(&dp->plugged_lock);
+
+	if (was_plugged)
+		pm_runtime_put_sync(&dp->msm_dp_display.pdev->dev);
 
 	return 0;
 }
@@ -901,20 +918,22 @@ enum drm_connector_status msm_dp_bridge_detect(struct drm_bridge *bridge,
 	struct msm_dp_display_private *priv;
 	u8 dpcd[DP_RECEIVER_CAP_SIZE];
 	struct drm_dp_desc desc;
-	bool phy_deinit;
+	bool phy_deinit, was_plugged, plugged = false;
+	unsigned int put_count = 1;
 	int ret;
 
 	dp = to_dp_bridge(bridge)->msm_dp_display;
 
 	priv = container_of(dp, struct msm_dp_display_private, msm_dp_display);
 
-	guard(mutex)(&priv->plugged_lock);
 	ret = pm_runtime_resume_and_get(&dp->pdev->dev);
 	if (ret) {
 		DRM_ERROR("failed to pm_runtime_resume\n");
 		return status;
 	}
 
+	mutex_lock(&priv->plugged_lock);
+	was_plugged = priv->plugged;
 	phy_deinit = msm_dp_display_host_phy_init(priv);
 
 	msm_dp_aux_enable_xfers(priv->aux, true);
@@ -923,26 +942,23 @@ enum drm_connector_status msm_dp_bridge_detect(struct drm_bridge *bridge,
 	DRM_DEBUG_DP("aux link status: %x\n", ret);
 	if (!priv->plugged && !ret) {
 		DRM_DEBUG_DP("aux not connected\n");
-		priv->plugged = false;
 		goto end;
 	}
 
 	ret = drm_dp_read_dpcd_caps(priv->aux, dpcd);
 	if (ret) {
 		DRM_DEBUG_DP("failed to read caps\n");
-		priv->plugged = false;
 		goto end;
 	}
 
 	ret = drm_dp_read_desc(priv->aux, &desc, drm_dp_is_branch(dpcd));
 	if (ret) {
 		DRM_DEBUG_DP("failed to read desc\n");
-		priv->plugged = false;
 		goto end;
 	}
 
 	status = connector_status_connected;
-	priv->plugged = true;
+	plugged = true;
 
 	if (drm_dp_read_sink_count_cap(connector, dpcd, &desc)) {
 		int sink_count = drm_dp_read_sink_count(priv->aux);
@@ -954,18 +970,25 @@ enum drm_connector_status msm_dp_bridge_detect(struct drm_bridge *bridge,
 	}
 
 end:
-	/*
-	 * If we detected the DPRX, leave the controller on so that it doesn't
-	 * lose the state.
-	 */
-	if (!priv->plugged) {
-		if (phy_deinit) {
+	/* Exactly one reference belongs to the connected DPRX, not each probe. */
+	if (plugged) {
+		priv->plugged = true;
+		if (!was_plugged)
+			put_count = 0;
+	} else {
+		/* Do not bypass unplug teardown when detect discovers removal first. */
+		if (msm_dp_display_unplug_locked(priv))
+			put_count++;
+		if (phy_deinit || !dp->power_on) {
 			msm_dp_aux_enable_xfers(priv->aux, false);
 			msm_dp_display_host_phy_exit(priv);
 		}
-
-		pm_runtime_put_sync(&dp->pdev->dev);
 	}
+	mutex_unlock(&priv->plugged_lock);
+
+	/* Suspend synchronizes the HPD IRQ, so never enter PM under the lock. */
+	while (put_count--)
+		pm_runtime_put_sync(&dp->pdev->dev);
 
 	return status;
 }
@@ -1007,6 +1030,14 @@ static irqreturn_t msm_dp_display_irq_thread(int irq, void *dev_id)
 	dp->hpd_isr_status = 0;
 	spin_unlock_irqrestore(&dp->irq_thread_lock, flags);
 
+	/*
+	 * Runtime suspend waits for this IRQ thread. Do not wait for an ongoing
+	 * suspend here, and keep PM active through the nested HPD callbacks.
+	 * Events during teardown are superseded by the next connector detect.
+	 */
+	if (pm_runtime_get_if_active(&dp->msm_dp_display.pdev->dev) <= 0)
+		return IRQ_HANDLED;
+
 	if (hpd_isr_status & DP_DP_HPD_UNPLUG_INT_MASK)
 		drm_bridge_hpd_notify(dp->msm_dp_display.bridge,
 				      connector_status_disconnected);
@@ -1020,6 +1051,8 @@ static irqreturn_t msm_dp_display_irq_thread(int irq, void *dev_id)
 		drm_bridge_hpd_notify(dp->msm_dp_display.bridge,
 				      connector_status_connected);
 
+	/* The final reference must never suspend synchronously in its own IRQ. */
+	pm_runtime_put(&dp->msm_dp_display.pdev->dev);
 	ret = IRQ_HANDLED;
 
 	return ret;
