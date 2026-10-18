@@ -1915,6 +1915,14 @@ static int dsi_populate_dsc_params(struct msm_dsi_host *msm_host, struct drm_dsc
 		return ret;
 	}
 
+	/*
+	 * The helper follows VESA DSC 1.1 Table E-5 (range_max_qp[0] = 4 at
+	 * 10 bpc, 8 bpp); the DSC model's pre-SCR configuration, which panel
+	 * decoders and the downstream driver follow, uses 8.
+	 */
+	if (dsc->bits_per_component == 10 && drm_dsc_get_bpp_int(dsc) == 8)
+		dsc->rc_range_params[0].range_max_qp = 8;
+
 	dsc->initial_scale_value = drm_dsc_initial_scale_value(dsc);
 	dsc->line_buf_depth = dsc->bits_per_component + 1;
 
