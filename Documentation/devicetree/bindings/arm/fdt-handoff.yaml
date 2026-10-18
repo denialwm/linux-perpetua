@@ -1,0 +1,134 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/arm/fdt-handoff.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Device tree handoff from vendor bootloaders
+
+maintainers:
+  - Doctor Logix <doctor.logix@gmail.com>
+
+description: |
+  The Android bootloaders of many phones and tablets only boot a vendor
+  device tree taken from their own images. They fill that tree with what only
+  they know, such as the memory map, the firmware reservations, the initramfs
+  and the board addresses, but the rest of it describes the vendor kernel.
+
+  A device tree built into the kernel image describes the bootloader tree it
+  replaces with a /chosen/fdt-handoff node. When the bootloader passes that
+  tree, an arm64 kernel with ARM64_FDT_HANDOFF boots the built-in tree
+  instead, after:
+
+  - replacing its memory with the bootloader's usable memory, without the
+    no-map regions of the bootloader's reserved-memory;
+  - adding the other fixed reservations of the bootloader's tree to the
+    memory reservation map, instead of importing its reserved-memory nodes,
+    which belong to vendor drivers;
+  - optionally, using the initramfs that the bootloader loaded;
+  - carrying over the board addresses that the child nodes describe.
+
+  The boot arguments are those of the built-in tree's own /chosen, and the
+  kernel adds an empty /chosen/linux,fdt-handoff property to it. Any other
+  bootloader tree boots as usual.
+
+properties:
+  $nodename:
+    const: fdt-handoff
+
+  stock-compatible:
+    $ref: /schemas/types.yaml#/definitions/string-array
+    description:
+      The root node of the bootloader's tree is compatible with one of these.
+
+  stock-model:
+    $ref: /schemas/types.yaml#/definitions/string-array
+    description:
+      The root model of the bootloader's tree is one of these.
+
+  stock-bootargs:
+    $ref: /schemas/types.yaml#/definitions/string-array
+    description:
+      The /chosen/bootargs of the bootloader's tree have one of these as a
+      word, separated by spaces or newlines.
+
+  keep-initrd:
+    type: boolean
+    description:
+      Boot the initramfs that the bootloader loaded, as its
+      /chosen/linux,initrd-start and linux,initrd-end describe it.
+
+patternProperties:
+  "-address$":
+    type: object
+    additionalProperties: false
+    description:
+      A MAC or Bluetooth address that the bootloader passes as text, for
+      example as KEY=12:34:56:78:9a:bc in its boot arguments. When the address
+      is missing or malformed, the target keeps its own.
+
+    properties:
+      stock-path:
+        $ref: /schemas/types.yaml#/definitions/string
+        description: The node of the bootloader's tree that has the text.
+
+      stock-property:
+        $ref: /schemas/types.yaml#/definitions/string
+        description: The property that has the text, for example bootargs.
+
+      stock-key:
+        $ref: /schemas/types.yaml#/definitions/string
+        description:
+          The address follows the first word that starts with this key, as
+          six hexadecimal bytes separated by colons.
+
+      target:
+        $ref: /schemas/types.yaml#/definitions/phandle
+        description: The node of this tree that receives the address.
+
+      target-property:
+        $ref: /schemas/types.yaml#/definitions/string
+        description: The property that receives the six bytes.
+
+      reverse-bytes:
+        type: boolean
+        description:
+          Store the bytes in reverse order, for little-endian properties such
+          as local-bd-address.
+
+    required:
+      - stock-path
+      - stock-property
+      - stock-key
+      - target
+      - target-property
+
+required:
+  - stock-compatible
+
+additionalProperties: false
+
+examples:
+  - |
+    chosen {
+        bootargs = "rdinit=/init panic=10";
+
+        fdt-handoff {
+            stock-compatible = "qcom,kera";
+            stock-model = "roadstr";
+            keep-initrd;
+
+            wifi-address {
+                stock-path = "/chosen";
+                stock-property = "bootargs";
+                stock-key = "wifimacaddr=";
+                target = <&wlan>;
+                target-property = "local-mac-address";
+            };
+        };
+    };
+
+    wlan: wifi {
+        local-mac-address = [00 00 00 00 00 00];
+    };
+...
