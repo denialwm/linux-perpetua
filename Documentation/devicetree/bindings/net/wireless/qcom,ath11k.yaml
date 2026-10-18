@@ -93,6 +93,22 @@ properties:
     items:
       - const: wlan-smp2p-out
 
+  wlan-en-gpios:
+    maxItems: 1
+    description:
+      WLAN_EN of a WCN6750 whose WPSS firmware powers the chip up itself.
+      The host drives it low before every WPSS boot.
+
+  qcom,qmp:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Reference to the AOSS side-channel message RAM.
+
+  qcom,vreg-ol-cpr:
+    $ref: /schemas/types.yaml#/definitions/string
+    description:
+      AOP resource name of the WCN6750 CX/MX rail. The open-loop CPR voltage
+      that the firmware reports is applied to it.
+
 required:
   - compatible
   - reg
