@@ -494,6 +494,73 @@ static const struct regulator_ops rpmh_regulator_xob_ops = {
  *
  * Return: 0 on success, or a negative error number on failure
  */
+static int rpmh_regulator_determine_initial_mode(struct rpmh_vreg *vreg)
+{
+	struct tcs_cmd cmd = {
+		.addr = vreg->addr + RPMH_REGULATOR_REG_ENABLE,
+	};
+	int ret, pmic_mode, mode;
+	int sts;
+
+	ret = rpmh_read(vreg->dev, &cmd);
+	if (ret) {
+		dev_err(vreg->dev, "failed to read ENABLE status ret = %d\n", ret);
+
+		return ret;
+	}
+
+	sts = cmd.data & RPMH_REGULATOR_ENABLE_MASK;
+	if (!sts)
+		return 0;
+
+	if (vreg->hw_data->regulator_type == XOB)
+		return 0;
+
+	ret = rpmh_regulator_vrm_get_pmic_mode(vreg, &pmic_mode);
+	if (ret < 0) {
+		vreg->mode = REGULATOR_MODE_INVALID;
+		dev_err(vreg->dev, "failed to read pmic_mode ret = %d\n", ret);
+
+		return ret;
+	}
+
+	/*
+	 * NOTE: Since BOB4 BYPASS_MODE value = 0 we cannot confirm if that BOB
+	 * regulator has been sent into bypass mode by bootloader or if bootloader
+	 * just has not requested for any mode voting. Due this limitation, we
+	 * must check if the read pmic_mode value is non-zero before comparing it
+	 * to bypass mode value. This also is needed to avoid setting BYPASS status
+	 * for LDOs which dont support bypass mode, and have the pmic_bypass_mode
+	 * uninitialized value as zero in the vreg hw data. For such cases assume
+	 * lowest mode, if pmic_mode is zero, to allow for mode voting.
+	 */
+	if (!pmic_mode) {
+		for (mode = REGULATOR_MODE_STANDBY; mode > REGULATOR_MODE_INVALID; mode >>= 1) {
+			if (vreg->hw_data->pmic_mode_map[mode] >= 0) {
+				vreg->mode = mode;
+				break;
+			}
+		}
+
+		return 0;
+	}
+
+	if (vreg->hw_data->pmic_bypass_mode == pmic_mode) {
+		vreg->bypassed = true;
+
+		return 0;
+	}
+
+	for (mode = REGULATOR_MODE_STANDBY; mode > REGULATOR_MODE_INVALID; mode >>= 1) {
+		if (pmic_mode == vreg->hw_data->pmic_mode_map[mode]) {
+			vreg->mode = mode;
+			break;
+		}
+	}
+
+	return 0;
+}
+
 static int rpmh_regulator_init_vreg(struct rpmh_vreg *vreg, struct device *dev,
 			struct device_node *node, const char *pmic_id,
 			const struct rpmh_vreg_init_data *pmic_rpmh_data)
@@ -568,6 +635,14 @@ static int rpmh_regulator_init_vreg(struct rpmh_vreg *vreg, struct device *dev,
 		vreg->rdesc.n_voltages = 1;
 	}
 
+	/*
+	 * Read back what the bootloader set before registering: registration
+	 * applies the initial mode, and that request then updates the cache.
+	 */
+	ret = rpmh_regulator_determine_initial_mode(vreg);
+	if (ret < 0)
+		dev_err(dev, "%pOFn: failed to read the initial mode\n", node);
+
 	reg_config.dev		= dev;
 	reg_config.init_data	= init_data;
 	reg_config.of_node	= node;
@@ -583,73 +658,6 @@ static int rpmh_regulator_init_vreg(struct rpmh_vreg *vreg, struct device *dev,
 
 	dev_dbg(dev, "%pOFn regulator registered for RPMh resource %s @ 0x%05X\n",
 		node, rpmh_resource_name, vreg->addr);
-
-	return 0;
-}
-
-static int rpmh_regulator_determine_initial_mode(struct rpmh_vreg *vreg)
-{
-	struct tcs_cmd cmd = {
-		.addr = vreg->addr + RPMH_REGULATOR_REG_ENABLE,
-	};
-	int ret, pmic_mode, mode;
-	int sts;
-
-	ret = rpmh_read(vreg->dev, &cmd);
-	if (ret) {
-		dev_err(vreg->dev, "failed to read ENABLE status ret = %d\n", ret);
-
-		return ret;
-	}
-
-	sts = cmd.data & RPMH_REGULATOR_ENABLE_MASK;
-	if (!sts)
-		return 0;
-
-	if (vreg->hw_data->regulator_type == XOB)
-		return 0;
-
-	ret = rpmh_regulator_vrm_get_pmic_mode(vreg, &pmic_mode);
-	if (ret < 0) {
-		vreg->mode = REGULATOR_MODE_INVALID;
-		dev_err(vreg->dev, "failed to read pmic_mode ret = %d\n", ret);
-
-		return ret;
-	}
-
-	/*
-	 * NOTE: Since BOB4 BYPASS_MODE value = 0 we cannot confirm if that BOB
-	 * regulator has been sent into bypass mode by bootloader or if bootloader
-	 * just has not requested for any mode voting. Due this limitation, we
-	 * must check if the read pmic_mode value is non-zero before comparing it
-	 * to bypass mode value. This also is needed to avoid setting BYPASS status
-	 * for LDOs which dont support bypass mode, and have the pmic_bypass_mode
-	 * uninitialized value as zero in the vreg hw data. For such cases assume
-	 * lowest mode, if pmic_mode is zero, to allow for mode voting.
-	 */
-	if (!pmic_mode) {
-		for (mode = REGULATOR_MODE_STANDBY; mode > REGULATOR_MODE_INVALID; mode >>= 1) {
-			if (vreg->hw_data->pmic_mode_map[mode] >= 0) {
-				vreg->mode = mode;
-				break;
-			}
-		}
-
-		return 0;
-	}
-
-	if (vreg->hw_data->pmic_bypass_mode == pmic_mode) {
-		vreg->bypassed = true;
-
-		return 0;
-	}
-
-	for (mode = REGULATOR_MODE_STANDBY; mode > REGULATOR_MODE_INVALID; mode >>= 1) {
-		if (pmic_mode == vreg->hw_data->pmic_mode_map[mode]) {
-			vreg->mode = mode;
-			break;
-		}
-	}
 
 	return 0;
 }
@@ -1957,12 +1965,6 @@ static int rpmh_regulator_probe(struct platform_device *pdev)
 						vreg_data);
 		if (ret < 0)
 			return ret;
-
-		ret = rpmh_regulator_determine_initial_mode(vreg);
-		if (ret < 0)
-			dev_err(dev, "failed to read initial mode for %s\n",
-					vreg->rdesc.name);
-
 	}
 
 	return 0;
