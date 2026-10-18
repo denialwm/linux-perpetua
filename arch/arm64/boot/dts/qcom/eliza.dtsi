@@ -282,7 +282,7 @@
 
 		cpu7: cpu@700 {
 			device_type = "cpu";
-			compatible = "arm,cortex-x3";
+			compatible = "arm,cortex-a720";
 			reg = <0x0 0x700>;
 
 			clocks = <&cpufreq_hw 2>;
