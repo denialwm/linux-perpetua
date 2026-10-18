@@ -15,13 +15,17 @@ description:
 
 properties:
   compatible:
-    enum:
-      - qcom,sc7180-adsp-pas
-      - qcom,sc7180-mpss-pas
-      - qcom,sc7280-adsp-pas
-      - qcom,sc7280-cdsp-pas
-      - qcom,sc7280-mpss-pas
-      - qcom,sc7280-wpss-pas
+    oneOf:
+      - enum:
+          - qcom,sc7180-adsp-pas
+          - qcom,sc7180-mpss-pas
+          - qcom,sc7280-adsp-pas
+          - qcom,sc7280-cdsp-pas
+          - qcom,sc7280-mpss-pas
+          - qcom,sc7280-wpss-pas
+      - items:
+          - const: qcom,eliza-wpss-pas
+          - const: qcom,sc7280-wpss-pas
 
   reg:
     maxItems: 1
@@ -155,9 +159,10 @@ allOf:
   - if:
       properties:
         compatible:
-          enum:
-            - qcom,sc7280-cdsp-pas
-            - qcom,sc7280-wpss-pas
+          contains:
+            enum:
+              - qcom,sc7280-cdsp-pas
+              - qcom,sc7280-wpss-pas
     then:
       properties:
         power-domains:
