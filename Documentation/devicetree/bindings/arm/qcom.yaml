@@ -81,6 +81,7 @@ properties:
 
       - items:
           - enum:
+              - motorola,roadstr
               - qcom,eliza-mtp
           - const: qcom,eliza
 
