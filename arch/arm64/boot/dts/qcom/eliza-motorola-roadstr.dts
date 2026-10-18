@@ -1,0 +1,646 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Motorola Edge 70 (roadstr), on the Eliza SoC.
+ *
+ * The stock bootloader starts the kernel with its own device tree. The
+ * arm64 FDT handoff replaces it with this one, keeping the memory map, the
+ * stock reservations and the board addresses. The USB-C port is wired for
+ * USB 2.0 only and runs as a peripheral.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+#include "eliza.dtsi"
+
+/* pmiv0108 at SPMI SID 7: its eUSB2 repeater matches the PM7550BA block. */
+#include "pm7550ba-eliza.dtsi"
+#include "pm7550-eliza.dtsi"
+#include "pm8550vs-d-eliza.dtsi"
+#include "pm8550vs-g-eliza.dtsi"
+#include "pmr735d-eliza.dtsi"
+#include "pmk8550-eliza.dtsi"
+
+/ {
+	model = "Motorola Edge 70";
+	compatible = "motorola,roadstr", "qcom,eliza";
+	chassis-type = "handset";
+
+	aliases {
+		serial1 = &uart5;
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* The bootloader leaves the panel scanning out its splash. */
+		framebuffer@fc800000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0xfc800000 0x0 (1220 * 2712 * 4)>;
+			width = <1220>;
+			height = <2712>;
+			stride = <(1220 * 4)>;
+			format = "a8r8g8b8";
+			memory-region = <&splash_mem>;
+			/* Keep the splash scanout fed after interconnect sync_state. */
+			interconnects = <&mmss_noc MASTER_MDP QCOM_ICC_TAG_ALWAYS
+					 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>;
+			clocks = <&gcc GCC_DISP_HF_AXI_CLK>;
+		};
+	};
+
+	clocks {
+		xo_board: xo-board {
+			compatible = "fixed-clock";
+			clock-frequency = <76800000>;
+			#clock-cells = <0>;
+		};
+
+		sleep_clk: sleep-clk {
+			compatible = "fixed-clock";
+			clock-frequency = <32764>;
+			#clock-cells = <0>;
+		};
+
+		bi_tcxo_div2: bi-tcxo-div2-clk {
+			compatible = "fixed-factor-clock";
+			#clock-cells = <0>;
+
+			clocks = <&rpmhcc RPMH_CXO_CLK>;
+			clock-mult = <1>;
+			clock-div = <2>;
+		};
+
+		bi_tcxo_ao_div2: bi-tcxo-ao-div2-clk {
+			compatible = "fixed-factor-clock";
+			#clock-cells = <0>;
+
+			clocks = <&rpmhcc RPMH_CXO_CLK_A>;
+			clock-mult = <1>;
+			clock-div = <2>;
+		};
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		pinctrl-0 = <&key_vol_up_default>, <&key_assist_default>;
+		pinctrl-names = "default";
+
+		key-volume-up {
+			label = "Volume Up";
+			gpios = <&pm7550_gpios 6 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+			debounce-interval = <15>;
+			linux,can-disable;
+			wakeup-source;
+		};
+
+		key-assist {
+			label = "AI Key";
+			gpios = <&tlmm 100 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_ASSISTANT>;
+			debounce-interval = <15>;
+			linux,can-disable;
+			wakeup-source;
+		};
+	};
+
+	/* Battery and charger, served by the ADSP charger PD */
+	pmic-glink {
+		compatible = "qcom,eliza-pmic-glink",
+			     "qcom,sm8550-pmic-glink",
+			     "qcom,pmic-glink";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		connector@0 {
+			compatible = "usb-c-connector";
+			reg = <0>;
+			power-role = "dual";
+			data-role = "dual";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/* USB 2.0 only: no SuperSpeed lanes are wired. */
+				port@0 {
+					reg = <0>;
+
+					pmic_glink_hs_in: endpoint {
+						remote-endpoint = <&usb_dwc3_hs>;
+					};
+				};
+			};
+		};
+	};
+
+	reserved-memory {
+		ramoops@ae000000 {
+			compatible = "ramoops";
+			reg = <0x0 0xae000000 0x0 0x60000>;
+			record-size = <0x20000>;
+			console-size = <0x40000>;
+			no-map;
+		};
+
+		/* Unmapped so simple-framebuffer can ioremap it. */
+		splash_mem: splash@fc800000 {
+			reg = <0x0 0xfc800000 0x0 0x2b00000>;
+			no-map;
+		};
+	};
+};
+
+/* Moto's ADSP image is 58 MB, not the 42 MB of the reference layout. */
+&adspslpi_mem {
+	reg = <0x0 0x99e00000 0x0 0x3a00000>;
+};
+
+&apps_rsc {
+	regulators-0 {
+		compatible = "qcom,pm7550-rpmh-regulators";
+		qcom,pmic-id = "b";
+
+		/* WCN6750 rails, at the voltages the stock icnss2 driver votes */
+		vreg_s1b: smps1 {
+			regulator-name = "vreg_s1b";
+			regulator-min-microvolt = <1856000>;
+			regulator-max-microvolt = <1856000>;
+			regulator-always-on;
+		};
+
+		vreg_s2b: smps2 {
+			regulator-name = "vreg_s2b";
+			regulator-min-microvolt = <1256000>;
+			regulator-max-microvolt = <1256000>;
+			regulator-always-on;
+		};
+
+		vreg_s3b: smps3 {
+			regulator-name = "vreg_s3b";
+			regulator-min-microvolt = <920000>;
+			regulator-max-microvolt = <920000>;
+			regulator-always-on;
+		};
+
+		/* WCN6750 Bluetooth vdd-rfa-2p2, as the stock BT driver votes */
+		vreg_s4b: smps4 {
+			regulator-name = "vreg_s4b";
+			regulator-min-microvolt = <2200000>;
+			regulator-max-microvolt = <2200000>;
+		};
+
+		/* DSI PHY vdds: downstream requests 880-950 mV and gets 880 mV */
+		vreg_l2b: ldo2 {
+			regulator-name = "vreg_l2b";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <880000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l4b: ldo4 {
+			regulator-name = "vreg_l4b";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* UFS PHY: the board allows 866-958 mV; 6.6 runs it at 880 mV */
+		vreg_l6b: ldo6 {
+			regulator-name = "vreg_l6b";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <880000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l7b: ldo7 {
+			regulator-name = "vreg_l7b";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* Panel vddio */
+		vreg_l8b: ldo8 {
+			regulator-name = "vreg_l8b";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* WCN6750 vdd-1.8-io */
+		vreg_l11b: ldo11 {
+			regulator-name = "vreg_l11b";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+		};
+
+		/*
+		 * UFS vcc: downstream never votes a voltage and keeps the boot
+		 * firmware's, so no constraint here either.
+		 */
+		vreg_l12b: ldo12 {
+			regulator-name = "vreg_l12b";
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l17b: ldo17 {
+			regulator-name = "vreg_l17b";
+			regulator-min-microvolt = <3104000>;
+			regulator-max-microvolt = <3104000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* Panel vci */
+		vreg_l19b: ldo19 {
+			regulator-name = "vreg_l19b";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* Touch avdd: stock 3.3 V rounded up to the 8 mV step */
+		vreg_l22b: ldo22 {
+			regulator-name = "vreg_l22b";
+			regulator-min-microvolt = <3304000>;
+			regulator-max-microvolt = <3304000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* Touch vddio */
+		vreg_l23b: ldo23 {
+			regulator-name = "vreg_l23b";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-1 {
+		compatible = "qcom,pm8550vs-rpmh-regulators";
+		qcom,pmic-id = "d";
+
+		/* UFS vccq: like vcc, left at the boot firmware's voltage */
+		vreg_l1d: ldo1 {
+			regulator-name = "vreg_l1d";
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-2 {
+		compatible = "qcom,pm8550vs-rpmh-regulators";
+		qcom,pmic-id = "g";
+
+		/* Panel vdd: the board allows at most 1.25 V; RPMh resets the SoC above it */
+		vreg_l1g: ldo1 {
+			regulator-name = "vreg_l1g";
+			regulator-min-microvolt = <1248000>;
+			regulator-max-microvolt = <1248000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* UFS reference clock */
+		vreg_l3g: ldo3 {
+			regulator-name = "vreg_l3g";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-3 {
+		compatible = "qcom,pmr735d-rpmh-regulators";
+		qcom,pmic-id = "k";
+
+		vreg_l7k: ldo7 {
+			regulator-name = "vreg_l7k";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <880000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+};
+
+/* Channels 0 and 5 belong to another execution environment (stock gpii-mask). */
+&gpi_dma1 {
+	dma-channel-mask = <0x1e>;
+};
+
+&gpi_dma2 {
+	dma-channel-mask = <0x1e>;
+
+	status = "okay";
+};
+
+&gpu {
+	status = "okay";
+};
+
+/* The TrustZone accepts only the Motorola-signed zap shader. */
+&gpu_zap_shader {
+	firmware-name = "qcom/eliza/motorola/roadstr/gen70e00_zap.mbn";
+};
+
+&i2c4 {
+	clock-frequency = <400000>;
+
+	status = "okay";
+
+	/* Downstream "aw8693x"; the stock driver reads chip ID 0x9380. */
+	haptics@5a {
+		compatible = "awinic,aw86938", "awinic,aw86927";
+		reg = <0x5a>;
+
+		interrupts-extended = <&tlmm 128 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&tlmm 155 GPIO_ACTIVE_LOW>;
+
+		pinctrl-0 = <&vib_int_default>, <&vib_rst_default>;
+		pinctrl-names = "default";
+	};
+};
+
+&mdss {
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	vdda-supply = <&vreg_l4b>;
+
+	status = "okay";
+
+	panel@0 {
+		compatible = "csot,nt37706-v3", "novatek,nt37706";
+		reg = <0>;
+
+		reset-gpios = <&tlmm 12 GPIO_ACTIVE_LOW>;
+
+		vci-supply = <&vreg_l19b>;
+		vdd-supply = <&vreg_l1g>;
+		vddio-supply = <&vreg_l8b>;
+
+		pinctrl-0 = <&disp0_reset_n_active>;
+		pinctrl-1 = <&disp0_reset_n_suspend>;
+		pinctrl-names = "default", "sleep";
+
+		port {
+			panel0_in: endpoint {
+				remote-endpoint = <&mdss_dsi0_out>;
+			};
+		};
+	};
+};
+
+&mdss_dsi0_out {
+	remote-endpoint = <&panel0_in>;
+	data-lanes = <0 1 2 3>;
+};
+
+&mdss_dsi0_phy {
+	vdds-supply = <&vreg_l2b>;
+
+	status = "okay";
+};
+
+&pm7550_gpios {
+	key_vol_up_default: key-vol-up-default-state {
+		pins = "gpio6";
+		function = "normal";
+		input-enable;
+		bias-pull-up;
+		power-source = <1>;
+	};
+};
+
+&pm7550ba_eusb2_repeater {
+	vdd18-supply = <&vreg_l7b>;
+	vdd3-supply = <&vreg_l17b>;
+
+	/* Stock tuning: IUSB2 0x2, PREEM 0x4. Squelch has no DT knob. */
+	qcom,tune-usb2-amplitude = /bits/ 8 <0x2>;
+	qcom,tune-usb2-preem = /bits/ 8 <0x4>;
+};
+
+&pm8550vs_g_gpios {
+	bt_en_default: bt-en-default-state {
+		pins = "gpio4";
+		function = "normal";
+		output-enable;
+		input-disable;
+		bias-disable;
+		power-source = <1>;
+	};
+};
+
+&pmk8550_gpios {
+	/*
+	 * The 32 kHz sleep clock for the WCN6750's LF_CLK_IN. Without it the
+	 * WPSS firmware asserts in whal_wmac_transition_to_fw_control as soon
+	 * as an interface comes up.
+	 */
+	pinctrl-0 = <&alt_sleep_clk_default>;
+	pinctrl-names = "default";
+
+	alt_sleep_clk_default: alt-sleep-clk-default-state {
+		pins = "gpio3";
+		function = "func1";
+		input-disable;
+		output-enable;
+		bias-disable;
+		power-source = <0>;
+	};
+};
+
+&pon_pwrkey {
+	status = "okay";
+};
+
+&pon_resin {
+	linux,code = <KEY_VOLUMEDOWN>;
+
+	status = "okay";
+};
+
+&qupv3_1 {
+	status = "okay";
+};
+
+&qupv3_2 {
+	status = "okay";
+};
+
+&remoteproc_adsp {
+	firmware-name = "qcom/eliza/motorola/roadstr/adsp.mdt",
+			"qcom/eliza/motorola/roadstr/adsp_dtb.mdt";
+
+	status = "okay";
+};
+
+&remoteproc_wpss {
+	firmware-name = "qcom/eliza/motorola/roadstr/wpss.mdt";
+
+	status = "okay";
+};
+
+&spi8 {
+	status = "okay";
+
+	touchscreen@0 {
+		compatible = "goodix,gt9916";
+		reg = <0>;
+
+		interrupts-extended = <&tlmm 13 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&tlmm 16 GPIO_ACTIVE_LOW>;
+
+		avdd-supply = <&vreg_l22b>;
+		vddio-supply = <&vreg_l23b>;
+
+		spi-max-frequency = <15000000>;
+
+		/* The controller reports in 1/16 pixel. */
+		touchscreen-size-x = <19520>;
+		touchscreen-size-y = <43392>;
+	};
+};
+
+&tlmm {
+	/* Secure-owned pins, from the stock qcom,gpios-reserved list. */
+	gpio-reserved-ranges = <8 4>, <20 4>, <111 2>, <118 1>;
+
+	disp0_reset_n_active: disp0-reset-n-active-state {
+		pins = "gpio12";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-disable;
+	};
+
+	disp0_reset_n_suspend: disp0-reset-n-suspend-state {
+		pins = "gpio12";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	/*
+	 * WCN6750 SW_CTRL, read by the WPSS firmware. WPSS drives WLAN_EN
+	 * (gpio35) and the SOL lines (gpio32/33); the host only drops
+	 * WLAN_EN before a WPSS boot.
+	 */
+	wlan_sw_ctrl_default: wlan-sw-ctrl-default-state {
+		pins = "gpio81";
+		function = "wcn_sw_ctrl";
+	};
+
+	key_assist_default: key-assist-default-state {
+		pins = "gpio100";
+		function = "gpio";
+		bias-pull-up;
+	};
+
+	vib_int_default: vib-int-default-state {
+		pins = "gpio128";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	vib_rst_default: vib-rst-default-state {
+		pins = "gpio155";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+};
+
+/*
+ * WCN6750 Bluetooth. SW_CTRL (GPIO81) stays muxed to WPSS for Wi-Fi, so the
+ * host does not request it.
+ */
+&uart5 {
+	status = "okay";
+
+	bluetooth {
+		compatible = "qcom,wcn6750-bt";
+
+		enable-gpios = <&pm8550vs_g_gpios 4 GPIO_ACTIVE_HIGH>;
+		pinctrl-0 = <&bt_en_default>;
+		pinctrl-names = "default";
+
+		vddio-supply = <&vreg_l11b>;
+		vddaon-supply = <&vreg_s3b>;
+		vddbtcxmx-supply = <&vreg_s3b>;
+		vddrfacmn-supply = <&vreg_s3b>;
+		vddrfa0p8-supply = <&vreg_s3b>;
+		vddrfa1p7-supply = <&vreg_s1b>;
+		vddrfa1p2-supply = <&vreg_s2b>;
+		vddrfa2p2-supply = <&vreg_s4b>;
+
+		max-speed = <3200000>;
+	};
+};
+
+&ufs_mem_hc {
+	reset-gpios = <&tlmm 185 GPIO_ACTIVE_LOW>;
+
+	vcc-supply = <&vreg_l12b>;
+	vcc-max-microamp = <1300000>;
+	vccq-supply = <&vreg_l1d>;
+	vccq-max-microamp = <750000>;
+
+	status = "okay";
+};
+
+&ufs_mem_phy {
+	vdda-phy-supply = <&vreg_l6b>;
+	vdda-pll-supply = <&vreg_l4b>;
+
+	status = "okay";
+};
+
+&usb {
+	/* The USB-C port is wired for USB 2.0 only. */
+	phys = <&usb_hsphy>;
+	phy-names = "usb2-phy";
+	maximum-speed = "high-speed";
+
+	/*
+	 * Without a USB3 PHY there is no PIPE clock: the core soft reset
+	 * times out on a cold boot unless the UTMI clock replaces it.
+	 */
+	qcom,select-utmi-as-pipe-clk;
+
+	status = "okay";
+};
+
+&usb_dwc3_hs {
+	remote-endpoint = <&pmic_glink_hs_in>;
+};
+
+&usb_hsphy {
+	vdd-supply = <&vreg_l7k>;
+	vdda12-supply = <&vreg_l4b>;
+
+	phys = <&pm7550ba_eusb2_repeater>;
+
+	status = "okay";
+};
+
+&wifi {
+	pinctrl-0 = <&wlan_sw_ctrl_default>;
+	pinctrl-names = "default";
+
+	wlan-en-gpios = <&tlmm 35 GPIO_ACTIVE_HIGH>;
+
+	qcom,calibration-variant = "Motorola_roadstr";
+	qcom,qmp = <&aoss_qmp>;
+	qcom,vreg-ol-cpr = "s3b";
+
+	status = "okay";
+};
