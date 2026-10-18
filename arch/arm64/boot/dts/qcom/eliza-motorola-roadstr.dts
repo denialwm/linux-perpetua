@@ -37,6 +37,36 @@
 		#size-cells = <2>;
 		ranges;
 
+		/* A panic reboots, so an unattended phone comes back. */
+		bootargs = "rdinit=/init panic=10 loglevel=7 log_buf_len=2M clk_ignore_unused pd_ignore_unused";
+
+		/*
+		 * The bootloader passes the vendor_boot ramdisk followed by the
+		 * init_boot one, which carries the boot userspace.
+		 */
+		fdt-handoff {
+			stock-compatible = "qcom,kera";
+			stock-model = "roadstr";
+			keep-initrd;
+
+			bluetooth-address {
+				stock-path = "/chosen";
+				stock-property = "mmi,bootconfig";
+				stock-key = "androidboot.btmacaddr=";
+				target = <&bluetooth>;
+				target-property = "local-bd-address";
+				reverse-bytes;
+			};
+
+			wifi-address {
+				stock-path = "/chosen";
+				stock-property = "bootargs";
+				stock-key = "wifimacaddr=";
+				target = <&wifi>;
+				target-property = "local-mac-address";
+			};
+		};
+
 		/* The bootloader leaves the panel scanning out its splash. */
 		framebuffer@fc800000 {
 			compatible = "simple-framebuffer";
@@ -566,7 +596,7 @@
 &uart5 {
 	status = "okay";
 
-	bluetooth {
+	bluetooth: bluetooth {
 		compatible = "qcom,wcn6750-bt";
 
 		enable-gpios = <&pm8550vs_g_gpios 4 GPIO_ACTIVE_HIGH>;
