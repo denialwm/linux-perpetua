@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/panel/oneplus,aston-boe-aa551.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: BOE AA551 AMOLED panel of the OnePlus 12R and Ace 3
+
+maintainers:
+  - Doctor Logix <doctor.logix@gmail.com>
+
+description: |
+  The 6.78" 1264x2780 AMOLED panel of the OnePlus 12R and OnePlus Ace 3
+  (aston), made by BOE and named AA551-P-3-A0004 in the vendor sources. It
+  is driven over four DSI lanes in command mode, with DSC 1.2 at 10 bits
+  per component, and its brightness is set through DCS.
+
+  On these phones the DSI lanes pass through a Pixelworks Iris7P display
+  processor before they reach the panel. The Iris7P is kept in its analog
+  bypass, in which it passes the link through unchanged. Powering it,
+  releasing its reset and switching it to the bypass are part of the
+  panel's power-on sequence, so its control lines are described here.
+
+allOf:
+  - $ref: panel-common.yaml#
+
+properties:
+  compatible:
+    const: oneplus,aston-boe-aa551
+
+  reg:
+    maxItems: 1
+    description: DSI virtual channel
+
+  vddio-supply:
+    description: 1.8 V I/O supply, which also feeds the Iris7P 1.8 V rail
+
+  vci-supply:
+    description: 3.0 V analog supply
+
+  reset-gpios: true
+
+  iris-vdd0p9-gpios:
+    maxItems: 1
+    description: Enable of the Iris7P 0.9 V core supply
+
+  iris-reset-gpios:
+    maxItems: 1
+    description: Iris7P reset
+
+  iris-wakeup-gpios:
+    maxItems: 1
+    description:
+      Iris7P wakeup line. The host also sends the Iris7P one-wire commands
+      on it, so it must be a GPIO that can be set without sleeping.
+
+  iris-abyp-ready-gpios:
+    maxItems: 1
+    description: Iris7P output that signals that its analog bypass is active
+
+  port: true
+
+required:
+  - compatible
+  - reg
+  - vddio-supply
+  - vci-supply
+  - reset-gpios
+  - iris-vdd0p9-gpios
+  - iris-reset-gpios
+  - iris-wakeup-gpios
+  - iris-abyp-ready-gpios
+  - port
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    dsi {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        panel@0 {
+            compatible = "oneplus,aston-boe-aa551";
+            reg = <0>;
+
+            vddio-supply = <&vreg_l12b_1p8>;
+            vci-supply = <&vreg_l13b_3p0>;
+
+            reset-gpios = <&tlmm 133 GPIO_ACTIVE_LOW>;
+
+            iris-vdd0p9-gpios = <&tlmm 105 GPIO_ACTIVE_HIGH>;
+            iris-reset-gpios = <&tlmm 109 GPIO_ACTIVE_LOW>;
+            iris-wakeup-gpios = <&tlmm 129 GPIO_ACTIVE_HIGH>;
+            iris-abyp-ready-gpios = <&tlmm 181 GPIO_ACTIVE_HIGH>;
+
+            port {
+                endpoint {
+                    remote-endpoint = <&mdss_dsi0_out>;
+                };
+            };
+        };
+    };
+...
