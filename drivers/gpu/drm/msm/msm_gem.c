@@ -10,6 +10,7 @@
 #include <linux/shmem_fs.h>
 #include <linux/dma-buf.h>
 #include <linux/pagemap.h>
+#include <linux/delay.h>
 
 #include <drm/drm_dumb_buffers.h>
 #include <drm/drm_prime.h>
@@ -40,50 +41,157 @@ static void update_ctx_mem(struct drm_file *file, ssize_t size)
 
 }
 
-static int msm_gem_open(struct drm_gem_object *obj, struct drm_file *file)
-{
-	msm_gem_vma_get(obj);
-	update_ctx_mem(file, obj->size);
-	return 0;
-}
-
 static void put_iova_spaces(struct drm_gem_object *obj, struct drm_gpuvm *vm,
 			    bool close, const char *reason);
+
+/*
+ * One entry per object/device-file pair, allocated on open rather than close.
+ * The reference keeps both the object and its reservation alive until the
+ * last handle's deferred teardown completes. gem_lock protects all fields.
+ */
+struct msm_gem_handle {
+	struct drm_gem_object *obj;
+	unsigned int handles;
+	struct list_head close_node;
+};
+
+static void msm_gem_close_worker(struct work_struct *work)
+{
+	struct msm_context *ctx = container_of(work, struct msm_context, gem_close_work);
+	struct msm_gem_handle *entry;
+
+	for (;;) {
+		struct drm_gem_object *obj;
+		struct drm_exec exec;
+		bool release;
+		int ret;
+
+		mutex_lock(&ctx->gem_lock);
+		if (list_empty(&ctx->gem_close_list)) {
+			mutex_unlock(&ctx->gem_lock);
+			return;
+		}
+		entry = list_first_entry(&ctx->gem_close_list,
+					 struct msm_gem_handle, close_node);
+		obj = entry->obj;
+
+		/* Reopening a handle cancels its pending mapping teardown. */
+		if (entry->handles || !ctx->vm || msm_context_is_vmbind(ctx))
+			goto finish;
+
+		ret = msm_gem_lock_vm_and_obj(&exec, obj, ctx->vm);
+		if (ret) {
+			drm_exec_fini(&exec);
+			mutex_unlock(&ctx->gem_lock);
+			/* Retain ownership on allocation failure; never unmap unlocked. */
+			msleep(20);
+			continue;
+		}
+
+		/*
+		 * Recheck under the reservation lock: a submission or an external
+		 * dma-buf user could have added a fence since the previous wait.
+		 * Never hold gem_lock or the reservation locks across a GPU wait.
+		 */
+		if (!dma_resv_test_signaled(obj->resv, DMA_RESV_USAGE_BOOKKEEP)) {
+			drm_exec_fini(&exec);
+			mutex_unlock(&ctx->gem_lock);
+			dma_resv_wait_timeout(obj->resv, DMA_RESV_USAGE_BOOKKEEP,
+					      false, MAX_SCHEDULE_TIMEOUT);
+			continue;
+		}
+
+		/* gem_lock excludes reopen until the old mapping is gone. */
+		put_iova_spaces(obj, ctx->vm, true, "deferred close");
+		drm_exec_fini(&exec);
+finish:
+		list_del_init(&entry->close_node);
+		release = !entry->handles;
+		if (release)
+			xa_erase(&ctx->gem_objects, (unsigned long)obj);
+		mutex_unlock(&ctx->gem_lock);
+
+		/* Destruction can acquire VM locks; do it outside gem_lock. */
+		if (release) {
+			drm_gem_object_put(obj);
+			kfree(entry);
+		}
+	}
+}
+
+void msm_gem_context_init(struct msm_context *ctx)
+{
+	mutex_init(&ctx->gem_lock);
+	xa_init(&ctx->gem_objects);
+	INIT_LIST_HEAD(&ctx->gem_close_list);
+	INIT_WORK(&ctx->gem_close_work, msm_gem_close_worker);
+}
+
+void msm_gem_context_close(struct msm_context *ctx)
+{
+	/* DRM has released all handles and no ioctl can queue more work. */
+	flush_work(&ctx->gem_close_work);
+	GEM_WARN_ON(!list_empty(&ctx->gem_close_list));
+	GEM_WARN_ON(!xa_empty(&ctx->gem_objects));
+	xa_destroy(&ctx->gem_objects);
+}
+
+static int msm_gem_open(struct drm_gem_object *obj, struct drm_file *file)
+{
+	struct msm_context *ctx = file->driver_priv;
+	struct msm_gem_handle *entry;
+	int ret = 0;
+
+	mutex_lock(&ctx->gem_lock);
+	entry = xa_load(&ctx->gem_objects, (unsigned long)obj);
+	if (!entry) {
+		entry = kzalloc_obj(*entry);
+		if (!entry) {
+			ret = -ENOMEM;
+			goto unlock;
+		}
+		entry->obj = obj;
+		INIT_LIST_HEAD(&entry->close_node);
+		ret = xa_err(xa_store(&ctx->gem_objects, (unsigned long)obj,
+				      entry, GFP_KERNEL));
+		if (ret) {
+			kfree(entry);
+			goto unlock;
+		}
+		drm_gem_object_get(obj);
+	}
+	entry->handles++;
+	msm_gem_vma_get(obj);
+	update_ctx_mem(file, obj->size);
+unlock:
+	mutex_unlock(&ctx->gem_lock);
+	return ret;
+}
 
 static void msm_gem_close(struct drm_gem_object *obj, struct drm_file *file)
 {
 	struct msm_context *ctx = file->driver_priv;
-	struct drm_exec exec;
+	struct msm_gem_handle *entry;
+	bool synchronous;
 
 	update_ctx_mem(file, -obj->size);
 	msm_gem_vma_put(obj);
 
-	/*
-	 * If VM isn't created yet, nothing to cleanup.  And in fact calling
-	 * put_iova_spaces() with vm=NULL would be bad, in that it will tear-
-	 * down the mappings of shared buffers in other contexts.
-	 */
-	if (!ctx->vm)
-		return;
+	mutex_lock(&ctx->gem_lock);
+	/* Older GPUs can share one global VM between unrelated contexts. */
+	synchronous = ctx->vm && !to_msm_vm(ctx->vm)->pid;
+	entry = xa_load(&ctx->gem_objects, (unsigned long)obj);
+	if (GEM_WARN_ON(!entry || !entry->handles))
+		goto unlock;
 
-	/*
-	 * VM_BIND does not depend on implicit teardown of VMAs on handle
-	 * close, but instead on implicit teardown of the VM when the device
-	 * is closed (see msm_gem_vm_close())
-	 */
-	if (msm_context_is_vmbind(ctx))
-		return;
-
-	/*
-	 * TODO we might need to kick this to a queue to avoid blocking
-	 * in CLOSE ioctl
-	 */
-	dma_resv_wait_timeout(obj->resv, DMA_RESV_USAGE_BOOKKEEP, false,
-			      MAX_SCHEDULE_TIMEOUT);
-
-	msm_gem_lock_vm_and_obj(&exec, obj, ctx->vm);
-	put_iova_spaces(obj, ctx->vm, true, "close");
-	drm_exec_fini(&exec);     /* drop locks */
+	if (!--entry->handles && list_empty(&entry->close_node)) {
+		list_add_tail(&entry->close_node, &ctx->gem_close_list);
+		queue_work(system_dfl_wq, &ctx->gem_close_work);
+	}
+unlock:
+	mutex_unlock(&ctx->gem_lock);
+	if (synchronous)
+		flush_work(&ctx->gem_close_work);
 }
 
 /*

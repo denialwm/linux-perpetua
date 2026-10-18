@@ -13,6 +13,7 @@
 #include <linux/interconnect.h>
 #include <linux/pm_opp.h>
 #include <linux/regulator/consumer.h>
+#include <linux/xarray.h>
 
 #include "msm_drv.h"
 #include "msm_fence.h"
@@ -392,6 +393,14 @@ msm_gpu_sysprof_no_ifpc(struct msm_gpu *gpu)
  * struct msm_context - per-drm_file context
  */
 struct msm_context {
+	/** @gem_lock: protects the GEM handle tracking below */
+	struct mutex gem_lock;
+	/** @gem_objects: per-object handle counts, indexed by object */
+	struct xarray gem_objects;
+	/** @gem_close_list: objects whose last handle was closed */
+	struct list_head gem_close_list;
+	/** @gem_close_work: tears down the mappings of closed objects */
+	struct work_struct gem_close_work;
 	/** @ctxlock: synchronizes access to submitqueues list, etc */
 	struct rw_semaphore ctxlock;
 	/** @submitqueues: list of &msm_gpu_submitqueue created by userspace */

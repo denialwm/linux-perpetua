@@ -164,6 +164,10 @@ void msm_gem_vm_close(struct drm_gpuvm *gpuvm);
 void msm_gem_vm_unusable(struct drm_gpuvm *gpuvm);
 
 struct msm_fence_context;
+struct msm_context;
+
+void msm_gem_context_init(struct msm_context *ctx);
+void msm_gem_context_close(struct msm_context *ctx);
 
 #define MSM_VMA_DUMP (DRM_GPUVA_USERBITS << 0)
 

@@ -252,6 +252,7 @@ static int context_init(struct drm_device *dev, struct drm_file *file)
 
 	INIT_LIST_HEAD(&ctx->submitqueues);
 	init_rwsem(&ctx->ctxlock);
+	msm_gem_context_init(ctx);
 
 	kref_init(&ctx->ref);
 	msm_submitqueue_init(dev, ctx);
@@ -276,6 +277,7 @@ static int msm_open(struct drm_device *dev, struct drm_file *file)
 static void context_close(struct msm_context *ctx)
 {
 	ctx->closed = true;
+	msm_gem_context_close(ctx);
 	msm_submitqueue_close(ctx);
 	msm_context_put(ctx);
 }
