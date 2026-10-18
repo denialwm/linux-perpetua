@@ -1,0 +1,220 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Physical temperature sensors fitted to the OnePlus Ace 3 (Aston).
+ *
+ * The channel list is derived from the Aston Android runtime FDT and the
+ * Qualcomm Kalama PMIC overlay.  Keep duplicate consumer names out of this
+ * list: PM8550B channel 0x49 is the same physical input used by the vendor
+ * tree as both wls_therm and the right USB connector thermistor.
+ */
+
+/ {
+	iio-hwmon {
+		compatible = "iio-hwmon";
+		io-channels = <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(0)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX1_THM_100K_PU(0)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX6_THM_100K_PU(1)>,
+			      <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(1)>,
+			      <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(7)>,
+			      <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(2)>,
+			      <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(3)>,
+			      <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(4)>,
+			      <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(6)>,
+			      <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(5)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX1_THM_100K_PU(1)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX2_THM_100K_PU(1)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX3_THM_100K_PU(1)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX4_THM_100K_PU(1)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX5_THM_100K_PU(1)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX4_THM_100K_PU(7)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX6_THM_100K_PU(7)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX4_GPIO_100K_PU(1)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX2_GPIO_100K_PU(7)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX3_GPIO_100K_PU(7)>,
+			      <&pmk8550_vadc ADC5_GEN3_AMUX1_THM_100K_PU(7)>;
+	};
+};
+
+&pm8550_gpios {
+	aston_svooc_therm_default: aston-svooc-therm-state {
+		pins = "gpio12";
+		function = "normal";
+		bias-high-impedance;
+	};
+};
+
+/* Replace the temp-alarm fallback stage with calibrated ADC readings. */
+&pm8550_temp_alarm {
+	io-channels = <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(1)>;
+	io-channel-names = "thermal";
+};
+
+&pm8550b_gpios {
+	aston_connector_therms_default: aston-connector-therms-state {
+		pins = "gpio5", "gpio6", "gpio10";
+		function = "normal";
+		bias-high-impedance;
+	};
+};
+
+&pm8550b_temp_alarm {
+	io-channels = <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(7)>;
+	io-channel-names = "thermal";
+};
+
+&pm8550ve_temp_alarm {
+	io-channels = <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(5)>;
+	io-channel-names = "thermal";
+};
+
+&pm8550vs_c_temp_alarm {
+	io-channels = <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(2)>;
+	io-channel-names = "thermal";
+};
+
+&pm8550vs_d_temp_alarm {
+	io-channels = <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(3)>;
+	io-channel-names = "thermal";
+};
+
+&pm8550vs_e_temp_alarm {
+	io-channels = <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(4)>;
+	io-channel-names = "thermal";
+};
+
+&pm8550vs_g_temp_alarm {
+	io-channels = <&pmk8550_vadc ADC5_GEN3_DIE_TEMP(6)>;
+	io-channel-names = "thermal";
+};
+
+&pmk8550_vadc {
+	pinctrl-0 = <&aston_svooc_therm_default>,
+		    <&aston_connector_therms_default>;
+	pinctrl-names = "default";
+
+	channel@44 {
+		reg = <ADC5_GEN3_AMUX1_THM_100K_PU(0)>;
+		label = "pmk8550_xo_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@103 {
+		reg = <ADC5_GEN3_DIE_TEMP(1)>;
+		label = "pm8550_die_temp";
+	};
+
+	channel@144 {
+		reg = <ADC5_GEN3_AMUX1_THM_100K_PU(1)>;
+		label = "skin_msm_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@145 {
+		reg = <ADC5_GEN3_AMUX2_THM_100K_PU(1)>;
+		label = "cam_flash_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@146 {
+		reg = <ADC5_GEN3_AMUX3_THM_100K_PU(1)>;
+		label = "wlan_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@147 {
+		reg = <ADC5_GEN3_AMUX4_THM_100K_PU(1)>;
+		label = "pa_therm_1";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@148 {
+		reg = <ADC5_GEN3_AMUX5_THM_100K_PU(1)>;
+		label = "rear_tof_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@149 {
+		reg = <ADC5_GEN3_AMUX6_THM_100K_PU(1)>;
+		label = "pm8550_exp2_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@14d {
+		reg = <ADC5_GEN3_AMUX4_GPIO_100K_PU(1)>;
+		label = "svooc_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@203 {
+		reg = <ADC5_GEN3_DIE_TEMP(2)>;
+		label = "pm8550vs_c_die_temp";
+	};
+
+	channel@303 {
+		reg = <ADC5_GEN3_DIE_TEMP(3)>;
+		label = "pm8550vs_d_die_temp";
+	};
+
+	channel@403 {
+		reg = <ADC5_GEN3_DIE_TEMP(4)>;
+		label = "pm8550vs_e_die_temp";
+	};
+
+	channel@503 {
+		reg = <ADC5_GEN3_DIE_TEMP(5)>;
+		label = "pm8550ve_die_temp";
+	};
+
+	channel@603 {
+		reg = <ADC5_GEN3_DIE_TEMP(6)>;
+		label = "pm8550vs_g_die_temp";
+	};
+
+	channel@703 {
+		reg = <ADC5_GEN3_DIE_TEMP(7)>;
+		label = "pm8550b_die_temp";
+	};
+
+	channel@744 {
+		reg = <ADC5_GEN3_AMUX1_THM_100K_PU(7)>;
+		label = "batt0_connector_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@747 {
+		reg = <ADC5_GEN3_AMUX4_THM_100K_PU(7)>;
+		label = "usb_connector_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@749 {
+		reg = <ADC5_GEN3_AMUX6_THM_100K_PU(7)>;
+		label = "usb_right_wls_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@74b {
+		reg = <ADC5_GEN3_AMUX2_GPIO_100K_PU(7)>;
+		label = "usb_left_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@74c {
+		reg = <ADC5_GEN3_AMUX3_GPIO_100K_PU(7)>;
+		label = "subboard_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+};
