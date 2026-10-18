@@ -1133,6 +1133,7 @@ properties:
 
       - items:
           - enum:
+              - oneplus,aston
               - qcom,sm8550-hdk
               - qcom,sm8550-mtp
               - qcom,sm8550-qrd
