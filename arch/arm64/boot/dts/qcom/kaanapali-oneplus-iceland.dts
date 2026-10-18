@@ -1483,6 +1483,14 @@
 };
 
 &usb {
+	/*
+	 * Role changes from the Type-C port are not wired up yet, and the
+	 * SuperSpeed lanes may carry DisplayPort: stay a high-speed peripheral.
+	 */
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+	/delete-property/ usb-role-switch;
+
 	status = "okay";
 };
 
