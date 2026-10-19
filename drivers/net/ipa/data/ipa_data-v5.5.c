@@ -50,13 +50,13 @@ enum ipa_rsrc_group_id {
 /* QSB configuration data for an SoC having IPA v5.5 */
 static const struct ipa_qsb_data ipa_qsb_data[] = {
 	[IPA_QSB_MASTER_DDR] = {
-		.max_writes		= 0,	/* Unlimited */
-		.max_reads		= 12,
+		.max_writes		= 12,
+		.max_reads		= 0,	/* no limit (hardware max) */
 		.max_reads_beats	= 0,
 	},
 	[IPA_QSB_MASTER_PCIE] = {
-		.max_writes		= 0,	/* Unlimited */
-		.max_reads		= 8,
+		.max_writes		= 8,
+		.max_reads		= 0,	/* no limit (hardware max) */
 		.max_reads_beats	= 0,
 	},
 };
