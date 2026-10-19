@@ -27,6 +27,7 @@ description: |
       into the internal FIFO memory of the haptics module and continuously
       replenished via the FIFO-empty IRQ until all samples have been played.
       An 8K-byte FIFO memory bank is available in the HAP530_HV haptics module,
+      and a 2K-byte one in the HAP525_HV haptics module of the PM8550B PMIC,
       shared between the FIFO and PAT_MEM play modes. The memory partition
       between the two modes is configurable via registers, and FIFO mode always
       uses the 1st partition starting from offset 0.
@@ -64,7 +65,9 @@ description: |
 properties:
   compatible:
     items:
-      - const: qcom,pmih0108-haptics
+      - enum:
+          - qcom,pm8550b-haptics
+          - qcom,pmih0108-haptics
       - const: qcom,spmi-haptics
 
   reg:
