@@ -760,6 +760,16 @@ static ssize_t gs_write(struct tty_struct *tty, const u8 *buf, size_t count)
 			port->port_num, tty, count);
 
 	spin_lock_irqsave(&port->port_lock, flags);
+	/*
+	 * Without a host the line has no carrier. Like a UART without a
+	 * cable, discard the output instead of stalling the writer until a
+	 * host appears.
+	 */
+	if (!port->port_usb) {
+		spin_unlock_irqrestore(&port->port_lock, flags);
+		return count;
+	}
+
 	if (count)
 		count = kfifo_in(&port->port_write_buf, buf, count);
 
@@ -831,6 +841,8 @@ static unsigned int gs_write_room(struct tty_struct *tty)
 	spin_lock_irqsave(&port->port_lock, flags);
 	if (port->port_usb)
 		room = kfifo_avail(&port->port_write_buf);
+	else
+		room = WRITE_BUF_SIZE;
 	spin_unlock_irqrestore(&port->port_lock, flags);
 
 	pr_vdebug("gs_write_room: (%d,%p) room=%u\n",
