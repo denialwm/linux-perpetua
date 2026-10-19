@@ -389,6 +389,18 @@ static const struct a6xx_gmu_oob_bits a6xx_gmu_oob_bits[] = {
 	},
 };
 
+/*
+ * Wait for a fault devcoredump that may be wedging the GMU, for a bounded
+ * time. The fault handler captures the dump under gpu->lock, which the
+ * recovery worker holds while it talks to the GMU: an unbounded wait would
+ * deadlock the two, leaving the SMMU stalled and the GPU dead.
+ */
+bool a6xx_gmu_wait_fault_coredump(struct a6xx_gpu *a6xx_gpu)
+{
+	return wait_for_completion_timeout(&a6xx_gpu->base.fault_coredump_done,
+					   msecs_to_jiffies(1000));
+}
+
 /* Trigger a OOB (out of band) request to the GMU */
 int a6xx_gmu_set_oob(struct a6xx_gmu *gmu, enum a6xx_gmu_oob_state state)
 {
@@ -439,7 +451,8 @@ int a6xx_gmu_set_oob(struct a6xx_gmu *gmu, enum a6xx_gmu_oob_state state)
 		 * pending faults from the GPU and we are taking a devcoredump.
 		 * Wait until the MMU is resumed and try again.
 		 */
-		wait_for_completion(&a6xx_gpu->base.fault_coredump_done);
+		if (!a6xx_gmu_wait_fault_coredump(a6xx_gpu))
+			break;
 	} while (true);
 
 	if (ret)

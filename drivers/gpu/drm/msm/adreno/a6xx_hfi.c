@@ -129,7 +129,8 @@ static int a6xx_hfi_wait_for_msg_interrupt(struct a6xx_gmu *gmu, u32 id, u32 seq
 		 * pending faults from the GPU and we are taking a devcoredump.
 		 * Wait until the MMU is resumed and try again.
 		 */
-		wait_for_completion(&a6xx_gpu->base.fault_coredump_done);
+		if (!a6xx_gmu_wait_fault_coredump(a6xx_gpu))
+			break;
 	} while (true);
 
 	if (ret) {
