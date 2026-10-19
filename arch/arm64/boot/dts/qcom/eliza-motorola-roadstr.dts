@@ -141,12 +141,19 @@
 	};
 
 	/* Battery and charger, served by the ADSP charger PD */
-	pmic-glink {
+	pmic_glink: pmic-glink {
 		compatible = "qcom,eliza-pmic-glink",
 			     "qcom,sm8550-pmic-glink",
 			     "qcom,pmic-glink";
 		#address-cells = <1>;
 		#size-cells = <0>;
+		#cooling-cells = <2>;
+
+		/* The stock charger's thermal mitigation table */
+		qcom,charge-current-limits-microamp = <6000000 5000000 4000000
+						       3500000 3000000 2000000
+						       1500000 1000000 500000
+						       300000>;
 
 		connector@0 {
 			compatible = "usb-c-connector";
@@ -183,6 +190,125 @@
 		splash_mem: splash@fc800000 {
 			reg = <0x0 0xfc800000 0x0 0x2b00000>;
 			no-map;
+		};
+	};
+
+	/*
+	 * Motorola's estimate of the back cover temperature, BACK_TEMP in the
+	 * stock thermal-engine-roadstr.conf: a weighted average of the board
+	 * thermistors and the battery.
+	 */
+	back_temp: thermal-sensor-back {
+		compatible = "weighted-thermal-sensor";
+		#thermal-sensor-cells = <0>;
+		zone-names = "msm-thermal", "pa0-thermal", "cam-thermal",
+			     "qcom-battmgr-bat";
+		weights = <10 15 15 60>;
+	};
+
+	thermal-zones {
+		/*
+		 * The stock firmware throttles charging on BACK_TEMP with two
+		 * rules, both with 2 C of hysteresis: MON-CHG-BATT limits the
+		 * battery current from 37 C and MON-CHG-PUMP limits the charge
+		 * pump output from 32 C. The firmware takes one limit here, so
+		 * each trip applies the stricter of the two.
+		 */
+		back-thermal {
+			polling-delay-passive = <10000>;
+			polling-delay = <10000>;
+			thermal-sensors = <&back_temp>;
+
+			trips {
+				back_charge_5a: trip-37 {
+					temperature = <37000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				back_charge_4a: trip-38 {
+					temperature = <38000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				back_charge_3a: trip-39 {
+					temperature = <39000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				back_charge_2a: trip-41 {
+					temperature = <41000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				back_charge_1a: trip-44 {
+					temperature = <44000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				/* Only the stock "auto" profile has this step. */
+				back_charge_500ma: trip-46 {
+					temperature = <46000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&back_charge_5a>;
+					cooling-device = <&pmic_glink 2 2>;
+				};
+
+				map1 {
+					trip = <&back_charge_4a>;
+					cooling-device = <&pmic_glink 3 3>;
+				};
+
+				map2 {
+					trip = <&back_charge_3a>;
+					cooling-device = <&pmic_glink 5 5>;
+				};
+
+				map3 {
+					trip = <&back_charge_2a>;
+					cooling-device = <&pmic_glink 6 6>;
+				};
+
+				map4 {
+					trip = <&back_charge_1a>;
+					cooling-device = <&pmic_glink 8 8>;
+				};
+
+				map5 {
+					trip = <&back_charge_500ma>;
+					cooling-device = <&pmic_glink 9 9>;
+				};
+			};
+		};
+
+		cam-thermal {
+			thermal-sensors = <&pmk8550_vadc ADC5_GEN3_AMUX3_GPIO_100K_PU(1)>;
+		};
+
+		conn-thermal {
+			thermal-sensors = <&pmk8550_vadc ADC5_GEN3_AMUX4_THM_100K_PU(7)>;
+		};
+
+		msm-thermal {
+			thermal-sensors = <&pmk8550_vadc ADC5_GEN3_AMUX4_THM_100K_PU(1)>;
+		};
+
+		pa0-thermal {
+			thermal-sensors = <&pmk8550_vadc ADC5_GEN3_AMUX3_THM_100K_PU(1)>;
+		};
+
+		quiet-thermal {
+			thermal-sensors = <&pmk8550_vadc ADC5_GEN3_AMUX2_GPIO_100K_PU(1)>;
 		};
 	};
 };
@@ -449,12 +575,24 @@
 };
 
 &pm7550_gpios {
+	cam_therm_default: cam-therm-default-state {
+		pins = "gpio7";
+		function = "normal";
+		bias-high-impedance;
+	};
+
 	key_vol_up_default: key-vol-up-default-state {
 		pins = "gpio6";
 		function = "normal";
 		input-enable;
 		bias-pull-up;
 		power-source = <1>;
+	};
+
+	quiet_therm_default: quiet-therm-default-state {
+		pins = "gpio4";
+		function = "normal";
+		bias-high-impedance;
 	};
 };
 
@@ -494,6 +632,57 @@
 		output-enable;
 		bias-disable;
 		power-source = <0>;
+	};
+};
+
+/* Board thermistors, named as in the stock device tree */
+&pmk8550_vadc {
+	pinctrl-0 = <&cam_therm_default>, <&quiet_therm_default>;
+	pinctrl-names = "default";
+
+	channel@146 {
+		reg = <ADC5_GEN3_AMUX3_THM_100K_PU(1)>;
+		label = "pa0_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+		qcom,adc-tm;
+	};
+
+	channel@147 {
+		reg = <ADC5_GEN3_AMUX4_THM_100K_PU(1)>;
+		label = "msm_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+		qcom,adc-tm;
+	};
+
+	channel@14b {
+		reg = <ADC5_GEN3_AMUX2_GPIO_100K_PU(1)>;
+		label = "quiet_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+		qcom,adc-tm;
+	};
+
+	channel@14c {
+		reg = <ADC5_GEN3_AMUX3_GPIO_100K_PU(1)>;
+		label = "cam_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+		qcom,adc-tm;
+	};
+
+	channel@747 {
+		reg = <ADC5_GEN3_AMUX4_THM_100K_PU(7)>;
+		label = "conn_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+		qcom,adc-tm;
 	};
 };
 
