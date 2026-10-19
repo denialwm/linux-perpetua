@@ -55,6 +55,15 @@
 			#interrupt-cells = <2>;
 		};
 
+		pm8550b_haptics: haptics@f000 {
+			compatible = "qcom,pm8550b-haptics", "qcom,spmi-haptics";
+			reg = <0xf000>, <0xf100>;
+			reg-names = "cfg", "ptn";
+			interrupts = <0x7 0xf0 0x1 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "fifo-empty";
+			status = "disabled";
+		};
+
 		pm8550b_eusb2_repeater: phy@fd00 {
 			compatible = "qcom,pm8550b-eusb2-repeater";
 			reg = <0xfd00>;
