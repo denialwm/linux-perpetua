@@ -479,6 +479,7 @@ const struct ipa_data ipa_data_v5_5 = {
 	.qsb_count		= ARRAY_SIZE(ipa_qsb_data),
 	.qsb_data		= ipa_qsb_data,
 	.modem_route_count	= 11,
+	.modem_fnr_count	= 52,
 	.endpoint_count		= ARRAY_SIZE(ipa_gsi_endpoint_data),
 	.endpoint_data		= ipa_gsi_endpoint_data,
 	.resource_data		= &ipa_resource_data,

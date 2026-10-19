@@ -76,6 +76,9 @@
 
 #define QMI_INIT_DRIVER_TIMEOUT		60000	/* A minute in milliseconds */
 
+#define IPA_MODEM_FNR_START		128	/* Modem's first FnR counter */
+#define IPA_FNR_COUNTER_SIZE		16	/* Bytes per FnR counter */
+
 /* Send an INIT_COMPLETE indication message to the modem */
 static void ipa_server_init_complete(struct ipa_qmi *ipa_qmi)
 {
@@ -281,6 +284,7 @@ init_modem_driver_req(struct ipa_qmi *ipa_qmi)
 {
 	struct ipa *ipa = container_of(ipa_qmi, struct ipa, qmi);
 	u32 modem_route_count = ipa->modem_route_count;
+	u32 modem_fnr_count = ipa->modem_fnr_count;
 	static struct ipa_init_modem_driver_req req;
 	const struct ipa_mem *mem;
 
@@ -392,6 +396,20 @@ init_modem_driver_req(struct ipa_qmi *ipa_qmi)
 			req.hw_stats_drop_size_valid = 1;
 			req.hw_stats_drop_size = ipa->mem_offset + mem->size;
 		}
+	}
+
+	/* Tell the modem which filter and route statistics counters it owns */
+	mem = ipa_mem_find(ipa, IPA_MEM_STATS_FILTER_ROUTE);
+	if (modem_fnr_count && mem && mem->size >=
+	    (IPA_MODEM_FNR_START + modem_fnr_count) * IPA_FNR_COUNTER_SIZE) {
+		req.hw_stats_filter_info_valid = 1;
+		req.hw_stats_filter_info.start_addr =
+			ipa->mem_offset + mem->offset;
+		req.hw_stats_filter_info.size =
+			modem_fnr_count * IPA_FNR_COUNTER_SIZE;
+		req.hw_stats_filter_info.start_index = IPA_MODEM_FNR_START;
+		req.hw_stats_filter_info.end_index =
+			IPA_MODEM_FNR_START + modem_fnr_count - 1;
 	}
 
 	return &req;

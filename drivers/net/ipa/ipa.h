@@ -35,6 +35,7 @@ struct ipa_smp2p;
  * @table_virt:		Virtual address of filter/route table content
  * @route_count:	Total number of entries in a routing table
  * @modem_route_count:	Number of modem entries in a routing table
+ * @modem_fnr_count:	Number of modem filter/route statistics counters
  * @filter_count:	Maximum number of entries in a filter table
  * @interrupt:		IPA Interrupt information
  * @uc_powered:		true if power is active by proxy for microcontroller
@@ -84,6 +85,7 @@ struct ipa {
 	__le64 *table_virt;
 	u32 route_count;
 	u32 modem_route_count;
+	u32 modem_fnr_count;
 	u32 filter_count;
 
 	struct ipa_interrupt *interrupt;
