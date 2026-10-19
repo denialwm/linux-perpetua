@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/thermal/weighted-thermal-sensor.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Weighted average of thermal zones
+
+maintainers:
+  - Doctor Logix <doctor.logix@gmail.com>
+
+description:
+  A thermal sensor whose temperature is a weighted average of other thermal
+  zones. Phones estimate the temperature of surfaces that carry no
+  thermistor, such as the back cover, this way and throttle charging and
+  performance on the estimate.
+
+allOf:
+  - $ref: thermal-sensor.yaml#
+
+properties:
+  compatible:
+    const: weighted-thermal-sensor
+
+  '#thermal-sensor-cells':
+    const: 0
+
+  zone-names:
+    $ref: /schemas/types.yaml#/definitions/string-array
+    description: Names of the thermal zones to average.
+    minItems: 1
+
+  weights:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description:
+      Relative weight of each zone in zone-names, in the same order. The
+      weights need not add up to any particular total.
+    minItems: 1
+
+required:
+  - compatible
+  - '#thermal-sensor-cells'
+  - zone-names
+  - weights
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    thermal-sensor-back {
+        compatible = "weighted-thermal-sensor";
+        #thermal-sensor-cells = <0>;
+        zone-names = "msm-thermal", "pa0-thermal", "cam-thermal", "battery";
+        weights = <10 15 15 60>;
+    };
+...
