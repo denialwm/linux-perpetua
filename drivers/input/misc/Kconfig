@@ -240,9 +240,9 @@ config INPUT_QCOM_SPMI_HAPTICS
 	tristate "Qualcomm SPMI PMIC haptics support"
 	depends on MFD_SPMI_PMIC
 	help
-	  Say Y to enable support for the Qualcomm PMIH0108 SPMI PMIC haptics
-	  module. Supports DIRECT_PLAY, FIFO streaming play modes via the
-	  Linux input force-feedback framework.
+	  Say Y to enable support for the haptics module of the Qualcomm
+	  PM8550B and PMIH0108 SPMI PMICs. Supports DIRECT_PLAY, FIFO
+	  streaming play modes via the Linux input force-feedback framework.
 
 	  To compile this driver as a module, choose M here: the module will
 	  be called qcom-spmi-haptics.

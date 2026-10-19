@@ -21,6 +21,11 @@
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
 
+/* REVISION2 of both HAP_CFG and HAP_PTN holds the module major revision */
+#define HAP_REVISION2_REG		0x01
+#define  HAP525_HV_REV			4
+#define  HAP530_HV_REV			5
+
 /* HAP_CFG register offsets, bit fields, value constants */
 #define HAP_CFG_INT_RT_STS_REG		0x10
 #define  FIFO_EMPTY_BIT			BIT(1)
@@ -62,8 +67,9 @@
 #define  SC_CLR_BIT			BIT(2)
 #define  AUTO_RES_ERR_CLR_BIT		BIT(1)
 #define  HPWR_RDY_FAULT_CLR_BIT		BIT(0)
-#define  FAULT_CLR_ALL	(ZX_TO_FAULT_CLR_BIT | SC_CLR_BIT | \
-			 AUTO_RES_ERR_CLR_BIT | HPWR_RDY_FAULT_CLR_BIT)
+#define  FAULT_CLR_HAP525	(SC_CLR_BIT | AUTO_RES_ERR_CLR_BIT | \
+				 HPWR_RDY_FAULT_CLR_BIT)
+#define  FAULT_CLR_HAP530	(FAULT_CLR_HAP525 | ZX_TO_FAULT_CLR_BIT)
 #define HAP_CFG_RAMP_DN_CFG2_REG	0x86
 #define  AUTORES_PRE_HIZ_DLY_10US	1
 
@@ -73,15 +79,15 @@
 #define  FIFO_PLAY_RATE_MASK		GENMASK(3, 0)
 #define HAP_PTN_DIRECT_PLAY_REG		0x26
 #define HAP_PTN_FIFO_EMPTY_CFG_REG	0x2A
-#define  FIFO_THRESH_LSB		64
 #define HAP_PTN_FIFO_DIN_1B_REG		0x2C
 #define HAP_PTN_MEM_OP_ACCESS_REG	0x2D
 #define  MEM_FLUSH_RELOAD_BIT		BIT(0)
 #define HAP_PTN_MMAP_FIFO_REG		0xA0
 #define  MMAP_FIFO_EXIST_BIT		BIT(7)
 #define  MMAP_FIFO_LEN_MASK		GENMASK(6, 0)
+#define HAP_PTN_MMAP_PAT1_REG		0xA1
+#define  MMAP_PAT_REGS			4
 
-#define HAP530_MEM_TOTAL_BYTES		8192
 #define FIFO_EMPTY_THRESH		256
 #define FIFO_INIT_FILL			320
 
@@ -159,12 +165,46 @@ struct haptics_play_req {
 };
 
 /**
+ * struct qcom_haptics_hw - Differences between haptics module revisions
+ * @mem_bytes:        memory shared by the FIFO and PAT_MEM play modes
+ * @fifo_mem_step:    bytes per unit of the MMAP_FIFO length
+ * @fifo_thresh_step: bytes per unit of the FIFO empty threshold
+ * @fault_clr:        all the bits of FAULT_CLR
+ * @pat_mmap:         the PATx_MEM partitions are set in MMAP_PAT1..4
+ */
+struct qcom_haptics_hw {
+	u32 mem_bytes;
+	u32 fifo_mem_step;
+	u32 fifo_thresh_step;
+	u8 fault_clr;
+	bool pat_mmap;
+};
+
+/* PM8550B */
+static const struct qcom_haptics_hw hap525_hv = {
+	.mem_bytes		= 2048,
+	.fifo_mem_step		= 128,
+	.fifo_thresh_step	= 32,
+	.fault_clr		= FAULT_CLR_HAP525,
+	.pat_mmap		= true,
+};
+
+/* PMIH0108 */
+static const struct qcom_haptics_hw hap530_hv = {
+	.mem_bytes		= 8192,
+	.fifo_mem_step		= 64,
+	.fifo_thresh_step	= 64,
+	.fault_clr		= FAULT_CLR_HAP530,
+};
+
+/**
  * struct qcom_haptics
  * @dev:          underlying SPMI device
  * @regmap:       regmap for SPMI register access
  * @input:        input device exposing the FF interface
  * @cfg_base:     base address of the CFG peripheral
  * @ptn_base:     base address of the PTN peripheral
+ * @hw:           revision-specific parameters of the module
  * @t_lra_us:     LRA resonance period in microseconds
  * @vmax_mv:      maximum actuator drive voltage in millivolts
  * @fifo_len:     programmed HW FIFO depth in bytes
@@ -194,6 +234,7 @@ struct qcom_haptics {
 
 	u32 cfg_base;
 	u32 ptn_base;
+	const struct qcom_haptics_hw *hw;
 	u32 t_lra_us;
 	u32 vmax_mv;
 	u32 fifo_len;
@@ -251,7 +292,7 @@ static int ptn_bulk_write(struct qcom_haptics *h, u32 off,
 
 static int haptics_clear_faults(struct qcom_haptics *h)
 {
-	return cfg_write(h, HAP_CFG_FAULT_CLR_REG, FAULT_CLR_ALL);
+	return cfg_write(h, HAP_CFG_FAULT_CLR_REG, h->hw->fault_clr);
 }
 
 static int haptics_set_vmax(struct qcom_haptics *h, u32 vmax_mv)
@@ -346,12 +387,20 @@ static int haptics_write_fifo_chunk(struct qcom_haptics *h,
 
 static int haptics_configure_fifo_mmap(struct qcom_haptics *h)
 {
+	static const u8 no_pat_mem[MMAP_PAT_REGS];
 	u32 fifo_len, fifo_units;
+	int err;
 
 	/* Config all memory space for FIFO usage for now */
-	fifo_len = HAP530_MEM_TOTAL_BYTES;
-	fifo_len = ALIGN_DOWN(fifo_len, 64);
-	fifo_units = fifo_len / 64;
+	if (h->hw->pat_mmap) {
+		err = ptn_bulk_write(h, HAP_PTN_MMAP_PAT1_REG, no_pat_mem,
+				     sizeof(no_pat_mem));
+		if (err)
+			return err;
+	}
+
+	fifo_len = ALIGN_DOWN(h->hw->mem_bytes, h->hw->fifo_mem_step);
+	fifo_units = fifo_len / h->hw->fifo_mem_step;
 	h->fifo_len = fifo_len;
 
 	return ptn_write(h, HAP_PTN_MMAP_FIFO_REG,
@@ -537,7 +586,7 @@ static int haptics_start_fifo(struct qcom_haptics *h, int effect_id)
 	data_done = (h->data_written >= h->data_len);
 	if (!data_done) {
 		err = ptn_write(h, HAP_PTN_FIFO_EMPTY_CFG_REG,
-				FIFO_EMPTY_THRESH / FIFO_THRESH_LSB);
+				FIFO_EMPTY_THRESH / h->hw->fifo_thresh_step);
 		if (err) {
 			dev_err(h->dev, "set FIFO empty threshold failed, err=%d\n", err);
 			h->fifo_data = NULL;
@@ -1055,6 +1104,31 @@ static void qcom_haptics_cleanup(void *data)
 	haptics_enable_module(h, false);
 }
 
+static int haptics_identify(struct qcom_haptics *h)
+{
+	u32 cfg_rev, ptn_rev;
+	int err;
+
+	err = regmap_read(h->regmap, h->cfg_base + HAP_REVISION2_REG, &cfg_rev);
+	if (err)
+		return err;
+
+	err = regmap_read(h->regmap, h->ptn_base + HAP_REVISION2_REG, &ptn_rev);
+	if (err)
+		return err;
+
+	if (cfg_rev == HAP525_HV_REV && ptn_rev == HAP525_HV_REV)
+		h->hw = &hap525_hv;
+	else if (cfg_rev == HAP530_HV_REV && ptn_rev == HAP530_HV_REV)
+		h->hw = &hap530_hv;
+	else
+		return dev_err_probe(h->dev, -ENODEV,
+				     "unsupported revisions: HAP_CFG %u, HAP_PTN %u\n",
+				     cfg_rev, ptn_rev);
+
+	return 0;
+}
+
 static int qcom_haptics_probe(struct platform_device *pdev)
 {
 	struct qcom_haptics *h;
@@ -1079,6 +1153,10 @@ static int qcom_haptics_probe(struct platform_device *pdev)
 
 	h->cfg_base = regs[0];
 	h->ptn_base = regs[1];
+
+	ret = haptics_identify(h);
+	if (ret)
+		return ret;
 
 	ret = device_property_read_u32(h->dev, "qcom,lra-period-us", &h->t_lra_us);
 	if (ret)
