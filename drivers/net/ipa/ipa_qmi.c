@@ -412,6 +412,12 @@ init_modem_driver_req(struct ipa_qmi *ipa_qmi)
 			IPA_MODEM_FNR_START + modem_fnr_count - 1;
 	}
 
+	/* Tell IPA v5.5+ modems the size of the SMEM item we allocated */
+	if (ipa->version >= IPA_VERSION_5_5 && ipa->smem_item_size) {
+		req.smem_info_valid = 1;
+		req.smem_info.size = ipa->smem_item_size;
+	}
+
 	return &req;
 }
 
