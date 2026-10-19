@@ -64,14 +64,21 @@ static irqreturn_t a6xx_hfi_irq(int irq, void *data)
 	struct a6xx_gmu *gmu = data;
 	u32 status;
 
-	status = gmu_read(gmu, REG_A6XX_GMU_GMU2HOST_INTR_INFO);
+	/*
+	 * Acknowledge only the fault: the message queue and OOB ack bits of
+	 * the same register belong to a6xx_hfi_wait_for_msg_interrupt() and
+	 * a6xx_gmu_set_oob(), which poll and clear them. Clearing them here
+	 * hides an answer that has already arrived, and the waiter times out.
+	 */
+	status = gmu_read(gmu, REG_A6XX_GMU_GMU2HOST_INTR_INFO) &
+		A6XX_GMU_GMU2HOST_INTR_INFO_CM3_FAULT;
+	if (!status)
+		return IRQ_NONE;
+
 	gmu_write(gmu, REG_A6XX_GMU_GMU2HOST_INTR_CLR, status);
 
-	if (status & A6XX_GMU_GMU2HOST_INTR_INFO_CM3_FAULT) {
-		dev_err_ratelimited(gmu->dev, "GMU firmware fault\n");
-
-		a6xx_gmu_fault(gmu);
-	}
+	dev_err_ratelimited(gmu->dev, "GMU firmware fault\n");
+	a6xx_gmu_fault(gmu);
 
 	return IRQ_HANDLED;
 }
