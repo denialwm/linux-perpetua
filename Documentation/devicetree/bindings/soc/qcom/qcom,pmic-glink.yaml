@@ -59,6 +59,17 @@ properties:
   '#size-cells':
     const: 0
 
+  '#cooling-cells':
+    const: 2
+
+  qcom,charge-current-limits-microamp:
+    description:
+      Battery charge current limits for thermal mitigation, in descending
+      order. Cooling state 0 leaves the firmware's own maximum; state N
+      limits the charge current to the Nth entry.
+    minItems: 1
+    maxItems: 32
+
   orientation-gpios:
     description: Array of input gpios for the Type-C connector orientation indication.
       The GPIO indication is used to detect the orientation of the Type-C connector.
@@ -87,6 +98,9 @@ patternProperties:
 
 required:
   - compatible
+
+dependencies:
+  '#cooling-cells': [ 'qcom,charge-current-limits-microamp' ]
 
 additionalProperties: false
 
