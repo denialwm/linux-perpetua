@@ -4,7 +4,9 @@
  * Copyright (C) 2018-2024 Linaro Ltd.
  */
 
+#include <linux/limits.h>
 #include <linux/qrtr.h>
+#include <linux/sizes.h>
 #include <linux/string.h>
 #include <linux/types.h>
 
@@ -78,6 +80,8 @@
 
 #define IPA_MODEM_FNR_START		128	/* Modem's first FnR counter */
 #define IPA_FNR_COUNTER_SIZE		16	/* Bytes per FnR counter */
+
+#define IPA_SMEM_PER_STATS_SIZE		SZ_2K	/* Peripheral statistics */
 
 /* Send an INIT_COMPLETE indication message to the modem */
 static void ipa_server_init_complete(struct ipa_qmi *ipa_qmi)
@@ -416,6 +420,14 @@ init_modem_driver_req(struct ipa_qmi *ipa_qmi)
 	if (ipa->version >= IPA_VERSION_5_5 && ipa->smem_item_size) {
 		req.smem_info_valid = 1;
 		req.smem_info.size = ipa->smem_item_size;
+
+		/* Peripheral statistics occupy the start of the item */
+		if (ipa->smem_item_size >= IPA_SMEM_PER_STATS_SIZE &&
+		    ipa->smem_item_addr <= U32_MAX) {
+			req.per_stats_smem_info_valid = 1;
+			req.per_stats_smem_info.start = ipa->smem_item_addr;
+			req.per_stats_smem_info.size = IPA_SMEM_PER_STATS_SIZE;
+		}
 	}
 
 	return &req;

@@ -579,6 +579,7 @@ static int ipa_smem_init(struct ipa *ipa, size_t size)
 
 	/* Align the address down and the size up to a page boundary */
 	addr = qcom_smem_virt_to_phys(virt);
+	ipa->smem_item_addr = addr;
 	phys = addr & PAGE_MASK;
 	size = PAGE_ALIGN(size + addr - phys);
 	iova = phys;	/* We just want a direct mapping */
@@ -612,6 +613,7 @@ static void ipa_smem_exit(struct ipa *ipa)
 		dev_err(dev, "couldn't get IPA IOMMU domain for SMEM\n");
 	}
 
+	ipa->smem_item_addr = 0;
 	ipa->smem_item_size = 0;
 	ipa->smem_size = 0;
 	ipa->smem_iova = 0;

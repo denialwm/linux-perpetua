@@ -718,6 +718,27 @@ const struct qmi_elem_info ipa_init_modem_driver_req_ei[] = {
 		.ei_array	= ipa_mem_range_ei,
 	},
 	{
+		.data_type	= QMI_OPT_FLAG,
+		.elem_len	= 1,
+		.elem_size	=
+			sizeof_field(struct ipa_init_modem_driver_req,
+				     per_stats_smem_info_valid),
+		.tlv_type	= 0x25,
+		.offset		= offsetof(struct ipa_init_modem_driver_req,
+					   per_stats_smem_info_valid),
+	},
+	{
+		.data_type	= QMI_STRUCT,
+		.elem_len	= 1,
+		.elem_size	=
+			sizeof_field(struct ipa_init_modem_driver_req,
+				     per_stats_smem_info),
+		.tlv_type	= 0x25,
+		.offset		= offsetof(struct ipa_init_modem_driver_req,
+					   per_stats_smem_info),
+		.ei_array	= ipa_mem_range_ei,
+	},
+	{
 		.data_type	= QMI_EOTI,
 	},
 };
