@@ -5556,8 +5556,8 @@
 				reg = <0x1c 0x4>;
 			};
 
-			ipa_modem_tables: modem-tables@8000 {
-				reg = <0x8000 0x2000>;
+			ipa_modem_tables: modem-tables@28000 {
+				reg = <0x28000 0x2000>;
 			};
 		};
 
