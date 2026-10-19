@@ -15,6 +15,7 @@
 #include <linux/soc/qcom/pdr.h>
 #include <linux/soc/qcom/pmic_glink.h>
 #include <linux/math.h>
+#include <linux/thermal.h>
 #include <linux/units.h>
 
 #define BATTMGR_CHEMISTRY_LEN	4
@@ -331,6 +332,20 @@ struct qcom_battmgr_oplus {
 	bool otg_state;
 };
 
+/*
+ * Thermal limit on the battery charge current. State 0 is the firmware's
+ * own maximum; state N applies the Nth entry of the board's table.
+ */
+struct qcom_battmgr_charge_limit {
+	u32 *levels_ua;
+	unsigned int num_levels;
+	unsigned long state;
+	/* Read from the firmware once its service is up; 0 until then. */
+	u32 max_ua;
+	/* What the firmware holds; 0 for its default after a (re)start. */
+	u32 applied_ua;
+};
+
 struct qcom_battmgr {
 	struct device *dev;
 	struct pmic_glink_client *client;
@@ -355,6 +370,7 @@ struct qcom_battmgr {
 	struct qcom_battmgr_usb usb;
 	struct qcom_battmgr_wireless wireless;
 	struct qcom_battmgr_oplus oplus;
+	struct qcom_battmgr_charge_limit charge_limit;
 
 	struct work_struct enable_work;
 	struct work_struct oplus_otg_work;
@@ -1608,10 +1624,27 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 		case BATT_CHG_CTRL_END_THR:
 			battmgr->info.charge_ctrl_end = le32_to_cpu(resp->intval.value);
 			break;
+		case BATT_CHG_CTRL_LIM_MAX:
+			battmgr->charge_limit.max_ua = le32_to_cpu(resp->intval.value);
+			break;
 		default:
 			dev_warn(battmgr->dev, "unknown property %#x\n", property);
 			break;
 		}
+		break;
+	case BATTMGR_BAT_PROPERTY_SET:
+	case BATTMGR_USB_PROPERTY_SET:
+	case BATTMGR_WLS_PROPERTY_SET:
+		if (payload_len != sizeof(resp->intval)) {
+			dev_warn(battmgr->dev,
+				 "invalid payload length for %#x: %zd\n",
+				 opcode, payload_len);
+			battmgr->error = -ENODATA;
+			break;
+		}
+
+		/* The firmware acknowledges a write with a nonzero code on failure. */
+		battmgr->error = le32_to_cpu(resp->intval.result) ? -EIO : 0;
 		break;
 	case BATTMGR_USB_PROPERTY_GET:
 		property = le32_to_cpu(resp->intval.property);
@@ -1717,6 +1750,133 @@ static void qcom_battmgr_callback(const void *data, size_t len, void *priv)
 		qcom_battmgr_sm8350_callback(battmgr, data, len);
 }
 
+/* Called with @battmgr->lock held. */
+static int qcom_battmgr_apply_charge_limit(struct qcom_battmgr *battmgr)
+{
+	struct qcom_battmgr_charge_limit *limit = &battmgr->charge_limit;
+	u32 limit_ua;
+	int ret;
+
+	/* The enable worker applies the state once the service is up. */
+	if (!battmgr->service_up)
+		return 0;
+
+	if (!limit->max_ua) {
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET,
+						    BATT_CHG_CTRL_LIM_MAX, 0);
+		if (ret)
+			return ret;
+		if (!limit->max_ua)
+			return -ENODATA;
+	}
+
+	limit_ua = limit->max_ua;
+	if (limit->state)
+		limit_ua = min(limit_ua, limit->levels_ua[limit->state - 1]);
+	if (limit_ua == limit->applied_ua)
+		return 0;
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
+					    BATT_CHG_CTRL_LIM, limit_ua);
+	if (ret) {
+		dev_err(battmgr->dev, "failed to limit the charge current to %u uA: %d\n",
+			limit_ua, ret);
+		return ret;
+	}
+
+	limit->applied_ua = limit_ua;
+
+	return 0;
+}
+
+static int qcom_battmgr_charge_get_max_state(struct thermal_cooling_device *cdev,
+					     unsigned long *state)
+{
+	struct qcom_battmgr *battmgr = cdev->devdata;
+
+	*state = battmgr->charge_limit.num_levels;
+
+	return 0;
+}
+
+static int qcom_battmgr_charge_get_cur_state(struct thermal_cooling_device *cdev,
+					     unsigned long *state)
+{
+	struct qcom_battmgr *battmgr = cdev->devdata;
+
+	*state = battmgr->charge_limit.state;
+
+	return 0;
+}
+
+static int qcom_battmgr_charge_set_cur_state(struct thermal_cooling_device *cdev,
+					     unsigned long state)
+{
+	struct qcom_battmgr *battmgr = cdev->devdata;
+	int ret;
+
+	if (state > battmgr->charge_limit.num_levels)
+		return -EINVAL;
+
+	mutex_lock(&battmgr->lock);
+	battmgr->charge_limit.state = state;
+	ret = qcom_battmgr_apply_charge_limit(battmgr);
+	mutex_unlock(&battmgr->lock);
+
+	return ret;
+}
+
+static const struct thermal_cooling_device_ops qcom_battmgr_charge_cooling_ops = {
+	.get_max_state = qcom_battmgr_charge_get_max_state,
+	.get_cur_state = qcom_battmgr_charge_get_cur_state,
+	.set_cur_state = qcom_battmgr_charge_set_cur_state,
+};
+
+/*
+ * A board that lists charge current limits gets a cooling device on the
+ * pmic-glink node, so its thermal zones can throttle charging.
+ */
+static int qcom_battmgr_charge_limit_init(struct qcom_battmgr *battmgr)
+{
+	const char *prop = "qcom,charge-current-limits-microamp";
+	struct qcom_battmgr_charge_limit *limit = &battmgr->charge_limit;
+	struct thermal_cooling_device *cdev;
+	struct device *dev = battmgr->dev;
+	int count, i, ret;
+
+	if (!device_property_present(dev, prop))
+		return 0;
+
+	count = device_property_count_u32(dev, prop);
+	if (count <= 0)
+		return dev_err_probe(dev, count ?: -EINVAL, "invalid %s\n", prop);
+
+	limit->levels_ua = devm_kcalloc(dev, count, sizeof(*limit->levels_ua), GFP_KERNEL);
+	if (!limit->levels_ua)
+		return -ENOMEM;
+
+	ret = device_property_read_u32_array(dev, prop, limit->levels_ua, count);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to read %s\n", prop);
+
+	for (i = 0; i < count; i++) {
+		if (!limit->levels_ua[i] ||
+		    (i && limit->levels_ua[i] >= limit->levels_ua[i - 1]))
+			return dev_err_probe(dev, -EINVAL,
+					     "%s must be positive and descending\n", prop);
+	}
+
+	limit->num_levels = count;
+
+	cdev = devm_thermal_of_cooling_device_register(dev, 0, "qcom-battmgr-charge",
+						       battmgr, &qcom_battmgr_charge_cooling_ops);
+	if (IS_ERR(cdev))
+		return dev_err_probe(dev, PTR_ERR(cdev),
+				     "failed to register the charge cooling device\n");
+
+	return 0;
+}
+
 static void qcom_battmgr_enable_worker(struct work_struct *work)
 {
 	struct qcom_battmgr *battmgr = container_of(work, struct qcom_battmgr, enable_work);
@@ -1735,6 +1895,16 @@ static void qcom_battmgr_enable_worker(struct work_struct *work)
 		ret = qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET, OPLUS_USB_OTG_AP_ENABLE, 1);
 		if (ret)
 			dev_err(battmgr->dev, "failed to enable OTG control from AP\n");
+	}
+
+	if (battmgr->charge_limit.num_levels) {
+		mutex_lock(&battmgr->lock);
+		/* A restarted firmware holds its defaults again. */
+		battmgr->charge_limit.max_ua = 0;
+		battmgr->charge_limit.applied_ua = 0;
+		if (battmgr->charge_limit.state)
+			qcom_battmgr_apply_charge_limit(battmgr);
+		mutex_unlock(&battmgr->lock);
 	}
 }
 
@@ -1918,6 +2088,11 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 						       battmgr);
 	if (IS_ERR(battmgr->client))
 		return PTR_ERR(battmgr->client);
+
+	/* After the client, so the cooling device goes away before it. */
+	ret = qcom_battmgr_charge_limit_init(battmgr);
+	if (ret)
+		return ret;
 
 	pmic_glink_client_register(battmgr->client);
 
