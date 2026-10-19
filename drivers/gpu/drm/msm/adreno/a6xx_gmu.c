@@ -59,6 +59,16 @@ static irqreturn_t a6xx_gmu_irq(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+/*
+ * The legacy (HFI v1) firmware raises the CM3 fault on bit 23, below its OOB
+ * acknowledge bits 24-31. Later firmware uses bits 16-31 for OOB requests
+ * and acknowledges, and raises the fault on bit 15.
+ */
+static u32 a6xx_gmu_cm3_fault_irq(struct a6xx_gmu *gmu)
+{
+	return gmu->legacy ? A6XX_GMU_GMU2HOST_INTR_INFO_CM3_FAULT : BIT(15);
+}
+
 static irqreturn_t a6xx_hfi_irq(int irq, void *data)
 {
 	struct a6xx_gmu *gmu = data;
@@ -71,7 +81,7 @@ static irqreturn_t a6xx_hfi_irq(int irq, void *data)
 	 * hides an answer that has already arrived, and the waiter times out.
 	 */
 	status = gmu_read(gmu, REG_A6XX_GMU_GMU2HOST_INTR_INFO) &
-		A6XX_GMU_GMU2HOST_INTR_INFO_CM3_FAULT;
+		a6xx_gmu_cm3_fault_irq(gmu);
 	if (!status)
 		return IRQ_NONE;
 
@@ -1086,9 +1096,6 @@ static int a6xx_gmu_fw_start(struct a6xx_gmu *gmu, unsigned int state)
 	return 0;
 }
 
-#define A6XX_HFI_IRQ_MASK \
-	(A6XX_GMU_GMU2HOST_INTR_INFO_CM3_FAULT)
-
 #define A6XX_GMU_IRQ_MASK \
 	(A6XX_GMU_AO_HOST_INTERRUPT_STATUS_WDOG_BITE | \
 	 A6XX_GMU_AO_HOST_INTERRUPT_STATUS_HOST_AHB_BUS_ERROR | \
@@ -1394,7 +1401,7 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
 	 * sequence is successful
 	 */
 	gmu_write(gmu, REG_A6XX_GMU_GMU2HOST_INTR_CLR, ~0);
-	gmu_write(gmu, REG_A6XX_GMU_GMU2HOST_INTR_MASK, ~A6XX_HFI_IRQ_MASK);
+	gmu_write(gmu, REG_A6XX_GMU_GMU2HOST_INTR_MASK, ~a6xx_gmu_cm3_fault_irq(gmu));
 	enable_irq(gmu->hfi_irq);
 
 	/* Set the GPU to the current freq */
