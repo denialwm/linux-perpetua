@@ -487,6 +487,15 @@ config GENERIC_ADC_THERMAL
 	  to this driver. This driver reports the temperature by reading ADC
 	  channel and converts it to temperature based on lookup table.
 
+config THERMAL_WEIGHTED_SENSOR
+	tristate "Weighted average of thermal zones"
+	depends on THERMAL_OF
+	help
+	  This adds a thermal sensor whose temperature is a weighted average
+	  of other thermal zones, as described in the device tree. Phones use
+	  such an estimate for surfaces that carry no thermistor, such as the
+	  back cover, and throttle charging on it.
+
 menu "Qualcomm thermal drivers"
 depends on (ARCH_QCOM && OF) || COMPILE_TEST
 source "drivers/thermal/qcom/Kconfig"
