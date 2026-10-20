@@ -639,6 +639,8 @@ static const struct drm_display_mode aa551_modes[] = {
 		.vsync_start = 2780 + 22,
 		.vsync_end = 2780 + 22 + 2,
 		.vtotal = 2780 + 22 + 2 + 42,
+		.width_mm = 71,
+		.height_mm = 157,
 	},
 	{
 		.clock = (1264 + 26 + 2 + 26) * (2780 + 22 + 2 + 42) * 120 / 1000,
@@ -650,6 +652,8 @@ static const struct drm_display_mode aa551_modes[] = {
 		.vsync_start = 2780 + 22,
 		.vsync_end = 2780 + 22 + 2,
 		.vtotal = 2780 + 22 + 2 + 42,
+		.width_mm = 71,
+		.height_mm = 157,
 	},
 	{
 		.clock = (1264 + 26 + 2 + 26) * (2780 + 971 + 2 + 42) * 90 / 1000,
@@ -661,6 +665,8 @@ static const struct drm_display_mode aa551_modes[] = {
 		.vsync_start = 2780 + 971,
 		.vsync_end = 2780 + 971 + 2,
 		.vtotal = 2780 + 971 + 2 + 42,
+		.width_mm = 71,
+		.height_mm = 157,
 	},
 	{
 		.clock = (1264 + 26 + 2 + 26) * (2780 + 2868 + 2 + 42) * 60 / 1000,
@@ -672,6 +678,8 @@ static const struct drm_display_mode aa551_modes[] = {
 		.vsync_start = 2780 + 2868,
 		.vsync_end = 2780 + 2868 + 2,
 		.vtotal = 2780 + 2868 + 2 + 42,
+		.width_mm = 71,
+		.height_mm = 157,
 	},
 	{
 		.clock = (1264 + 26 + 2 + 26) * (2780 + 8560 + 2 + 42) * 30 / 1000,
@@ -683,6 +691,8 @@ static const struct drm_display_mode aa551_modes[] = {
 		.vsync_start = 2780 + 8560,
 		.vsync_end = 2780 + 8560 + 2,
 		.vtotal = 2780 + 8560 + 2 + 42,
+		.width_mm = 71,
+		.height_mm = 157,
 	},
 };
 
@@ -708,6 +718,9 @@ static int aa551_get_modes(struct drm_panel *panel,
 
 		drm_mode_probed_add(connector, mode);
 	}
+
+	connector->display_info.width_mm = aa551_modes[0].width_mm;
+	connector->display_info.height_mm = aa551_modes[0].height_mm;
 
 	return ARRAY_SIZE(aa551_modes);
 }
