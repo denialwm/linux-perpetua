@@ -58,6 +58,10 @@ static bool separate_gpu_kms;
 MODULE_PARM_DESC(separate_gpu_kms, "Use separate DRM device for the GPU (0=single DRM device for both GPU and display (default), 1=two DRM devices)");
 module_param(separate_gpu_kms, bool, 0400);
 
+static bool transparent_hugepage = true;
+MODULE_PARM_DESC(transparent_hugepage, "Back GEM objects with transparent huge pages where they fit (1=on (default), 0=off)");
+module_param(transparent_hugepage, bool, 0400);
+
 DECLARE_FAULT_ATTR(fail_gem_alloc);
 DECLARE_FAULT_ATTR(fail_gem_iova);
 
@@ -120,6 +124,20 @@ static int msm_drm_init(struct device *dev, const struct drm_driver *drv,
 	}
 	ddev->dev_private = priv;
 	priv->dev = ddev;
+
+	/*
+	 * Back GEM objects with huge pages where a whole one fits. Getting
+	 * and mapping a buffer's pages then costs a fraction of what it does
+	 * in 4 KiB pages. It has to happen before the first object, which
+	 * binding the GPU creates.
+	 */
+	if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) && transparent_hugepage) {
+		ret = drm_gem_huge_mnt_create(ddev, "within_size");
+		if (drm_gem_get_huge_mnt(ddev))
+			drm_info(ddev, "Using Transparent Hugepage\n");
+		else if (ret)
+			drm_warn(ddev, "Can't use Transparent Hugepage (%d)\n", ret);
+	}
 
 	INIT_LIST_HEAD(&priv->objects);
 	mutex_init(&priv->obj_lock);
