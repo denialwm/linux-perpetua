@@ -1,0 +1,35 @@
+What:           /dev/aston_fp_illumination
+Date:           October 2026
+Contact:        Doctor Logix <doctor.logix@gmail.com>
+Description:
+                Exclusive root-only (0600) local fingerprint illumination
+                control for the OnePlus Aston BOE AA551 panel. The fd can be
+                passed to a trusted compositor; it does not expose arbitrary
+                DSI commands or biometric data. Its UAPI is declared in
+                linux/aston_fp_illumination.h.
+
+                GET_INFO returns ABI version 1, native panel dimensions,
+                compatible string, panel-on and illumination-active state,
+                and the independent 30000-ms maximum activation duration.
+                GET_INFO and opening the device do not power the panel or
+                change illumination.
+
+                SET accepts a pointer to a u32 (0 disables, 1 enables).
+                Enabling requires a prepared, enabled, nonzero-brightness
+                panel. Repeated enable cannot extend the activation deadline.
+                The caller must wait for presentation scanout before enabling
+                and for panel settling before fingerprint acquisition.
+
+                Final close, panel power-down and the independent timeout
+                disable local illumination. Failed DSI restoration retains
+                active state and schedules a retry; errors must not be treated
+                as confirmed restoration. A panel power cycle clears the
+                hardware state. The requested normal brightness is restored
+                after successful disable, including concurrent brightness
+                changes. Unbind invalidates outstanding fds safely.
+
+                Factory DBV alpha, OTP-derived gamma and local-HBM icon
+                commands are used. No normal panel initialization or global
+                maximum-brightness fallback is added. Temporary normal
+                brightness is capped at the factory 900-nit DBV threshold
+                only during active local illumination.

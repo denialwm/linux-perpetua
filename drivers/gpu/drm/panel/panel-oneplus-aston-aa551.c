@@ -13,7 +13,17 @@
  */
 
 #include <linux/backlight.h>
+#include <linux/compat.h>
+#include <linux/fs.h>
+#include <linux/kref.h>
+#include <linux/miscdevice.h>
+#include <linux/mutex.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
+#include <linux/workqueue.h>
+#include <linux/aston_fp_illumination.h>
 #include <linux/delay.h>
+#include <linux/ktime.h>
 #include <linux/gpio/consumer.h>
 #include <linux/irqflags.h>
 #include <linux/mod_devicetable.h>
@@ -35,18 +45,37 @@
 /*
  * Iris7P analog bypass (ABYP). After a reset the Iris7P should report the
  * bypass on its ABYP-ready line. If it does not, the host forces it with a
- * one-wire command of six pulses on the wakeup line, and retries after a
- * new reset up to three times. These timings are the vendor driver's.
+ * one-wire command of six pulses on the wakeup line. A bounded status wait
+ * is followed by direct factory panel status validation, without reset loops.
  */
 #define IRIS_ONE_WIRE_PULSE_US		56
 #define IRIS_ONE_WIRE_COMMAND_US	10
 #define IRIS_ONE_WIRE_END_US		227
 #define IRIS_FORCE_ABYP_PULSES		6
 #define IRIS_ABYP_POLL_COUNT		50
-#define IRIS_ABYP_RESET_RETRIES		3
+
+struct aa551;
+
+struct aa551_fp {
+	struct kref refs;
+	struct mutex lock;
+	struct miscdevice misc;
+	struct delayed_work timeout;
+	struct aa551 *ctx;
+	u16 brightness;
+	u8 gamma[5][6];
+	bool opened;
+	bool prepared;
+	bool panel_on;
+	bool active;
+	bool gamma_valid;
+	bool gamma_programmed;
+	bool registered;
+};
 
 struct aa551 {
 	struct drm_panel panel;
+	struct aa551_fp *fp;
 	struct mipi_dsi_device *dsi;
 	struct drm_dsc_config dsc;
 	struct regulator *vddio;
@@ -56,6 +85,10 @@ struct aa551 {
 	struct gpio_desc *iris_reset_gpio;
 	struct gpio_desc *iris_wakeup_gpio;
 	struct gpio_desc *iris_abyp_ready_gpio;
+	bool powered, standby_enabled, retained, iris_confirmed, shutting_down;
+	u32 cold_wakes, retained_wakes;
+	u64 prepare_us, enable_us;
+	u8 power_mode;
 };
 
 static inline struct aa551 *to_aa551(struct drm_panel *panel)
@@ -65,6 +98,323 @@ static inline struct aa551 *to_aa551(struct drm_panel *panel)
 
 #define aa551_switch_page(dsi_ctx, page) \
 	mipi_dsi_dcs_write_seq_multi((dsi_ctx), 0xff, 0x08, 0x38, (page))
+
+#include "panel-oneplus-aston-aa551-alpha.h"
+#include "panel-oneplus-aston-aa551-state.h"
+
+#define AA551_FP_TIMEOUT_MS 30000
+#define AA551_FP_MAX_DBV 0x0dbb
+
+static int aa551_bl_write_locked(struct aa551 *ctx, u16 brightness);
+
+/* Factory OTP gamma extrapolation for the local fingerprint region. This is
+ * read/programmed only on the first explicit illumination enable, never probe.
+ */
+static int aa551_fp_gamma_locked(struct aa551_fp *fp)
+{
+	struct mipi_dsi_device *dsi = fp->ctx->dsi;
+	struct mipi_dsi_multi_context dc = { .dsi = dsi };
+	struct mipi_dsi_multi_context close = { .dsi = dsi };
+	static const int levels[] = { 173, 205, 226, 247, 255 };
+	u8 a[5] = {}, b[5] = {};
+	int rgb_a[3], rgb_b[3], rgb[3];
+	unsigned long flags = dsi->mode_flags;
+	int i, c, ret;
+
+	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	if (!fp->gamma_valid) {
+		aa551_switch_page(&dc, 0x2f);
+		mipi_dsi_dcs_write_seq_multi(&dc, 0x99, 0xb2);
+		if (!dc.accum_err) {
+			ret = mipi_dsi_dcs_read(dsi, 0x96, a, sizeof(a));
+			if (ret != sizeof(a))
+				dc.accum_err = ret < 0 ? ret : -EIO;
+		}
+		if (!dc.accum_err) {
+			ret = mipi_dsi_dcs_read(dsi, 0x97, b, sizeof(b));
+			if (ret != sizeof(b))
+				dc.accum_err = ret < 0 ? ret : -EIO;
+		}
+		/* Always close OTP access, including failed/short reads. */
+		mipi_dsi_dcs_write_seq_multi(&close, 0x99, 0x00);
+		aa551_switch_page(&close, 0x00);
+		if (dc.accum_err || close.accum_err) {
+			ret = dc.accum_err ?: close.accum_err;
+			goto out;
+		}
+		rgb_a[0] = ((a[0] & 0xf) << 8) | a[2];
+		rgb_a[1] = ((a[1] & 0xf0) << 4) | a[3];
+		rgb_a[2] = ((a[1] & 0xf) << 8) | a[4];
+		rgb_b[0] = ((b[0] & 0xf) << 8) | b[2];
+		rgb_b[1] = ((b[1] & 0xf0) << 4) | b[3];
+		rgb_b[2] = ((b[1] & 0xf) << 8) | b[4];
+		for (i = 0; i < ARRAY_SIZE(levels); i++) {
+			for (c = 0; c < 3; c++) {
+				rgb[c] = (levels[i] * 110 - 24700) *
+					 (rgb_b[c] - rgb_a[c]) / 800 + rgb_a[c];
+				if (rgb[c] <= 0 || rgb[c] > 0xfff) {
+					ret = -ERANGE;
+					goto out;
+				}
+			}
+			fp->gamma[i][0] = 0x93 + i;
+			fp->gamma[i][1] = rgb[0] >> 8;
+			fp->gamma[i][2] = ((rgb[1] >> 4) & 0xf0) | (rgb[2] >> 8);
+			fp->gamma[i][3] = rgb[0];
+			fp->gamma[i][4] = rgb[1];
+			fp->gamma[i][5] = rgb[2];
+		}
+		fp->gamma_valid = true;
+	}
+
+	aa551_switch_page(&dc, 0x2f);
+	mipi_dsi_dcs_write_seq_multi(&dc, 0x99, 0xe4);
+	for (i = 0; i < ARRAY_SIZE(fp->gamma); i++)
+		mipi_dsi_dcs_write_buffer_multi(&dc, fp->gamma[i], sizeof(fp->gamma[i]));
+	close.accum_err = 0;
+	mipi_dsi_dcs_write_seq_multi(&close, 0x99, 0x00);
+	aa551_switch_page(&close, 0x00);
+	ret = dc.accum_err ?: close.accum_err;
+	if (!ret)
+		fp->gamma_programmed = true;
+out:
+	dsi->mode_flags = flags;
+	return ret;
+}
+
+static int aa551_fp_alpha_locked(struct aa551_fp *fp)
+{
+	struct mipi_dsi_device *dsi = fp->ctx->dsi;
+	struct mipi_dsi_multi_context dc = { .dsi = dsi };
+	unsigned long flags = dsi->mode_flags;
+	u16 alpha = aa551_fp_alpha[min_t(u16, fp->brightness,
+					 ARRAY_SIZE(aa551_fp_alpha) - 1)];
+
+	/* Factory alpha writes use HS; icon/gamma commands use LP. */
+	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+	aa551_switch_page(&dc, 0x00);
+	mipi_dsi_dcs_write_var_seq_multi(&dc, 0x9a, alpha >> 8, alpha & 0xff);
+	dsi->mode_flags = flags;
+	return dc.accum_err;
+}
+
+static int aa551_fp_off_locked(struct aa551_fp *fp)
+{
+	struct aa551 *ctx = fp->ctx;
+	struct mipi_dsi_multi_context dc;
+	unsigned long flags;
+	int ret;
+
+	cancel_delayed_work(&fp->timeout);
+	if (!ctx || !fp->prepared) {
+		fp->active = false;
+		return 0;
+	}
+	if (!fp->active)
+		return 0;
+	dc = (struct mipi_dsi_multi_context) { .dsi = ctx->dsi };
+	flags = ctx->dsi->mode_flags;
+	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	aa551_switch_page(&dc, 0x00);
+	mipi_dsi_dcs_write_seq_multi(&dc, 0x95, 0x10);
+	ctx->dsi->mode_flags = flags;
+	ret = dc.accum_err;
+	if (ret) {
+		/* Retain ownership and retry if hardware state is unconfirmed. */
+		mod_delayed_work(system_wq, &fp->timeout, msecs_to_jiffies(1000));
+		return ret;
+	}
+	fp->active = false;
+	if (fp->panel_on)
+		ret = aa551_bl_write_locked(ctx, fp->brightness);
+	return ret;
+}
+
+static int aa551_fp_on_locked(struct aa551_fp *fp)
+{
+	struct aa551 *ctx = fp->ctx;
+	struct mipi_dsi_multi_context dc = { .dsi = ctx->dsi };
+	unsigned long flags = ctx->dsi->mode_flags;
+	int ret;
+
+	if (!fp->prepared || !fp->panel_on || !fp->brightness)
+		return -EHOSTDOWN;
+	if (fp->active)
+		return 0; /* Repeated enable cannot extend the independent deadline. */
+	if (!fp->gamma_programmed) {
+		ret = aa551_fp_gamma_locked(fp);
+		if (ret)
+			return ret;
+	}
+	/* Only local-HBM operation caps normal brightness, following factory
+	 * 900-nit handling. The requested brightness is retained for restoration.
+	 */
+	fp->active = true;
+	ret = aa551_bl_write_locked(ctx, min_t(u16, fp->brightness, AA551_FP_MAX_DBV));
+	if (ret)
+		goto failed;
+	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	aa551_switch_page(&dc, 0x00);
+	mipi_dsi_dcs_write_seq_multi(&dc, 0x95, 0x13);
+	ctx->dsi->mode_flags = flags;
+	ret = dc.accum_err ?: aa551_fp_alpha_locked(fp);
+	if (ret)
+		goto failed;
+	mod_delayed_work(system_wq, &fp->timeout, msecs_to_jiffies(AA551_FP_TIMEOUT_MS));
+	return 0;
+failed:
+	aa551_fp_off_locked(fp);
+	return ret;
+}
+
+static void aa551_fp_timeout(struct work_struct *work)
+{
+	struct aa551_fp *fp = container_of(to_delayed_work(work), struct aa551_fp, timeout);
+
+	mutex_lock(&fp->lock);
+	if (aa551_fp_off_locked(fp) && fp->ctx)
+		dev_err(&fp->ctx->dsi->dev, "Failed to restore fingerprint illumination\n");
+	mutex_unlock(&fp->lock);
+}
+
+static void aa551_fp_free(struct kref *refs)
+{
+	struct aa551_fp *fp = container_of(refs, struct aa551_fp, refs);
+
+	mutex_destroy(&fp->lock);
+	kfree(fp);
+}
+
+static int aa551_fp_open(struct inode *inode, struct file *file)
+{
+	struct aa551_fp *fp = container_of(file->private_data, struct aa551_fp, misc);
+	int ret = 0;
+
+	mutex_lock(&fp->lock);
+	if (!fp->ctx)
+		ret = -ENODEV;
+	else if (fp->opened || fp->active)
+		ret = -EBUSY;
+	else {
+		fp->opened = true;
+		kref_get(&fp->refs);
+		file->private_data = fp;
+	}
+	mutex_unlock(&fp->lock);
+	return ret ?: nonseekable_open(inode, file);
+}
+
+static int aa551_fp_release(struct inode *inode, struct file *file)
+{
+	struct aa551_fp *fp = file->private_data;
+
+	mutex_lock(&fp->lock);
+	aa551_fp_off_locked(fp);
+	fp->opened = false;
+	mutex_unlock(&fp->lock);
+	kref_put(&fp->refs, aa551_fp_free);
+	return 0;
+}
+
+static long aa551_fp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	struct aa551_fp *fp = file->private_data;
+	struct aston_fp_illumination_info info = {
+		.version = 1,
+		.panel_width = 1264,
+		.panel_height = 2780,
+		.max_duration_ms = AA551_FP_TIMEOUT_MS,
+		.compatible = "oneplus,aston-boe-aa551",
+	};
+	u32 on;
+	int ret = 0;
+
+	mutex_lock(&fp->lock);
+	if (!fp->ctx) {
+		ret = -ENODEV;
+		goto out;
+	}
+	switch (cmd) {
+	case ASTON_FP_ILLUMINATION_GET_INFO:
+		info.enabled = fp->active;
+		info.panel_on = fp->panel_on;
+		if (copy_to_user((void __user *)arg, &info, sizeof(info)))
+			ret = -EFAULT;
+		break;
+	case ASTON_FP_ILLUMINATION_SET:
+		if (copy_from_user(&on, (void __user *)arg, sizeof(on)))
+			ret = -EFAULT;
+		else if (on > 1)
+			ret = -EINVAL;
+		else
+			ret = on ? aa551_fp_on_locked(fp) : aa551_fp_off_locked(fp);
+		break;
+	default:
+		ret = -ENOTTY;
+	}
+out:
+	mutex_unlock(&fp->lock);
+	return ret;
+}
+
+static const struct file_operations aa551_fp_fops = {
+	.owner = THIS_MODULE,
+	.open = aa551_fp_open,
+	.release = aa551_fp_release,
+	.unlocked_ioctl = aa551_fp_ioctl,
+	.compat_ioctl = compat_ptr_ioctl,
+};
+
+static void aa551_fp_stop(struct aa551_fp *fp)
+{
+	mutex_lock(&fp->lock);
+	aa551_fp_off_locked(fp);
+	fp->ctx = NULL;
+	mutex_unlock(&fp->lock);
+	if (fp->registered) {
+		misc_deregister(&fp->misc);
+		fp->registered = false;
+	}
+	cancel_delayed_work_sync(&fp->timeout);
+}
+
+static void aa551_fp_destroy(void *data)
+{
+	struct aa551_fp *fp = data;
+
+	aa551_fp_stop(fp);
+	kref_put(&fp->refs, aa551_fp_free);
+}
+
+static int aa551_fp_init(struct aa551 *ctx)
+{
+	struct aa551_fp *fp;
+	int ret;
+
+	fp = kzalloc_obj(*fp);
+	if (!fp)
+		return -ENOMEM;
+	kref_init(&fp->refs);
+	mutex_init(&fp->lock);
+	INIT_DELAYED_WORK(&fp->timeout, aa551_fp_timeout);
+	fp->ctx = ctx;
+	fp->brightness = AA551_BRIGHTNESS_DEFAULT;
+	fp->misc = (struct miscdevice) {
+		.minor = MISC_DYNAMIC_MINOR,
+		.name = "aston_fp_illumination",
+		.fops = &aa551_fp_fops,
+		.parent = &ctx->dsi->dev,
+		.mode = 0600,
+	};
+	ret = misc_register(&fp->misc);
+	if (ret) {
+		kref_put(&fp->refs, aa551_fp_free);
+		return ret;
+	}
+	fp->registered = true;
+	ctx->fp = fp;
+	return devm_add_action_or_reset(&ctx->dsi->dev, aa551_fp_destroy, fp);
+}
 
 static void aa551_iris_power_on(struct aa551 *ctx)
 {
@@ -126,42 +476,22 @@ static int aa551_iris_force_abyp(struct aa551 *ctx)
 static void aa551_iris_enter_abyp(struct aa551 *ctx)
 {
 	struct device *dev = &ctx->dsi->dev;
-	int attempt, ready, ret = 0;
+	int ready, ret;
 
 	gpiod_set_value_cansleep(ctx->iris_wakeup_gpio, 0);
-
-	for (attempt = 0; attempt <= IRIS_ABYP_RESET_RETRIES; attempt++) {
-		/* Reset is active low: assert for 1 ms, release for 2 ms. */
-		gpiod_set_value_cansleep(ctx->iris_reset_gpio, 1);
-		usleep_range(1000, 1100);
-		gpiod_set_value_cansleep(ctx->iris_reset_gpio, 0);
-		usleep_range(2000, 2100);
-
-		ready = gpiod_get_value_cansleep(ctx->iris_abyp_ready_gpio);
-		if (ready < 0) {
-			dev_err(dev, "Failed to read Iris7P ABYP-ready GPIO: %d\n", ready);
-			return;
-		}
-		if (ready) {
-			dev_dbg(dev, "Iris7P ABYP ready after reset (attempt %d)\n",
-				attempt + 1);
-			return;
-		}
-
-		ret = aa551_iris_force_abyp(ctx);
-		if (!ret) {
-			dev_dbg(dev, "Iris7P force-ABYP ready (attempt %d)\n", attempt + 1);
-			return;
-		}
-
-		if (attempt < IRIS_ABYP_RESET_RETRIES)
-			dev_warn(dev, "Iris7P force-ABYP retry after %d (attempt %d)\n",
-				 ret, attempt + 1);
-	}
-
+	gpiod_set_value_cansleep(ctx->iris_reset_gpio, 1);
+	usleep_range(1000, 1100);
+	gpiod_set_value_cansleep(ctx->iris_reset_gpio, 0);
+	usleep_range(2000, 2100);
 	ready = gpiod_get_value_cansleep(ctx->iris_abyp_ready_gpio);
-	dev_warn(dev, "Iris7P force-ABYP did not become ready: %d (GPIO=%d)\n",
-		 ret, ready);
+	ret = ready == 1 ? 0 : ready < 0 ? ready : aa551_iris_force_abyp(ctx);
+	ctx->iris_confirmed = !ret;
+	/* Repeating resets on an unasserted status pin never proved that the
+	 * data path failed. Keep the factory bounded wait, then validate the
+	 * actual panel response in enable before accepting a working display.
+	 */
+	if (ret)
+		dev_warn(dev, "Iris7P ABYP status unconfirmed (%d); panel link must validate\n", ret);
 }
 
 static void aa551_reset(struct aa551 *ctx)
@@ -181,6 +511,8 @@ static int aa551_power_on(struct aa551 *ctx)
 	struct device *dev = &ctx->dsi->dev;
 	int ret;
 
+	if (ctx->powered)
+		return 0;
 	/* vddio comes first: it also feeds the Iris7P 1.8 V rail. */
 	ret = regulator_enable(ctx->vddio);
 	if (ret) {
@@ -200,16 +532,21 @@ static int aa551_power_on(struct aa551 *ctx)
 
 	aa551_iris_enter_abyp(ctx);
 	aa551_reset(ctx);
+	ctx->powered = true;
 
 	return 0;
 }
 
 static void aa551_power_off(struct aa551 *ctx)
 {
+	if (!ctx->powered)
+		return;
 	gpiod_set_value_cansleep(ctx->reset_gpio, 1);
 	regulator_disable(ctx->vci);
 	aa551_iris_power_off(ctx);
 	regulator_disable(ctx->vddio);
+	ctx->powered = false;
+	ctx->retained = false;
 }
 
 static void aa551_init(struct mipi_dsi_multi_context *dsi_ctx)
@@ -558,10 +895,22 @@ static int aa551_prepare(struct drm_panel *panel)
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
 	struct drm_dsc_picture_parameter_set pps;
 	int ret;
+	u64 start = ktime_get_ns();
 
+	mutex_lock(&ctx->fp->lock);
+	if (ctx->retained && ctx->powered) {
+		ctx->fp->prepared = true;
+		ctx->retained_wakes++;
+		ctx->prepare_us = div_u64(ktime_get_ns() - start, 1000);
+		mutex_unlock(&ctx->fp->lock);
+		return 0;
+	}
+	ctx->cold_wakes++;
 	ret = aa551_power_on(ctx);
-	if (ret)
+	if (ret) {
+		mutex_unlock(&ctx->fp->lock);
 		return ret;
+	}
 
 	aa551_init(&dsi_ctx);
 	aa551_timing_switch(&dsi_ctx);
@@ -575,34 +924,86 @@ static int aa551_prepare(struct drm_panel *panel)
 		dev_err(&ctx->dsi->dev, "Failed to initialize panel: %d\n",
 			dsi_ctx.accum_err);
 		aa551_power_off(ctx);
+		mutex_unlock(&ctx->fp->lock);
 		return dsi_ctx.accum_err;
 	}
 
+	ctx->fp->prepared = true;
+	ctx->prepare_us = div_u64(ktime_get_ns() - start, 1000);
+	mutex_unlock(&ctx->fp->lock);
 	return 0;
 }
 
 static int aa551_enable(struct drm_panel *panel)
 {
 	struct aa551 *ctx = to_aa551(panel);
-	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
+	struct mipi_dsi_multi_context dc = { .dsi = ctx->dsi };
+	unsigned long flags = ctx->dsi->mode_flags;
+	u64 start = ktime_get_ns();
+	u8 status = 0;
+	int ret;
 
-	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
-	mipi_dsi_msleep(&dsi_ctx, 120);
-	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
-
-	return dsi_ctx.accum_err;
+	mutex_lock(&ctx->fp->lock);
+	if (ctx->retained) {
+		/* Normal-mode display blanking preserves the validated black level.
+		 * The factory LP1/NOLP transition lifts black after retained wake.
+		 * No reset, sleep exit or mode transition is needed here.
+		 */
+		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	} else {
+		mipi_dsi_dcs_exit_sleep_mode_multi(&dc);
+		mipi_dsi_msleep(&dc, 120);
+	}
+	mipi_dsi_dcs_set_display_on_multi(&dc);
+	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	ret = dc.accum_err ?: mipi_dsi_dcs_get_power_mode(ctx->dsi, &status);
+	ctx->dsi->mode_flags = flags;
+	/* Check defined DCS power-state bits, not reserved response bits. A
+	 * low Iris pin is accepted only after a working panel-link response.
+	 */
+	if (!ret && !aa551_power_mode_ready(status))
+		ret = -EIO;
+	ctx->power_mode = status;
+	ctx->fp->panel_on = !ret;
+	if (!ret)
+		ctx->retained = false;
+	ctx->enable_us = div_u64(ktime_get_ns() - start, 1000);
+	dev_info(&ctx->dsi->dev, "wake prepare=%llu us enable=%llu us status=%02x cold=%u retained=%u result=%d\n",
+		 ctx->prepare_us, ctx->enable_us, status, ctx->cold_wakes,
+		 ctx->retained_wakes, ret);
+	mutex_unlock(&ctx->fp->lock);
+	return ret;
 }
 
 static int aa551_disable(struct drm_panel *panel)
 {
 	struct aa551 *ctx = to_aa551(panel);
+	struct mipi_dsi_multi_context dc = { .dsi = ctx->dsi };
+	unsigned long flags = ctx->dsi->mode_flags;
 	int ret;
 
-	ret = aa551_off(ctx);
+	mutex_lock(&ctx->fp->lock);
+	aa551_fp_off_locked(ctx->fp);
+	if (ctx->standby_enabled && !ctx->shutting_down) {
+		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+		/* Keep the normal panel configuration while blanked. Entering
+		 * factory LP1 here caused a global brown black level after NOLP,
+		 * reproduced by fingerprint scanout and absent after cold wake.
+		 * DISPLAY_OFF hides the retained frame without that transition.
+		 */
+		mipi_dsi_dcs_set_display_off_multi(&dc);
+		ctx->dsi->mode_flags = flags;
+		ret = dc.accum_err;
+		ctx->retained = !ret;
+	} else {
+		ret = aa551_off(ctx);
+		ctx->retained = false;
+	}
 	if (ret < 0)
-		dev_err(&ctx->dsi->dev, "Failed to un-initialize panel: %d\n", ret);
-
-	return 0;
+		dev_err(&ctx->dsi->dev, "Failed to disable panel: %d\n", ret);
+	ctx->fp->panel_on = false;
+	mutex_unlock(&ctx->fp->lock);
+	return ret;
 }
 
 static int aa551_unprepare(struct drm_panel *panel)
@@ -614,12 +1015,24 @@ static int aa551_unprepare(struct drm_panel *panel)
 	 * The power-down commands go out a second time before the supplies
 	 * are cut, as in the sequence validated on the device.
 	 */
+	mutex_lock(&ctx->fp->lock);
+	aa551_fp_off_locked(ctx->fp);
+	if (ctx->retained && !ctx->shutting_down) {
+		ctx->fp->prepared = false;
+		mutex_unlock(&ctx->fp->lock);
+		return 0;
+	}
 	ret = aa551_off(ctx);
 	if (ret < 0)
 		dev_err(&ctx->dsi->dev, "Failed to un-initialize panel: %d\n", ret);
 
 	aa551_power_off(ctx);
-
+	ctx->fp->prepared = false;
+	ctx->fp->panel_on = false;
+	ctx->fp->active = false;
+	ctx->fp->gamma_programmed = false;
+	cancel_delayed_work(&ctx->fp->timeout);
+	mutex_unlock(&ctx->fp->lock);
 	return 0;
 }
 
@@ -733,11 +1146,9 @@ static const struct drm_panel_funcs aa551_panel_funcs = {
 	.get_modes = aa551_get_modes,
 };
 
-static int aa551_bl_update_status(struct backlight_device *bl)
+static int aa551_bl_write_locked(struct aa551 *ctx, u16 brightness)
 {
-	struct aa551 *ctx = bl_get_data(bl);
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
-	u16 brightness = backlight_get_brightness(bl);
 
 	/*
 	 * A brightness set while the panel is off is only stored:
@@ -765,10 +1176,48 @@ static int aa551_bl_update_status(struct backlight_device *bl)
 					 brightness >> 8, brightness & 0xff);
 
 	aa551_switch_page(&dsi_ctx, 0x1e);
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc2, 0xff, 0xff, 0xe5, 0x61, 0x00, 0x62);
+	/* Factory grayscale follows ordinary brightness changes even outside
+	 * LHBM. Do not change the global grayscale table at fingerprint entry
+	 * or restore a different table at exit. The PWM mode remains normal.
+	 */
+	if (brightness) {
+		/* Factory normal-PWM local-HBM grayscale by DBV range. */
+		static const u8 grayscale[][7] = {
+			{ 0xc2, 0xfe, 0xfe, 0xdd, 0x61, 0x00, 0x62 },
+			{ 0xc2, 0xf9, 0xf9, 0xda, 0x61, 0x00, 0x62 },
+			{ 0xc2, 0xf5, 0xf5, 0xd6, 0x61, 0x00, 0x62 },
+			{ 0xc2, 0xef, 0xef, 0xda, 0x61, 0x00, 0x62 },
+			{ 0xc2, 0xe9, 0xe9, 0xd4, 0x61, 0x00, 0x62 },
+		};
+		unsigned int index = brightness <= 0x700 ? 0 : brightness <= 0x8f0 ? 1 :
+				     brightness <= 0xa88 ? 2 : brightness <= 0xc00 ? 3 : 4;
+
+		mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, grayscale[index], 7);
+	} else {
+		mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc2, 0xff, 0xff, 0xe5, 0x61, 0x00, 0x62);
+	}
 	aa551_switch_page(&dsi_ctx, 0x00);
 
 	return dsi_ctx.accum_err;
+}
+
+static int aa551_bl_update_status(struct backlight_device *bl)
+{
+	struct aa551 *ctx = bl_get_data(bl);
+	struct aa551_fp *fp = ctx->fp;
+	u16 brightness = backlight_get_brightness(bl);
+	int ret;
+
+	mutex_lock(&fp->lock);
+	fp->brightness = brightness;
+	if (!brightness)
+		aa551_fp_off_locked(fp);
+	ret = aa551_bl_write_locked(ctx, fp->active ?
+		min_t(u16, brightness, AA551_FP_MAX_DBV) : brightness);
+	if (!ret && fp->active)
+		ret = aa551_fp_alpha_locked(fp);
+	mutex_unlock(&fp->lock);
+	return ret;
 }
 
 static const struct backlight_ops aa551_bl_ops = {
@@ -835,7 +1284,11 @@ static int aa551_probe(struct mipi_dsi_device *dsi)
 				     "Failed to get iris-abyp-ready-gpios\n");
 
 	ctx->dsi = dsi;
+	ctx->standby_enabled = true;
 	mipi_dsi_set_drvdata(dsi, ctx);
+	ret = aa551_fp_init(ctx);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to register fingerprint illumination\n");
 
 	/*
 	 * Without MIPI_DSI_MODE_VIDEO the host runs the link in command mode,
@@ -875,17 +1328,85 @@ static int aa551_probe(struct mipi_dsi_device *dsi)
 	return 0;
 }
 
+static void aa551_shutdown(struct mipi_dsi_device *dsi);
+
 static void aa551_remove(struct mipi_dsi_device *dsi)
 {
 	struct aa551 *ctx = mipi_dsi_get_drvdata(dsi);
 	int ret;
 
+	aa551_shutdown(dsi);
+	aa551_fp_stop(ctx->fp);
 	ret = mipi_dsi_detach(dsi);
 	if (ret < 0)
 		dev_err(&dsi->dev, "Failed to detach from DSI host: %d\n", ret);
 
 	drm_panel_remove(&ctx->panel);
 }
+
+static void aa551_shutdown(struct mipi_dsi_device *dsi)
+{
+	struct aa551 *ctx = mipi_dsi_get_drvdata(dsi);
+
+	mutex_lock(&ctx->fp->lock);
+	ctx->shutting_down = true;
+	mutex_unlock(&ctx->fp->lock);
+	drm_panel_disable(&ctx->panel);
+	drm_panel_unprepare(&ctx->panel);
+	mutex_lock(&ctx->fp->lock);
+	aa551_power_off(ctx);
+	mutex_unlock(&ctx->fp->lock);
+}
+
+static ssize_t standby_enabled_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct aa551 *ctx = mipi_dsi_get_drvdata(to_mipi_dsi_device(dev));
+
+	return sysfs_emit(buf, "%u\n", READ_ONCE(ctx->standby_enabled));
+}
+
+static ssize_t standby_enabled_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct aa551 *ctx = mipi_dsi_get_drvdata(to_mipi_dsi_device(dev));
+	bool enabled;
+	int ret = kstrtobool(buf, &enabled);
+
+	if (ret)
+		return ret;
+	mutex_lock(&ctx->fp->lock);
+	if (ctx->retained || ctx->shutting_down)
+		ret = -EBUSY;
+	else
+		ctx->standby_enabled = enabled;
+	mutex_unlock(&ctx->fp->lock);
+	return ret ?: count;
+}
+static DEVICE_ATTR_RW(standby_enabled);
+
+static ssize_t standby_state_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct aa551 *ctx = mipi_dsi_get_drvdata(to_mipi_dsi_device(dev));
+	ssize_t count;
+
+	mutex_lock(&ctx->fp->lock);
+	count = sysfs_emit(buf, "powered=%u retained=%u panel_on=%u iris_confirmed=%u power_mode=%02x cold_wakes=%u retained_wakes=%u prepare_us=%llu enable_us=%llu\n",
+		ctx->powered, ctx->retained, ctx->fp->panel_on,
+		ctx->iris_confirmed, ctx->power_mode, ctx->cold_wakes,
+		ctx->retained_wakes, ctx->prepare_us, ctx->enable_us);
+	mutex_unlock(&ctx->fp->lock);
+	return count;
+}
+static DEVICE_ATTR_RO(standby_state);
+
+static struct attribute *aa551_attrs[] = {
+	&dev_attr_standby_enabled.attr,
+	&dev_attr_standby_state.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(aa551);
 
 static const struct of_device_id aa551_of_match[] = {
 	{ .compatible = "oneplus,aston-boe-aa551" },
@@ -896,9 +1417,11 @@ MODULE_DEVICE_TABLE(of, aa551_of_match);
 static struct mipi_dsi_driver aa551_driver = {
 	.probe = aa551_probe,
 	.remove = aa551_remove,
+	.shutdown = aa551_shutdown,
 	.driver = {
 		.name = "panel-oneplus-aston-aa551",
 		.of_match_table = aa551_of_match,
+		.dev_groups = aa551_groups,
 	},
 };
 module_mipi_dsi_driver(aa551_driver);
