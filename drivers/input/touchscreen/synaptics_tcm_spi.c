@@ -53,6 +53,11 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/pm.h>
+#include <linux/pm_wakeirq.h>
+#include <linux/pm_wakeup.h>
+#include <drm/drm_panel.h>
+
+#include "synaptics_tcm_gesture.h"
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/spi/spi.h>
@@ -73,9 +78,14 @@
 #define SYNA_TCM_CMD_RESET			0x04
 #define SYNA_TCM_CMD_RUN_APPLICATION_FIRMWARE	0x14
 #define SYNA_TCM_CMD_GET_APPLICATION_INFO	0x20
+#define SYNA_TCM_CMD_GET_DYNAMIC_CONFIG		0x23
+#define SYNA_TCM_CMD_SET_DYNAMIC_CONFIG		0x24
 #define SYNA_TCM_CMD_GET_TOUCH_REPORT_CONFIG	0x25
 #define SYNA_TCM_CMD_SET_TOUCH_REPORT_CONFIG	0x26
 #define SYNA_TCM_CMD_ENTER_DEEP_SLEEP		0x2c
+#define SYNA_TCM_DC_GESTURE			0x09
+#define SYNA_TCM_DC_TOUCH_HOLD			0xd4
+#define SYNA_TCM_DC_GESTURE_MASK			0xfe
 
 #define SYNA_TCM_STATUS_IDLE			0x00
 #define SYNA_TCM_STATUS_OK			0x01
@@ -171,6 +181,12 @@ struct syna_tcm_object {
 struct syna_tcm {
 	struct spi_device *spi;
 	struct input_dev *input;
+	struct input_dev *gesture_input;
+	struct drm_panel_follower panel_follower;
+	bool has_panel, panel_off, gesture_mode, fod_contact, wake_suspend;
+	u32 gesture_entries, gesture_exits, double_taps, fod_downs, fod_ups;
+	u32 gesture_errors;
+	u64 mode_us;
 	struct touchscreen_properties prop;
 	struct gpio_desc *reset_gpio;
 	struct regulator *vdd;
@@ -240,6 +256,22 @@ static const u8 syna_tcm_touch_config[] = {
 	SYNA_TCM_TOUCH_FOREACH_END,
 	SYNA_TCM_TOUCH_END,
 };
+
+/* Factory S3910 version-2 normal / gesture prefix followed by MT objects.
+ * Keeping one verified layout across modes avoids a contact discontinuity
+ * while the fingerprint presentation wakes the display.
+ */
+static const u8 syna_tcm_gesture_config[] = {
+	0x10, 8, 0xc6, 48, 0xc7, 192,
+	SYNA_TCM_TOUCH_FOREACH_ACTIVE_OBJECT,
+	SYNA_TCM_TOUCH_OBJECT_N_INDEX, 4,
+	SYNA_TCM_TOUCH_OBJECT_N_CLASSIFICATION, 4,
+	SYNA_TCM_TOUCH_OBJECT_N_X_POSITION, 16,
+	SYNA_TCM_TOUCH_OBJECT_N_Y_POSITION, 16,
+	SYNA_TCM_TOUCH_FOREACH_END, SYNA_TCM_TOUCH_END,
+};
+
+static int syna_tcm_apply_mode(struct syna_tcm *ts, bool screen_off);
 
 static int syna_tcm_grow(u8 **buf, unsigned int *size, unsigned int need)
 {
@@ -444,7 +476,8 @@ static bool syna_tcm_code_has_width(u8 code)
 	return (code >= SYNA_TCM_TOUCH_TIMESTAMP &&
 		code <= SYNA_TCM_TOUCH_NUM_OF_CPU_CYCLES_USED_SINCE_LAST_FRAME) ||
 	       (code >= SYNA_TCM_TOUCH_TUNING_GAUSSIAN_WIDTHS &&
-		code <= SYNA_TCM_TOUCH_TUNING_0D_BUTTONS_VARIANCE);
+		code <= SYNA_TCM_TOUCH_TUNING_0D_BUTTONS_VARIANCE) ||
+	       code == 0xc6 || code == 0xc7;
 }
 
 /* Index just past the end of the object loop at or after @idx. */
@@ -608,6 +641,58 @@ static int syna_tcm_parse_touch_report(struct syna_tcm *ts)
 	return 0;
 }
 
+/* Firmware FOD down/up is a physical contact, mapped to slot zero with the
+ * firmware's own coordinates. Ordinary MT reports are suppressed in gesture
+ * mode. Never generate a contact from a timer, wake key, or cached location.
+ */
+static bool syna_tcm_report_gesture(struct syna_tcm *ts)
+{
+	struct syna_tcm_gesture gesture;
+	int error;
+
+	error = syna_tcm_decode_gesture(&ts->in[SYNA_TCM_HEADER_SIZE],
+				       ts->payload_length, ts->max_x, ts->max_y,
+				       &gesture);
+	if (error) {
+		ts->gesture_errors++;
+		if (ts->fod_contact) {
+			syna_tcm_release_contacts(ts);
+			ts->fod_contact = false;
+		}
+		return true;
+	}
+
+	if (gesture.code == SYNA_TCM_GESTURE_DTAP && ts->gesture_mode) {
+		ts->double_taps++;
+		pm_wakeup_event(&ts->spi->dev, 500);
+		input_report_key(ts->gesture_input, KEY_WAKEUP, 1);
+		input_sync(ts->gesture_input);
+		input_report_key(ts->gesture_input, KEY_WAKEUP, 0);
+		input_sync(ts->gesture_input);
+	} else if (gesture.code == SYNA_TCM_GESTURE_FOD_DOWN &&
+		   (ts->gesture_mode || ts->fod_contact)) {
+		if (!ts->fod_contact) {
+			ts->fod_downs++;
+			pm_wakeup_event(&ts->spi->dev, 1000);
+			input_mt_slot(ts->input, 0);
+			input_mt_report_slot_state(ts->input, MT_TOOL_FINGER, true);
+			touchscreen_report_pos(ts->input, &ts->prop,
+					       gesture.x, gesture.y, true);
+			input_mt_sync_frame(ts->input);
+			input_sync(ts->input);
+			ts->fod_contact = true;
+		}
+		return true;
+	} else if (gesture.code == SYNA_TCM_GESTURE_FOD_UP && ts->fod_contact) {
+		ts->fod_ups++;
+		syna_tcm_release_contacts(ts);
+		ts->fod_contact = false;
+		return true;
+	}
+
+	return ts->gesture_mode;
+}
+
 static void syna_tcm_report_touch(struct syna_tcm *ts)
 {
 	struct syna_tcm_object *object;
@@ -615,6 +700,8 @@ static void syna_tcm_report_touch(struct syna_tcm *ts)
 	int error;
 
 	if (!ts->report_touch)
+		return;
+	if (ts->has_panel && syna_tcm_report_gesture(ts))
 		return;
 
 	error = syna_tcm_parse_touch_report(ts);
@@ -624,6 +711,7 @@ static void syna_tcm_report_touch(struct syna_tcm *ts)
 		return;
 	}
 
+	ts->fod_contact = false;
 	for (i = 0; i < ts->max_objects; i++) {
 		object = &ts->objects[i];
 
@@ -942,7 +1030,10 @@ static int syna_tcm_set_report_config(struct syna_tcm *ts)
 	if (!config)
 		return -ENOMEM;
 
-	memcpy(config, syna_tcm_touch_config, sizeof(syna_tcm_touch_config));
+	if (ts->has_panel)
+		memcpy(config, syna_tcm_gesture_config, sizeof(syna_tcm_gesture_config));
+	else
+		memcpy(config, syna_tcm_touch_config, sizeof(syna_tcm_touch_config));
 
 	error = syna_tcm_command(ts, SYNA_TCM_CMD_SET_TOUCH_REPORT_CONFIG,
 				 config, length);
@@ -971,6 +1062,11 @@ static int syna_tcm_get_report_config(struct syna_tcm *ts)
 	if (ts->resp_length)
 		memcpy(ts->config, ts->resp, ts->resp_length);
 	ts->config_length = ts->resp_length;
+	if (ts->has_panel &&
+	    (ts->config_length < sizeof(syna_tcm_gesture_config) ||
+	     memcmp(ts->config, syna_tcm_gesture_config,
+		    sizeof(syna_tcm_gesture_config))))
+		return -EPROTO;
 
 	return 0;
 }
@@ -1073,6 +1169,8 @@ static int syna_tcm_reinit(struct syna_tcm *ts)
 		return error;
 
 	syna_tcm_start_reporting(ts);
+	if (ts->has_panel)
+		return syna_tcm_apply_mode(ts, ts->panel_off);
 
 	return 0;
 }
@@ -1115,6 +1213,8 @@ static int syna_tcm_wake(struct syna_tcm *ts)
 		return error;
 
 	syna_tcm_start_reporting(ts);
+	if (ts->has_panel)
+		return syna_tcm_apply_mode(ts, ts->panel_off);
 
 	return 0;
 }
@@ -1125,7 +1225,12 @@ static void syna_tcm_resume_work(struct work_struct *work)
 					   struct syna_tcm, resume_work);
 	int error;
 
-	error = syna_tcm_wake(ts);
+	if (ts->has_panel && !READ_ONCE(ts->suspended)) {
+		guard(mutex)(&ts->reset_lock);
+		error = syna_tcm_apply_mode(ts, ts->panel_off);
+	} else {
+		error = syna_tcm_wake(ts);
+	}
 	if (error)
 		dev_err(&ts->spi->dev, "failed to reinitialize after resume: %d\n",
 			error);
@@ -1226,6 +1331,127 @@ static int syna_tcm_setup_input(struct syna_tcm *ts)
 	return 0;
 }
 
+/* reset_lock serialises panel changes, PM and controller recovery. */
+static int syna_tcm_config_value(struct syna_tcm *ts, u8 id, u16 value)
+{
+	u8 payload[3] = { id, value, value >> 8 };
+	int error;
+
+	guard(mutex)(&ts->cmd_lock);
+	error = __syna_tcm_command(ts, SYNA_TCM_CMD_SET_DYNAMIC_CONFIG,
+				   payload, sizeof(payload));
+	if (error)
+		return error;
+	error = __syna_tcm_command(ts, SYNA_TCM_CMD_GET_DYNAMIC_CONFIG, &id, 1);
+	if (error)
+		return error;
+	if (ts->resp_length < 2 || get_unaligned_le16(ts->resp) != value)
+		return -EIO;
+	return 0;
+}
+
+static int syna_tcm_apply_mode(struct syna_tcm *ts, bool screen_off)
+{
+	u64 start = ktime_get_ns();
+	int error;
+
+	lockdep_assert_held(&ts->reset_lock);
+	scoped_guard(mutex, &ts->io_lock) {
+		ts->report_touch = false;
+		if (screen_off && !ts->fod_contact)
+			syna_tcm_release_contacts(ts);
+	}
+	/* Factory mask bit zero enables double tap; TOUCH_HOLD is independent.
+	 * These are volatile dynamic settings, never firmware/flash writes.
+	 */
+	if (screen_off) {
+		error = syna_tcm_config_value(ts, SYNA_TCM_DC_GESTURE, 1);
+		if (!error)
+			error = syna_tcm_config_value(ts, SYNA_TCM_DC_GESTURE_MASK, 1);
+		if (!error)
+			error = syna_tcm_config_value(ts, SYNA_TCM_DC_TOUCH_HOLD, 1);
+	} else {
+		error = syna_tcm_config_value(ts, SYNA_TCM_DC_GESTURE, 0);
+		if (!error)
+			error = syna_tcm_config_value(ts, SYNA_TCM_DC_TOUCH_HOLD, 2);
+	}
+	scoped_guard(mutex, &ts->io_lock) {
+		ts->mode_us = div_u64(ktime_get_ns() - start, 1000);
+		if (!error) {
+			ts->gesture_mode = screen_off;
+			ts->report_touch = true;
+			if (screen_off)
+				ts->gesture_entries++;
+			else
+				ts->gesture_exits++;
+		} else {
+			ts->gesture_errors++;
+			syna_tcm_release_contacts(ts);
+			ts->fod_contact = false;
+		}
+	}
+	dev_info(&ts->spi->dev, "screen=%s gesture=%u verified=%u transition=%llu us\n",
+		 screen_off ? "off" : "on", screen_off, !error, ts->mode_us);
+	return error;
+}
+
+static int syna_tcm_panel_prepared(struct drm_panel_follower *follower)
+{
+	struct syna_tcm *ts = container_of(follower, struct syna_tcm, panel_follower);
+
+	guard(mutex)(&ts->reset_lock);
+	WRITE_ONCE(ts->panel_off, false);
+	/* A DRM supplier may resume before this SPI consumer. Defer commands
+	 * until our PM resume, after the bus and pending wake IRQ are ready.
+	 */
+	if (READ_ONCE(ts->suspended))
+		return 0;
+	return syna_tcm_apply_mode(ts, false);
+}
+
+static int syna_tcm_panel_unpreparing(struct drm_panel_follower *follower)
+{
+	struct syna_tcm *ts = container_of(follower, struct syna_tcm, panel_follower);
+
+	guard(mutex)(&ts->reset_lock);
+	WRITE_ONCE(ts->panel_off, true);
+	/* A DRM supplier may resume before this SPI consumer. Defer commands
+	 * until our PM resume, after the bus and pending wake IRQ are ready.
+	 */
+	if (READ_ONCE(ts->suspended))
+		return 0;
+	return syna_tcm_apply_mode(ts, true);
+}
+
+static const struct drm_panel_follower_funcs syna_tcm_panel_funcs = {
+	.panel_prepared = syna_tcm_panel_prepared,
+	.panel_unpreparing = syna_tcm_panel_unpreparing,
+};
+
+static void syna_tcm_clear_wake_irq(void *data)
+{
+	dev_pm_clear_wake_irq(data);
+}
+
+static ssize_t gesture_state_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct syna_tcm *ts = dev_get_drvdata(dev);
+
+	guard(mutex)(&ts->io_lock);
+	return sysfs_emit(buf, "panel_off=%u gesture=%u reporting=%u suspended=%u wake_suspend=%u fod_contact=%u entries=%u exits=%u double_taps=%u fod_downs=%u fod_ups=%u errors=%u transition_us=%llu\n",
+		 ts->panel_off, ts->gesture_mode, ts->report_touch, ts->suspended,
+		 ts->wake_suspend, ts->fod_contact, ts->gesture_entries,
+		 ts->gesture_exits, ts->double_taps, ts->fod_downs, ts->fod_ups,
+		 ts->gesture_errors, ts->mode_us);
+}
+static DEVICE_ATTR_RO(gesture_state);
+
+static struct attribute *syna_tcm_attrs[] = {
+	&dev_attr_gesture_state.attr, NULL,
+};
+ATTRIBUTE_GROUPS(syna_tcm);
+
 static int syna_tcm_probe(struct spi_device *spi)
 {
 	struct device *dev = &spi->dev;
@@ -1244,6 +1470,8 @@ static int syna_tcm_probe(struct spi_device *spi)
 		return -ENOMEM;
 
 	ts->spi = spi;
+	ts->has_panel = drm_is_panel_follower(dev);
+	ts->panel_off = ts->has_panel;
 	spi_set_drvdata(spi, ts);
 
 	error = devm_mutex_init(dev, &ts->reset_lock);
@@ -1337,6 +1565,35 @@ static int syna_tcm_probe(struct spi_device *spi)
 		ts->report_touch = true;
 	}
 
+	if (ts->has_panel) {
+		ts->gesture_input = devm_input_allocate_device(dev);
+		if (!ts->gesture_input)
+			return -ENOMEM;
+		ts->gesture_input->name = "synaptics_tcm_gesture";
+		ts->gesture_input->id.bustype = BUS_SPI;
+		input_set_capability(ts->gesture_input, EV_KEY, KEY_WAKEUP);
+		error = input_register_device(ts->gesture_input);
+		if (error)
+			return error;
+		error = devm_device_init_wakeup(dev);
+		if (error)
+			return error;
+		error = dev_pm_set_wake_irq(dev, spi->irq);
+		if (error)
+			return error;
+		error = devm_add_action_or_reset(dev, syna_tcm_clear_wake_irq, dev);
+		if (error)
+			return error;
+		scoped_guard(mutex, &ts->reset_lock)
+			error = syna_tcm_apply_mode(ts, true);
+		if (error)
+			return dev_err_probe(dev, error, "failed to initialise gesture mode\n");
+		ts->panel_follower.funcs = &syna_tcm_panel_funcs;
+		error = devm_drm_panel_add_follower(dev, &ts->panel_follower);
+		if (error)
+			return dev_err_probe(dev, error, "failed to follow display panel\n");
+	}
+
 	dev_info(dev, "TouchComm v%u, %.*s, build %u: %ux%u, %u objects\n",
 		 ts->id_info.version,
 		 (int)strnlen(ts->id_info.part_number,
@@ -1353,6 +1610,25 @@ static int syna_tcm_suspend(struct device *dev)
 	int error;
 
 	cancel_delayed_work_sync(&ts->resume_work);
+	cancel_work_sync(&ts->reinit_work);
+
+	if (ts->has_panel && device_may_wakeup(dev)) {
+		guard(mutex)(&ts->reset_lock);
+		/* Do not re-arm a sleeping controller on every system suspend. */
+		if (!ts->gesture_mode || !ts->report_touch) {
+			error = syna_tcm_apply_mode(ts, true);
+			if (error)
+				return error;
+		}
+		scoped_guard(mutex, &ts->io_lock) {
+			ts->suspended = true;
+			ts->wake_suspend = true;
+		}
+		/* PM wakeirq masks delivery while SPI is asleep, then replays
+		 * the pending level IRQ after the bus resumes. No reset needed.
+		 */
+		return 0;
+	}
 
 	scoped_guard(mutex, &ts->io_lock) {
 		/* Still suspended: the resume work did not run. */
@@ -1383,10 +1659,26 @@ static int syna_tcm_resume(struct device *dev)
 {
 	struct syna_tcm *ts = dev_get_drvdata(dev);
 
+	if (ts->wake_suspend) {
+		/* Keep gesture mode until the DRM panel prepares. Process the
+		 * wake-causing report before changing firmware mode.
+		 */
+		guard(mutex)(&ts->io_lock);
+		ts->suspended = false;
+		ts->wake_suspend = false;
+		if (!ts->panel_off)
+			mod_delayed_work(system_dfl_wq, &ts->resume_work,
+				msecs_to_jiffies(SYNA_TCM_RESUME_DELAY_MS));
+		return 0;
+	}
+
 	scoped_guard(mutex, &ts->io_lock) {
 		if (!ts->suspended)
 			return 0;
 	}
+
+	if (ts->has_panel)
+		return syna_tcm_wake(ts);
 
 	/* Bring the controller back once the SPI controller is up again. */
 	mod_delayed_work(system_dfl_wq, &ts->resume_work,
@@ -1415,6 +1707,7 @@ static struct spi_driver syna_tcm_spi_driver = {
 		.name = "synaptics_tcm_spi",
 		.of_match_table = syna_tcm_of_match,
 		.pm = pm_sleep_ptr(&syna_tcm_pm_ops),
+		.dev_groups = syna_tcm_groups,
 	},
 	.probe = syna_tcm_probe,
 	.id_table = syna_tcm_spi_ids,

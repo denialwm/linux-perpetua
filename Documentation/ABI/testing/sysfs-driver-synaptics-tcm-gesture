@@ -1,0 +1,12 @@
+What:           /sys/bus/spi/devices/.../gesture_state
+Date:           October 2026
+Contact:        Doctor Logix <doctor.logix@gmail.com>
+Description:
+                Read-only mode and event counters for an S3910 following a DRM
+                panel. gesture=1 means the volatile wakeup-gesture, double-tap
+                mask and touch-hold settings were written and read back.
+                reporting=0 indicates setup/recovery or a mode failure.
+                Event counters include only firmware-decoded double taps and
+                FOD contacts; no coordinates or biometric data are exposed.
+                power/wakeup uses the standard device wakeup ABI. The state
+                reports system wake retention separately from display-off.

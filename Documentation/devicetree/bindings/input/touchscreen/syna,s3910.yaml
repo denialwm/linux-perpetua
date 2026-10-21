@@ -28,6 +28,12 @@ properties:
   interrupts:
     maxItems: 1
 
+  panel:
+    maxItems: 1
+    description: Display panel followed for gesture-sleep entry and exit.
+
+  wakeup-source: true
+
   reset-gpios:
     maxItems: 1
     description: GPIO connected to the active-low reset input.
