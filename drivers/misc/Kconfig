@@ -586,4 +586,11 @@ source "drivers/misc/keba/Kconfig"
 source "drivers/misc/amd-sbi/Kconfig"
 source "drivers/misc/rp1/Kconfig"
 source "drivers/misc/issei/Kconfig"
+config OPLUS_UFF_FP
+	tristate "OnePlus Aston UFF fingerprint platform control"
+	depends on OF && GPIOLIB && REGULATOR
+	help
+	  Power, reset and interrupt control for Aston's secure optical sensor.
+	  Biometric commands use QTEE; this is not a complete fingerprint HAL.
+
 endmenu

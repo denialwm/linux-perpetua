@@ -1,0 +1,13 @@
+What: /dev/fingerprint_dev retained standby ioctls
+Date: October 2026
+Contact: Doctor Logix <doctor.logix@gmail.com>
+Description:
+  UFF_FP_IOC_SET_STANDBY accepts a u32 boolean on the exclusive root-only
+  control descriptor. The owner must first complete the signed sensor sleep
+  command. One keeps the regulated supply/reset state, gates the IRQ and
+  reduces the regulator load vote to 1 mA. Zero restores the active load
+  vote/IRQ without reset. GET_STATE reports ABI version 1, powered, standby,
+  and a physical reset generation. Reset in standby fails with EBUSY.
+  Suspend is allowed only while powered off or in explicitly entered standby.
+  Final close, including process death, always powers off and asserts reset.
+  A load vote is not a measurement of actual sensor current.
