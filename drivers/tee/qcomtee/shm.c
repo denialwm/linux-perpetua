@@ -5,6 +5,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/dma-map-ops.h>
 #include <linux/firmware/qcom/qcom_tzmem.h>
 #include <linux/mm.h>
 
@@ -114,15 +115,68 @@ static int qcomtee_shm_unregister(struct tee_context *ctx, struct tee_shm *shm)
 	return 0;
 }
 
+/* Large legacy trusted applications exceed the buddy allocator's maximum
+ * order. QTEE still requires one physically contiguous, shared region.
+ * Keep ordinary allocations on the existing path and obtain larger regions
+ * from CMA, with the same SHM bridge registration and userspace mapping.
+ */
+static bool qcomtee_shm_needs_cma(size_t size)
+{
+	return size > (PAGE_SIZE << MAX_PAGE_ORDER);
+}
+
 static int pool_op_alloc(struct tee_shm_pool *pool, struct tee_shm *shm,
 			 size_t size, size_t align)
 {
-	return tee_dyn_shm_alloc_helper(shm, size, align, qcomtee_shm_register);
+	struct page *page;
+	size_t count, i;
+	int ret;
+
+	if (!qcomtee_shm_needs_cma(size))
+		return tee_dyn_shm_alloc_helper(shm, size, align,
+					      qcomtee_shm_register);
+	if (size > SIZE_MAX - PAGE_SIZE + 1)
+		return -EINVAL;
+	count = DIV_ROUND_UP(size, PAGE_SIZE);
+	shm->pages = kcalloc(count, sizeof(*shm->pages), GFP_KERNEL);
+	if (!shm->pages)
+		return -ENOMEM;
+	page = dma_alloc_from_contiguous(NULL, count, 0, false);
+	if (!page) {
+		ret = -ENOMEM;
+		goto free_array;
+	}
+	shm->kaddr = page_address(page);
+	shm->paddr = page_to_phys(page);
+	shm->size = count * PAGE_SIZE;
+	shm->num_pages = count;
+	memset(shm->kaddr, 0, shm->size);
+	for (i = 0; i < count; i++)
+		shm->pages[i] = page + i;
+	ret = qcomtee_shm_register(shm->ctx, shm, shm->pages, count,
+				   (unsigned long)shm->kaddr);
+	if (!ret)
+		return 0;
+	dma_release_from_contiguous(NULL, page, count);
+	shm->kaddr = NULL;
+ free_array:
+	kfree(shm->pages);
+	shm->pages = NULL;
+	return ret;
 }
 
 static void pool_op_free(struct tee_shm_pool *pool, struct tee_shm *shm)
 {
-	tee_dyn_shm_free_helper(shm, qcomtee_shm_unregister);
+	if (!qcomtee_shm_needs_cma(shm->size)) {
+		tee_dyn_shm_free_helper(shm, qcomtee_shm_unregister);
+		return;
+	}
+	qcomtee_shm_unregister(shm->ctx, shm);
+	memzero_explicit(shm->kaddr, shm->size);
+	dma_release_from_contiguous(NULL, shm->pages[0], shm->num_pages);
+	kfree(shm->pages);
+	shm->pages = NULL;
+	shm->kaddr = NULL;
 }
 
 static void pool_op_destroy_pool(struct tee_shm_pool *pool)
