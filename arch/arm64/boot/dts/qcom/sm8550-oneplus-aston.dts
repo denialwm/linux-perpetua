@@ -150,6 +150,16 @@
 		pinctrl-names = "default";
 	};
 
+	/* Factory project 23861: GPIO42 reset, GPIO40 IRQ, PM8550 L14 3.01 V. */
+	fingerprint {
+		compatible = "oneplus,aston-fingerprint";
+		reset-gpios = <&tlmm 42 GPIO_ACTIVE_LOW>;
+		interrupt-gpios = <&tlmm 40 GPIO_ACTIVE_HIGH>;
+		vdd-supply = <&vreg_l14b_3p2>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&fingerprint_default>;
+	};
+
 	vph_pwr: regulator-vph-pwr {
 		compatible = "regulator-fixed";
 		regulator-name = "vph_pwr";
@@ -967,7 +977,7 @@
 
 	status = "okay";
 
-	panel@0 {
+	aston_panel: panel@0 {
 		compatible = "oneplus,aston-boe-aa551";
 		reg = <0>;
 
@@ -1174,6 +1184,8 @@
 
 	touchscreen@0 {
 		compatible = "syna,s3910";
+		panel = <&aston_panel>;
+		wakeup-source;
 		reg = <0>;
 		spi-max-frequency = <19000000>;
 
@@ -1212,6 +1224,23 @@
 
 &tlmm {
 	gpio-reserved-ranges = <32 8>;
+
+	fingerprint_default: fingerprint-default-state {
+		reset-pins {
+			pins = "gpio42";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			output-low;
+		};
+		interrupt-pins {
+			pins = "gpio40";
+			function = "gpio";
+			drive-strength = <2>;
+			bias-disable;
+			input-enable;
+		};
+	};
 
 	bt_default: bt-default-state {
 		bt-en-pins {
