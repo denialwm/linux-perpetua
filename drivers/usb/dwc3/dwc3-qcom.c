@@ -10,6 +10,7 @@
 #include <linux/irq.h>
 #include <linux/of_clk.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/kernel.h>
 #include <linux/interconnect.h>
 #include <linux/platform_device.h>
@@ -84,6 +85,7 @@ struct dwc3_qcom {
 	struct icc_path		*icc_path_ddr;
 	struct icc_path		*icc_path_apps;
 
+	struct mutex		role_lock;
 	enum usb_role		current_role;
 	bool			role_pm_enabled;
 	bool			device_pm_held;
@@ -564,6 +566,8 @@ static void dwc3_qcom_set_role_notifier(struct dwc3 *dwc, enum usb_role next_rol
 {
 	struct dwc3_qcom *qcom = to_dwc3_qcom(dwc);
 
+	guard(mutex)(&qcom->role_lock);
+
 	if (qcom->current_role == next_role)
 		return;
 
@@ -573,7 +577,7 @@ static void dwc3_qcom_set_role_notifier(struct dwc3 *dwc, enum usb_role next_rol
 	}
 
 	/* Publish the role before a later gadget restart consults it. */
-	qcom->current_role = next_role;
+	WRITE_ONCE(qcom->current_role, next_role);
 	dwc3_qcom_vbus_override_enable(qcom, next_role == USB_ROLE_DEVICE);
 
 	if (qcom->role_pm_enabled) {
@@ -604,7 +608,7 @@ static void dwc3_qcom_run_stop_notifier(struct dwc3 *dwc, bool is_on)
 		return;
 
 	dwc3_qcom_vbus_override_enable(qcom,
-				       qcom->current_role == USB_ROLE_DEVICE);
+				       READ_ONCE(qcom->current_role) == USB_ROLE_DEVICE);
 	pm_runtime_mark_last_busy(qcom->dev);
 }
 
@@ -629,6 +633,7 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	qcom->dev = &pdev->dev;
+	mutex_init(&qcom->role_lock);
 
 	qcom->resets = devm_reset_control_array_get_optional_exclusive(dev);
 	if (IS_ERR(qcom->resets)) {
@@ -733,6 +738,8 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 	 * fixed-role controllers still require an external runtime-PM policy.
 	 */
 	if (qcom->dwc.role_sw) {
+		guard(mutex)(&qcom->role_lock);
+
 		if (qcom->current_role == USB_ROLE_DEVICE) {
 			pm_runtime_get_noresume(dev);
 			qcom->device_pm_held = true;
@@ -760,11 +767,13 @@ static void dwc3_qcom_remove(struct platform_device *pdev)
 		return;
 
 	/* Keep removal active while the role switch and gadget are torn down. */
+	mutex_lock(&qcom->role_lock);
 	qcom->role_pm_enabled = false;
 	if (qcom->device_pm_held) {
 		pm_runtime_put_noidle(qcom->dev);
 		qcom->device_pm_held = false;
 	}
+	mutex_unlock(&qcom->role_lock);
 
 	dwc3_core_remove(&qcom->dwc);
 	clk_bulk_disable_unprepare(qcom->num_clocks, qcom->clks);
