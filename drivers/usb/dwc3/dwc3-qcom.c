@@ -85,6 +85,8 @@ struct dwc3_qcom {
 	struct icc_path		*icc_path_apps;
 
 	enum usb_role		current_role;
+	bool			role_pm_enabled;
+	bool			device_pm_held;
 };
 
 #define to_dwc3_qcom(d) container_of((d), struct dwc3_qcom, dwc)
@@ -570,19 +572,22 @@ static void dwc3_qcom_set_role_notifier(struct dwc3 *dwc, enum usb_role next_rol
 		return;
 	}
 
-	if (qcom->current_role == USB_ROLE_DEVICE)
-		dwc3_qcom_vbus_override_enable(qcom, false);
-	else if (qcom->current_role != USB_ROLE_DEVICE)
-		dwc3_qcom_vbus_override_enable(qcom, true);
+	/* Publish the role before a later gadget restart consults it. */
+	qcom->current_role = next_role;
+	dwc3_qcom_vbus_override_enable(qcom, next_role == USB_ROLE_DEVICE);
+
+	if (qcom->role_pm_enabled) {
+		if (next_role == USB_ROLE_DEVICE && !qcom->device_pm_held) {
+			pm_runtime_get_noresume(qcom->dev);
+			qcom->device_pm_held = true;
+		} else if (next_role != USB_ROLE_DEVICE && qcom->device_pm_held) {
+			pm_runtime_put_noidle(qcom->dev);
+			qcom->device_pm_held = false;
+		}
+	}
 
 	pm_runtime_mark_last_busy(qcom->dev);
-	pm_runtime_put_sync(qcom->dev);
-
-	/*
-	 * Current role changes via usb_role_switch_set_role callback protected
-	 * internally by mutex lock.
-	 */
-	qcom->current_role = next_role;
+	pm_runtime_put_autosuspend(qcom->dev);
 }
 
 static void dwc3_qcom_run_stop_notifier(struct dwc3 *dwc, bool is_on)
@@ -598,7 +603,8 @@ static void dwc3_qcom_run_stop_notifier(struct dwc3 *dwc, bool is_on)
 	if (!is_on)
 		return;
 
-	dwc3_qcom_vbus_override_enable(qcom, true);
+	dwc3_qcom_vbus_override_enable(qcom,
+				       qcom->current_role == USB_ROLE_DEVICE);
 	pm_runtime_mark_last_busy(qcom->dev);
 }
 
@@ -720,6 +726,21 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
 
 	qcom->is_suspended = false;
 
+	/*
+	 * A role switch can resume us on cable insertion. Hold a reference in
+	 * device mode, where the PHY wake IRQs cannot detect an attachment.
+	 * Keep the default role awake until the connector reports its state;
+	 * fixed-role controllers still require an external runtime-PM policy.
+	 */
+	if (qcom->dwc.role_sw) {
+		if (qcom->current_role == USB_ROLE_DEVICE) {
+			pm_runtime_get_noresume(dev);
+			qcom->device_pm_held = true;
+		}
+		qcom->role_pm_enabled = true;
+		pm_runtime_allow(dev);
+	}
+
 	return 0;
 
 remove_core:
@@ -737,6 +758,13 @@ static void dwc3_qcom_remove(struct platform_device *pdev)
 
 	if (pm_runtime_resume_and_get(qcom->dev) < 0)
 		return;
+
+	/* Keep removal active while the role switch and gadget are torn down. */
+	qcom->role_pm_enabled = false;
+	if (qcom->device_pm_held) {
+		pm_runtime_put_noidle(qcom->dev);
+		qcom->device_pm_held = false;
+	}
 
 	dwc3_core_remove(&qcom->dwc);
 	clk_bulk_disable_unprepare(qcom->num_clocks, qcom->clks);
