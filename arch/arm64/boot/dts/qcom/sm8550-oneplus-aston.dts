@@ -906,11 +906,6 @@
 	};
 };
 
-/* QCE has no supported driver and otherwise blocks interconnect sync. */
-&crypto {
-	status = "disabled";
-};
-
 &gpi_dma1 {
 	status = "okay";
 };

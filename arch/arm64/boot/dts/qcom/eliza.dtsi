@@ -2337,6 +2337,9 @@
 
 			iommus = <&apps_smmu 0x480 0>,
 				 <&apps_smmu 0x481 0>;
+
+			/* The QCE driver is unsupported (CRYPTO_DEV_QCE depends on BROKEN). */
+			status = "disabled";
 		};
 
 		tcsr_mutex: hwlock@1f40000 {

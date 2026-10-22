@@ -486,15 +486,6 @@
 };
 
 /* Channels 0 and 5 belong to another execution environment (stock gpii-mask). */
-&crypto {
-	/*
-	 * No driver can bind the QCE (CRYPTO_DEV_QCE depends on BROKEN). An
-	 * unbound consumer holds the interconnect providers' sync_state, so
-	 * every bus would stay at its boot-time maximum vote.
-	 */
-	status = "disabled";
-};
-
 &gpi_dma1 {
 	dma-channel-mask = <0x1e>;
 };

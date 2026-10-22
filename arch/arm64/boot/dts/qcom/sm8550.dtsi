@@ -2721,6 +2721,9 @@
 			interconnects = <&aggre2_noc MASTER_CRYPTO QCOM_ICC_TAG_ALWAYS
 					 &mc_virt SLAVE_EBI1 QCOM_ICC_TAG_ALWAYS>;
 			interconnect-names = "memory";
+
+			/* The QCE driver is unsupported (CRYPTO_DEV_QCE depends on BROKEN). */
+			status = "disabled";
 		};
 
 		ufs_mem_phy: phy@1d80000 {
