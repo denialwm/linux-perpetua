@@ -1214,6 +1214,8 @@ patternProperties:
     description: Novatek
   "^novtech,.*":
     description: NovTech, Inc.
+  "^nubia,.*":
+    description: Nubia Technology Co., Ltd.
   "^nuclei,.*":
     description: Nuclei System Technology
   "^numonyx,.*":
