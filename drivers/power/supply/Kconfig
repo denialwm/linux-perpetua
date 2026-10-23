@@ -217,6 +217,15 @@ config BATTERY_QCOM_BATTMGR
 	  which is used on modern Qualcomm platforms to provide battery and
 	  power supply information.
 
+config CHARGER_SC8517
+	tristate "Southchip SC8517 SuperVOOC direct charger"
+	depends on I2C && GPIOLIB && BATTERY_QCOM_BATTMGR
+	select REGMAP_I2C
+	help
+	  Enable the SC8517 direct charging path and SuperVOOC adapter protocol.
+	  The driver uses a discrete fuel gauge and the Qualcomm PMIC GLINK
+	  USB supply to negotiate charging and restore the normal charger path.
+
 config BATTERY_OLPC
 	tristate "One Laptop Per Child battery"
 	depends on OLPC_EC
