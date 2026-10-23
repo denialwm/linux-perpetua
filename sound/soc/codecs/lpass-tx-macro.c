@@ -2,6 +2,8 @@
 // Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
 
 #include <linux/module.h>
+#include <linux/cleanup.h>
+#include <linux/mutex.h>
 #include <linux/init.h>
 #include <linux/clk.h>
 #include <linux/io.h>
@@ -281,6 +283,9 @@ struct tx_macro {
 	struct clk *fsgen;
 	struct clk_hw hw;
 	bool dec_active[NUM_DECIMATORS];
+	struct mutex mute_lock; /* Compose user, stream and startup gates with routes. */
+	unsigned long capture_mute;
+	unsigned long stream_mute;
 	int tx_mclk_users;
 	bool bcs_enable;
 	int dec_mode[NUM_DECIMATORS];
@@ -717,6 +722,77 @@ static void tx_macro_tx_hpf_corner_freq_callback(struct work_struct *work)
 	}
 }
 
+/* Caller holds mute_lock; a shared decimator stays muted for either owner. */
+static int tx_macro_apply_mute(struct tx_macro *tx, unsigned int decimator)
+{
+	bool mute = !tx->dec_active[decimator];
+	unsigned long muted = tx->capture_mute | tx->stream_mute;
+	unsigned int dai;
+
+	for (dai = TX_MACRO_AIF1_CAP; dai <= TX_MACRO_AIF3_CAP; dai++)
+		if (test_bit(decimator, &tx->active_ch_mask[dai]) &&
+		    test_bit(dai, &muted))
+			mute = true;
+	return snd_soc_component_write_field(tx->component, CDC_TXn_TX_PATH_CTL(decimator),
+					     CDC_TXn_PGA_MUTE_MASK, mute);
+}
+
+static int tx_macro_apply_dai_mute(struct tx_macro *tx, unsigned int dai)
+{
+	unsigned int decimator;
+	int ret, first = 0;
+
+	for (decimator = 0; decimator < NUM_DECIMATORS; decimator++) {
+		if (!test_bit(decimator, &tx->active_ch_mask[dai]))
+			continue;
+		ret = tx_macro_apply_mute(tx, decimator);
+		if (ret < 0 && !first)
+			first = ret;
+	}
+	return first;
+}
+
+static int tx_macro_capture_switch_get(struct snd_kcontrol *kcontrol,
+				       struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct tx_macro *tx = snd_soc_component_get_drvdata(component);
+	struct soc_mixer_control *mc = (void *)kcontrol->private_value;
+
+	guard(mutex)(&tx->mute_lock);
+	ucontrol->value.integer.value[0] = !test_bit(mc->shift, &tx->capture_mute);
+	return 0;
+}
+
+static int tx_macro_capture_switch_put(struct snd_kcontrol *kcontrol,
+				       struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct tx_macro *tx = snd_soc_component_get_drvdata(component);
+	struct soc_mixer_control *mc = (void *)kcontrol->private_value;
+	long enabled = ucontrol->value.integer.value[0];
+	unsigned long previous;
+	int ret;
+
+	if (enabled != 0 && enabled != 1)
+		return -EINVAL;
+	guard(mutex)(&tx->mute_lock);
+	if (test_bit(mc->shift, &tx->capture_mute) == !enabled)
+		return 0;
+	previous = tx->capture_mute;
+	if (enabled)
+		clear_bit(mc->shift, &tx->capture_mute);
+	else
+		set_bit(mc->shift, &tx->capture_mute);
+	ret = tx_macro_apply_dai_mute(tx, mc->shift);
+	if (ret < 0) {
+		tx->capture_mute = previous;
+		tx_macro_apply_dai_mute(tx, mc->shift);
+		return ret;
+	}
+	return 1;
+}
+
 static void tx_macro_mute_update_callback(struct work_struct *work)
 {
 	struct tx_mute_work *tx_mute_dwork;
@@ -724,6 +800,7 @@ static void tx_macro_mute_update_callback(struct work_struct *work)
 	struct tx_macro *tx;
 	struct delayed_work *delayed_work;
 	u8 decimator;
+	int ret;
 
 	delayed_work = to_delayed_work(work);
 	tx_mute_dwork = container_of(delayed_work, struct tx_mute_work, dwork);
@@ -731,8 +808,11 @@ static void tx_macro_mute_update_callback(struct work_struct *work)
 	component = tx->component;
 	decimator = tx_mute_dwork->decimator;
 
-	snd_soc_component_write_field(component, CDC_TXn_TX_PATH_CTL(decimator),
-				      CDC_TXn_PGA_MUTE_MASK, 0x0);
+	guard(mutex)(&tx->mute_lock);
+	tx->dec_active[decimator] = true;
+	ret = tx_macro_apply_mute(tx, decimator);
+	if (ret < 0)
+		dev_err(component->dev, "TX decimator %u mute update failed: %d\n", decimator, ret);
 }
 
 static int tx_macro_mclk_event(struct snd_soc_dapm_widget *w,
@@ -868,6 +948,7 @@ static int tx_macro_tx_mixer_get(struct snd_kcontrol *kcontrol,
 	u32 dec_id = mc->shift;
 	struct tx_macro *tx = snd_soc_component_get_drvdata(component);
 
+	guard(mutex)(&tx->mute_lock);
 	if (test_bit(dec_id, &tx->active_ch_mask[dai_id]))
 		ucontrol->value.integer.value[0] = 1;
 	else
@@ -887,21 +968,25 @@ static int tx_macro_tx_mixer_put(struct snd_kcontrol *kcontrol,
 	u32 dec_id = mc->shift;
 	u32 enable = ucontrol->value.integer.value[0];
 	struct tx_macro *tx = snd_soc_component_get_drvdata(component);
+	int ret;
 
-	if (enable) {
-		if (tx->active_decimator[dai_id] == dec_id)
+	scoped_guard(mutex, &tx->mute_lock) {
+		if (!!test_bit(dec_id, &tx->active_ch_mask[dai_id]) == !!enable)
 			return 0;
-
-		set_bit(dec_id, &tx->active_ch_mask[dai_id]);
-		tx->active_ch_cnt[dai_id]++;
-		tx->active_decimator[dai_id] = dec_id;
-	} else {
-		if (tx->active_decimator[dai_id] == -1)
-			return 0;
-
-		tx->active_ch_cnt[dai_id]--;
-		clear_bit(dec_id, &tx->active_ch_mask[dai_id]);
-		tx->active_decimator[dai_id] = -1;
+		if (enable)
+			set_bit(dec_id, &tx->active_ch_mask[dai_id]);
+		else
+			clear_bit(dec_id, &tx->active_ch_mask[dai_id]);
+		ret = tx_macro_apply_mute(tx, dec_id);
+		if (ret < 0) {
+			if (enable)
+				clear_bit(dec_id, &tx->active_ch_mask[dai_id]);
+			else
+				set_bit(dec_id, &tx->active_ch_mask[dai_id]);
+			return ret;
+		}
+		tx->active_decimator[dai_id] = fls_long(tx->active_ch_mask[dai_id]) - 1;
+		tx->active_ch_cnt[dai_id] = hweight_long(tx->active_ch_mask[dai_id]);
 	}
 	snd_soc_dapm_mixer_update_power(widget->dapm, kcontrol, enable, update);
 
@@ -920,6 +1005,7 @@ static int tx_macro_enable_dec(struct snd_soc_dapm_widget *w,
 	u16 adc_mux_reg, adc_reg, adc_n, dmic;
 	u16 dmic_clk_reg;
 	struct tx_macro *tx = snd_soc_component_get_drvdata(component);
+	int ret;
 
 	decimator = w->shift;
 	tx_vol_ctl_reg = CDC_TXn_TX_PATH_CTL(decimator);
@@ -946,9 +1032,12 @@ static int tx_macro_enable_dec(struct snd_soc_dapm_widget *w,
 		snd_soc_component_write_field(component, dec_cfg_reg,
 					      CDC_TXn_ADC_MODE_MASK,
 					      tx->dec_mode[decimator]);
-		/* Enable TX PGA Mute */
-		snd_soc_component_write_field(component, tx_vol_ctl_reg,
-					      CDC_TXn_PGA_MUTE_MASK, 0x1);
+		scoped_guard(mutex, &tx->mute_lock) {
+			tx->dec_active[decimator] = false;
+			ret = tx_macro_apply_mute(tx, decimator);
+		}
+		if (ret < 0)
+			return ret;
 		break;
 	case SND_SOC_DAPM_POST_PMU:
 		snd_soc_component_write_field(component, tx_vol_ctl_reg,
@@ -1011,10 +1100,14 @@ static int tx_macro_enable_dec(struct snd_soc_dapm_widget *w,
 		}
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
+		/* Join outside mute_lock: the worker takes it before applying the gate. */
+		cancel_delayed_work_sync(&tx->tx_mute_dwork[decimator].dwork);
+		scoped_guard(mutex, &tx->mute_lock) {
+			tx->dec_active[decimator] = false;
+			tx_macro_apply_mute(tx, decimator);
+		}
 		hpf_cut_off_freq =
 			tx->tx_hpf_work[decimator].hpf_cut_off_freq;
-		snd_soc_component_write_field(component, tx_vol_ctl_reg,
-					      CDC_TXn_PGA_MUTE_MASK, 0x1);
 		if (cancel_delayed_work_sync(
 		    &tx->tx_hpf_work[decimator].dwork)) {
 			if (hpf_cut_off_freq != CF_MIN_3DB_150HZ) {
@@ -1046,15 +1139,12 @@ static int tx_macro_enable_dec(struct snd_soc_dapm_widget *w,
 					      0x1);
 			}
 		}
-		cancel_delayed_work_sync(&tx->tx_mute_dwork[decimator].dwork);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		snd_soc_component_write_field(component, tx_vol_ctl_reg,
 					      CDC_TXn_CLK_EN_MASK, 0x0);
 		snd_soc_component_write_field(component, dec_cfg_reg,
 					      CDC_TXn_ADC_MODE_MASK, 0x0);
-		snd_soc_component_write_field(component, tx_vol_ctl_reg,
-					      CDC_TXn_PGA_MUTE_MASK, 0x0);
 		if (tx->bcs_enable) {
 			snd_soc_component_write_field(component, dec_cfg_reg,
 						      CDC_TXn_PH_EN_MASK, 0x0);
@@ -1161,6 +1251,7 @@ static int tx_macro_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
+	guard(mutex)(&tx->mute_lock);
 	for_each_set_bit(decimator, &tx->active_ch_mask[dai->id], TX_MACRO_DEC_MAX)
 		snd_soc_component_update_bits(component, CDC_TXn_TX_PATH_CTL(decimator),
 					      CDC_TXn_PCM_RATE_MASK,
@@ -1175,6 +1266,7 @@ static int tx_macro_get_channel_map(const struct snd_soc_dai *dai,
 	struct snd_soc_component *component = dai->component;
 	struct tx_macro *tx = snd_soc_component_get_drvdata(component);
 
+	guard(mutex)(&tx->mute_lock);
 	switch (dai->id) {
 	case TX_MACRO_AIF1_CAP:
 	case TX_MACRO_AIF2_CAP:
@@ -1192,24 +1284,16 @@ static int tx_macro_digital_mute(struct snd_soc_dai *dai, int mute, int stream)
 {
 	struct snd_soc_component *component = dai->component;
 	struct tx_macro *tx = snd_soc_component_get_drvdata(component);
-	u8 decimator;
-
-	/* active decimator not set yet */
-	if (tx->active_decimator[dai->id] == -1)
+	if (stream != SNDRV_PCM_STREAM_CAPTURE || dai->id < TX_MACRO_AIF1_CAP ||
+	    dai->id > TX_MACRO_AIF3_CAP)
 		return 0;
 
-	decimator = tx->active_decimator[dai->id];
-
+	guard(mutex)(&tx->mute_lock);
 	if (mute)
-		snd_soc_component_write_field(component,
-					      CDC_TXn_TX_PATH_CTL(decimator),
-					      CDC_TXn_PGA_MUTE_MASK, 0x1);
+		set_bit(dai->id, &tx->stream_mute);
 	else
-		snd_soc_component_update_bits(component,
-					      CDC_TXn_TX_PATH_CTL(decimator),
-					      CDC_TXn_PGA_MUTE_MASK, 0x0);
-
-	return 0;
+		clear_bit(dai->id, &tx->stream_mute);
+	return tx_macro_apply_dai_mute(tx, dai->id);
 }
 
 static const struct snd_soc_dai_ops tx_macro_dai_ops = {
@@ -2028,6 +2112,12 @@ static const struct snd_soc_dapm_route tx_audio_map_v9_2[] = {
 };
 
 static const struct snd_kcontrol_new tx_macro_snd_controls[] = {
+	SOC_SINGLE_EXT("TX_AIF1 Capture Switch", SND_SOC_NOPM, TX_MACRO_AIF1_CAP, 1, 0,
+		       tx_macro_capture_switch_get, tx_macro_capture_switch_put),
+	SOC_SINGLE_EXT("TX_AIF2 Capture Switch", SND_SOC_NOPM, TX_MACRO_AIF2_CAP, 1, 0,
+		       tx_macro_capture_switch_get, tx_macro_capture_switch_put),
+	SOC_SINGLE_EXT("TX_AIF3 Capture Switch", SND_SOC_NOPM, TX_MACRO_AIF3_CAP, 1, 0,
+		       tx_macro_capture_switch_get, tx_macro_capture_switch_put),
 	SOC_SINGLE_S8_TLV("TX_DEC0 Volume",
 			  CDC_TX0_TX_VOL_CTL,
 			  -84, 40, digital_gain),
@@ -2113,6 +2203,7 @@ static int tx_macro_component_probe(struct snd_soc_component *comp)
 	struct tx_macro *tx = snd_soc_component_get_drvdata(comp);
 	int i, ret;
 
+	mutex_init(&tx->mute_lock);
 	ret = tx_macro_component_extend(comp);
 	if (ret)
 		return ret;
