@@ -27,6 +27,7 @@ enum qcom_battmgr_variant {
 	QCOM_BATTMGR_SM8550,
 	QCOM_BATTMGR_X1E80100,
 	OPLUS_BATTMGR_KAANAPALI,
+	OPLUS_BATTMGR_SM8550,
 };
 
 #define BATTMGR_BAT_STATUS		0x1
@@ -1032,6 +1033,10 @@ static int qcom_battmgr_usb_sm8350_update(struct qcom_battmgr *battmgr,
 		return -EINVAL;
 
 	prop = sm8350_usb_prop_map[psp];
+	/* Oplus firmware reports the actual cable classification separately. */
+	if (battmgr->variant == OPLUS_BATTMGR_SM8550 &&
+	    psp == POWER_SUPPLY_PROP_USB_TYPE)
+		prop = USB_ADAP_TYPE;
 
 	mutex_lock(&battmgr->lock);
 	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET, prop, 0);
@@ -1090,6 +1095,8 @@ static int qcom_battmgr_usb_get_property(struct power_supply *psy,
 /*
  * The charger firmware applies a host input limit only to SDP, CDP and PD
  * sources; it starts an SDP at 100 mA until the gadget is configured.
+ * Zero suspends the buck input and -1 restores its automatic limit for
+ * any source, including DCP when an external direct charger owns charging.
  */
 static int qcom_battmgr_usb_set_property(struct power_supply *psy,
 					 enum power_supply_property psp,
@@ -1101,21 +1108,24 @@ static int qcom_battmgr_usb_set_property(struct power_supply *psy,
 	if (!battmgr->service_up)
 		return -EAGAIN;
 
-	if (battmgr->variant != QCOM_BATTMGR_SM8550 ||
+	if ((battmgr->variant != QCOM_BATTMGR_SM8550 &&
+	     battmgr->variant != OPLUS_BATTMGR_SM8550) ||
 	    psp != POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT)
 		return -EINVAL;
 
-	ret = qcom_battmgr_usb_sm8350_update(battmgr, POWER_SUPPLY_PROP_USB_TYPE);
-	if (ret)
-		return ret;
+	if (pval->intval > 0) {
+		ret = qcom_battmgr_usb_sm8350_update(battmgr, POWER_SUPPLY_PROP_USB_TYPE);
+		if (ret)
+			return ret;
 
-	switch (battmgr->usb.usb_type) {
-	case POWER_SUPPLY_USB_TYPE_SDP:
-	case POWER_SUPPLY_USB_TYPE_CDP:
-	case POWER_SUPPLY_USB_TYPE_PD:
-		break;
-	default:
-		return -EINVAL;
+		switch (battmgr->usb.usb_type) {
+		case POWER_SUPPLY_USB_TYPE_SDP:
+		case POWER_SUPPLY_USB_TYPE_CDP:
+		case POWER_SUPPLY_USB_TYPE_PD:
+			break;
+		default:
+			return -EINVAL;
+		}
 	}
 
 	mutex_lock(&battmgr->lock);
@@ -1132,7 +1142,8 @@ static int qcom_battmgr_usb_is_writeable(struct power_supply *psy,
 {
 	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
 
-	return battmgr->variant == QCOM_BATTMGR_SM8550 &&
+	return (battmgr->variant == QCOM_BATTMGR_SM8550 ||
+		battmgr->variant == OPLUS_BATTMGR_SM8550) &&
 	       psp == POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT;
 }
 
@@ -1485,6 +1496,25 @@ static void qcom_battmgr_sc8280xp_callback(struct qcom_battmgr *battmgr,
 	complete(&battmgr->ack);
 }
 
+static enum power_supply_usb_type qcom_battmgr_oplus_usb_type(u32 type)
+{
+	/* SM8550 firmware uses the USB type numbers of its Android 5.15 kernel. */
+	if (type <= POWER_SUPPLY_USB_TYPE_PD_PPS)
+		return type;
+	switch (type) {
+	case 9:
+		return POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID;
+	case 17: /* PD SDP */
+		return POWER_SUPPLY_USB_TYPE_PD;
+	case 0x80: /* HVDCP */
+	case 0x81: /* HVDCP 3 */
+	case 0x82: /* HVDCP 3.5 */
+		return POWER_SUPPLY_USB_TYPE_DCP;
+	default:
+		return POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	}
+}
+
 static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 					 const struct qcom_battmgr_message *resp,
 					 size_t len)
@@ -1681,6 +1711,10 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 			break;
 		case USB_TYPE:
 			battmgr->usb.usb_type = le32_to_cpu(resp->intval.value);
+			break;
+		case USB_ADAP_TYPE:
+			battmgr->usb.usb_type = qcom_battmgr_oplus_usb_type(
+						le32_to_cpu(resp->intval.value));
 			break;
 		default:
 			dev_warn(battmgr->dev, "unknown property %#x\n", property);
@@ -1966,6 +2000,7 @@ static void qcom_battmgr_pdr_notify(void *priv, int state)
 }
 
 static const struct of_device_id qcom_battmgr_of_variants[] = {
+	{ .compatible = "oneplus,sm8550-pmic-glink", .data = (void *)OPLUS_BATTMGR_SM8550 },
 	{ .compatible = "qcom,glymur-pmic-glink", .data = (void *)QCOM_BATTMGR_X1E80100 },
 	{ .compatible = "qcom,kaanapali-pmic-glink", .data = (void *)QCOM_BATTMGR_SM8550 },
 	{ .compatible = "qcom,sc8180x-pmic-glink", .data = (void *)QCOM_BATTMGR_SC8280XP },
@@ -2046,6 +2081,7 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 					     "failed to register wireless charing power supply\n");
 	} else {
 		if (battmgr->variant == QCOM_BATTMGR_SM8550 ||
+		    battmgr->variant == OPLUS_BATTMGR_SM8550 ||
 		    battmgr->variant == OPLUS_BATTMGR_KAANAPALI)
 			psy_desc = &sm8550_bat_psy_desc;
 		else
