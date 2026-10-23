@@ -10,6 +10,7 @@
 
 #include <linux/delay.h>
 #include <linux/i2c.h>
+#include <linux/iopoll.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
 #include <linux/types.h>
@@ -45,6 +46,8 @@
 #define DW9719_INFO			CCI_REG8(0)
 #define DW9719_ID			0xF1
 #define DW9761_ID			0xF4
+/* The JD5516W has the DW9719 register layout. */
+#define JD5516W_ID			0xF2
 
 #define DW9719_CONTROL			CCI_REG8(2)
 #define DW9719_STANDBY			0x00
@@ -53,8 +56,9 @@
 
 #define DW9719_VCM_CURRENT		CCI_REG16(3)
 
-#define DW9719_STATUS			CCI_REG16(5)
+#define DW9719_STATUS			CCI_REG8(5)
 #define DW9719_STATUS_BUSY		BIT(0)
+#define DW9719_BUSY_TIMEOUT_US		100000
 
 #define DW9719_MODE			CCI_REG8(6)
 #define DW9719_MODE_SAC_SHIFT		4
@@ -154,6 +158,7 @@ static int dw9719_power_up(struct dw9719_device *dw9719, bool detect)
 
 		switch (val) {
 		case DW9719_ID:
+		case JD5516W_ID:
 			dw9719->model = DW9719;
 			dw9719->mode_low_bits = 0x00;
 			dw9719->sac_mode = DW9719_DEFAULT_SAC;
@@ -224,10 +229,36 @@ props:
 	return ret;
 }
 
+/*
+ * A position written while the lens is still moving is dropped, so wait for
+ * the previous move to finish. Only the DW9719 register layout has the flag.
+ */
+static int dw9719_wait_idle(struct dw9719_device *dw9719)
+{
+	u64 status;
+	int ret, err;
+
+	if (dw9719->model != DW9719 && dw9719->model != DW9761)
+		return 0;
+
+	ret = read_poll_timeout(cci_read, err,
+				err || !(status & DW9719_STATUS_BUSY),
+				500, DW9719_BUSY_TIMEOUT_US, false,
+				dw9719->regmap, DW9719_STATUS, &status, NULL);
+
+	return err ?: ret;
+}
+
 static int dw9719_t_focus_abs(struct dw9719_device *dw9719, s32 value)
 {
 	u32 reg = dw9719->model == DW9718S ? DW9718S_VCM_CURRENT
 					   : DW9719_VCM_CURRENT;
+	int ret;
+
+	ret = dw9719_wait_idle(dw9719);
+	if (ret)
+		return ret;
+
 	return cci_write(dw9719->regmap, reg, value, NULL);
 }
 
@@ -290,7 +321,8 @@ static int dw9719_resume(struct device *dev)
 	if (ret)
 		return ret;
 
-	for (val = current_focus % DW9719_CTRL_STEPS; val < current_focus;
+	/* Step up to and including the saved position. */
+	for (val = current_focus % DW9719_CTRL_STEPS; val <= current_focus;
 	     val += DW9719_CTRL_STEPS) {
 		ret = dw9719_t_focus_abs(dw9719, val);
 		if (ret)
