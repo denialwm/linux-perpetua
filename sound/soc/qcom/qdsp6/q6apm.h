@@ -58,7 +58,8 @@ struct q6apm {
 	wait_queue_head_t wait;
 	struct gpr_ibasic_rsp_result_t result;
 
-	struct mutex cmd_lock;
+	/* Serialize graph creation until the DSP has completed GRAPH_OPEN. */
+	struct mutex graph_lock;
 	struct mutex lock;
 	uint32_t state;
 
@@ -68,6 +69,8 @@ struct q6apm {
 	struct idr sub_graphs_idr;
 	struct idr containers_idr;
 	struct idr modules_idr;
+	const void *hostless_owner; /* Protected by graph_lock. */
+	bool topology_uncertain; /* Sticky until APM reinitialization after a DSP failure. */
 };
 
 struct audio_buffer {

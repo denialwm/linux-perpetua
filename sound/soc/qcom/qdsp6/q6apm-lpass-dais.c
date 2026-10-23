@@ -18,6 +18,7 @@
 #include "audioreach.h"
 #include "q6apm.h"
 #include "q6prm.h"
+#include "q6apm-voice-backend.h"
 
 #define AUDIOREACH_BE_PCM_BASE	16
 
@@ -187,6 +188,9 @@ static void q6apm_lpass_dai_shutdown(struct snd_pcm_substream *substream, struct
 	struct q6apm_lpass_dai_data *dai_data = dev_get_drvdata(dai->dev);
 	int rc;
 
+	if (q6apm_voice_backend_link(snd_soc_substream_to_rtd(substream)))
+		return;
+
 	if (dai_data->is_port_started[dai->id]) {
 		rc = q6apm_graph_stop(dai_data->graph[dai->id]);
 		dai_data->is_port_started[dai->id] = false;
@@ -205,6 +209,9 @@ static int q6apm_lpass_dai_trigger(struct snd_pcm_substream *substream, int cmd,
 {
 	struct q6apm_lpass_dai_data *dai_data = dev_get_drvdata(dai->dev);
 	int ret = 0;
+
+	if (q6apm_voice_backend_link(snd_soc_substream_to_rtd(substream)))
+		return 0;
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -232,6 +239,9 @@ static int q6apm_lpass_dai_prepare(struct snd_pcm_substream *substream, struct s
 	struct q6apm_graph *graph;
 	int graph_id = dai->id;
 	int rc;
+
+	if (q6apm_voice_backend_link(snd_soc_substream_to_rtd(substream)))
+		return 0;
 
 	if (dai_data->is_port_started[dai->id]) {
 		q6apm_graph_stop(dai_data->graph[dai->id]);
@@ -279,6 +289,9 @@ static int q6apm_lpass_dai_startup(struct snd_pcm_substream *substream, struct s
 	struct q6apm_lpass_dai_data *dai_data = dev_get_drvdata(dai->dev);
 	struct q6apm_graph *graph;
 	int graph_id = dai->id;
+
+	if (q6apm_voice_backend_link(snd_soc_substream_to_rtd(substream)))
+		return 0;
 
 	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 		graph = q6apm_graph_open(dai->dev, NULL, dai->dev, graph_id, substream->stream);

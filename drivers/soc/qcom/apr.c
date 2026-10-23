@@ -87,6 +87,21 @@ void gpr_free_port(gpr_port_t *port)
 }
 EXPORT_SYMBOL_GPL(gpr_free_port);
 
+/* Must not be called from the packet router's receive callback/workqueue. */
+void gpr_free_port_sync(gpr_port_t *port)
+{
+	struct packet_router *gpr = port->pr;
+	unsigned long flags;
+
+	spin_lock_irqsave(&gpr->svcs_lock, flags);
+	idr_remove(&gpr->svcs_idr, port->id);
+	spin_unlock_irqrestore(&gpr->svcs_lock, flags);
+	/* A receive worker may have looked up the port before its removal. */
+	flush_workqueue(gpr->rxwq);
+	kfree(port);
+}
+EXPORT_SYMBOL_GPL(gpr_free_port_sync);
+
 gpr_port_t *gpr_alloc_port(struct apr_device *gdev, struct device *dev,
 				gpr_port_cb cb,	void *priv)
 {
@@ -263,12 +278,14 @@ static int gpr_do_rx_callback(struct packet_router *gpr, struct apr_rx_buf *abuf
 {
 	uint16_t hdr_size, ver;
 	struct pkt_router_svc *svc = NULL;
-	struct gpr_resp_pkt resp;
+	struct gpr_resp_pkt resp = { };
 	struct gpr_hdr *hdr;
 	unsigned long flags;
 	void *buf = abuf->buf;
 	int len = abuf->len;
 
+	if (len < GPR_PKT_HEADER_BYTE_SIZE)
+		return -EINVAL;
 	hdr = buf;
 	ver = hdr->version;
 	if (ver > GPR_PKT_VER + 1)
@@ -280,7 +297,8 @@ static int gpr_do_rx_callback(struct packet_router *gpr, struct apr_rx_buf *abuf
 		return -EINVAL;
 	}
 
-	if (hdr->pkt_size < GPR_PKT_HEADER_BYTE_SIZE || hdr->pkt_size != len) {
+	if (hdr->pkt_size < GPR_PKT_HEADER_BYTE_SIZE || hdr->pkt_size != len ||
+	    hdr_size * 4 > len) {
 		dev_err(gpr->dev, "GPR: Wrong packet size\n");
 		return -EINVAL;
 	}

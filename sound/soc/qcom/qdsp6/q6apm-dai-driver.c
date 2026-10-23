@@ -9,13 +9,15 @@
 #include <linux/slab.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
-#include <linux/spinlock.h>
+#include <linux/mutex.h>
 #include <sound/pcm.h>
 #include <asm/div64.h>
 #include <asm/dma.h>
 #include <linux/dma-mapping.h>
 #include <sound/pcm_params.h>
 #include "q6apm.h"
+#include "q6apm-voice.h"
+#include "q6apm-voice-backend.h"
 
 #define DRV_NAME "q6apm-dai"
 #define POS_BUFFER_BYTES	4096
@@ -57,12 +59,24 @@ enum stream_state {
 	Q6APM_STREAM_RUNNING,
 };
 
+struct q6apm_dai_dma_buffer {
+	struct list_head node;
+	struct snd_dma_buffer dma;
+	struct snd_pcm_substream *substream;
+	struct device *dev;
+};
+
+/* No reset acknowledgment exists yet: retain ambiguous DMA until reboot. */
+static LIST_HEAD(q6apm_retained_dma);
+static DEFINE_MUTEX(q6apm_retained_dma_lock);
+
 struct q6apm_dai_rtd {
 	struct snd_pcm_substream *substream;
 	struct snd_compr_stream *cstream;
 	struct snd_codec codec;
 	struct snd_compr_params codec_param;
 	struct snd_dma_buffer dma_buffer;
+	struct q6apm_dai_dma_buffer *dma_reserve;
 	struct sh_mem_pull_push_mode_position_buffer *pos_buffer;
 	uint32_t last_pos_index;
 	phys_addr_t phys;
@@ -79,13 +93,54 @@ struct q6apm_dai_rtd {
 	bool next_track;
 	enum stream_state state;
 	struct q6apm_graph *graph;
-	spinlock_t lock;
+	struct mutex lock; /* Serialize compressed state and sleepable refill operations. */
 	bool notify_on_drain;
 };
 
 struct q6apm_dai_data {
 	long long sid;
+	struct q6apm_voice *voice;
+	struct mutex dma_lock; /* Serialize fixed PCM buffer ownership and quarantine. */
+	struct list_head pcm_buffers;
 };
+
+static void q6apm_dai_retain_dma(struct device *dev,
+				 struct q6apm_dai_dma_buffer *buffer, struct snd_dma_buffer *dma)
+{
+	if (!dma->area) {
+		kfree(buffer);
+		return;
+	}
+	buffer->dma = *dma;
+	buffer->dev = get_device(dev);
+	buffer->substream = NULL;
+	memset(dma, 0, sizeof(*dma));
+	__module_get(THIS_MODULE);
+	scoped_guard(mutex, &q6apm_retained_dma_lock)
+		list_add_tail(&buffer->node, &q6apm_retained_dma);
+	dev_err(dev, "DSP DMA ownership unresolved; retaining %zu bytes until reboot\n",
+		buffer->dma.bytes);
+}
+
+static const struct snd_pcm_hardware q6apm_voice_hardware = {
+	.info = SNDRV_PCM_INFO_INTERLEAVED,
+	.formats = SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S32_LE,
+	.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_96000,
+	.rate_min = 48000,
+	.rate_max = 96000,
+	.channels_min = 2,
+	.channels_max = 2,
+	.buffer_bytes_max = 4096,
+	.period_bytes_min = 1024,
+	.period_bytes_max = 2048,
+	.periods_min = 2,
+	.periods_max = 2,
+};
+
+static bool q6apm_dai_voice(struct snd_pcm_substream *substream)
+{
+	return q6apm_voice_backend_link(snd_soc_substream_to_rtd(substream));
+}
 
 static const struct snd_pcm_hardware q6apm_dai_hardware_capture = {
 	.info =                 (SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_BLOCK_TRANSFER |
@@ -164,7 +219,7 @@ static void event_handler_compr(uint32_t opcode, uint32_t token,
 	uint32_t bytes_written, bytes_to_write;
 	bool is_last_buffer = false;
 
-	guard(spinlock_irqsave)(&prtd->lock);
+	guard(mutex)(&prtd->lock);
 	switch (opcode) {
 	case APM_CLIENT_EVENT_CMD_EOS_DONE:
 		if (prtd->notify_on_drain) {
@@ -221,6 +276,9 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
 	struct q6apm_dai_data *pdata;
 	int ret;
 
+	if (q6apm_dai_voice(substream))
+		return 0;
+
 	pdata = snd_soc_component_get_drvdata(component);
 	if (!pdata)
 		return -EINVAL;
@@ -238,7 +296,9 @@ static int q6apm_dai_prepare(struct snd_soc_component *component,
 	audioreach_set_default_channel_mapping(cfg.channel_map, runtime->channels);
 	if (prtd->state) {
 		/* clear the previous setup if any  */
-		q6apm_graph_stop(prtd->graph);
+		ret = q6apm_graph_stop(prtd->graph);
+		if (ret)
+			return ret;
 		q6apm_free_fragments(prtd->graph, substream->stream);
 	}
 
@@ -317,6 +377,9 @@ static int q6apm_dai_ack(struct snd_soc_component *component, struct snd_pcm_sub
 	struct q6apm_dai_rtd *prtd = runtime->private_data;
 	int i, ret = 0, avail_periods;
 
+	if (q6apm_dai_voice(substream))
+		return 0;
+
 	if (q6apm_is_graph_in_push_pull_mode(prtd->graph))
 		return 0;
 
@@ -341,6 +404,9 @@ static int q6apm_dai_trigger(struct snd_soc_component *component,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct q6apm_dai_rtd *prtd = runtime->private_data;
 	int ret = 0;
+
+	if (q6apm_dai_voice(substream))
+		return 0;
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -382,12 +448,20 @@ static int q6apm_dai_open(struct snd_soc_component *component,
 		dev_err(dev, "Drv data not found ..\n");
 		return -EINVAL;
 	}
+	if (q6apm_dai_voice(substream)) {
+		if (!q6apm_voice_backend_allowed(pdata->voice))
+			return -EBUSY;
+		runtime->hw = q6apm_voice_hardware;
+		return 0;
+	}
+	if (!q6apm_voice_pcm_allowed(pdata->voice))
+		return -EBUSY;
 
 	prtd = kzalloc_obj(*prtd);
 	if (prtd == NULL)
 		return -ENOMEM;
 
-	spin_lock_init(&prtd->lock);
+	mutex_init(&prtd->lock);
 	prtd->substream = substream;
 	prtd->graph = q6apm_graph_open(dev, event_handler, prtd, graph_id, substream->stream);
 	if (IS_ERR(prtd->graph)) {
@@ -447,6 +521,8 @@ static int q6apm_dai_open(struct snd_soc_component *component,
 
 	return 0;
 err:
+	if (!IS_ERR(prtd->graph))
+		q6apm_graph_close(prtd->graph);
 	kfree(prtd);
 
 	return ret;
@@ -458,10 +534,12 @@ static int q6apm_dai_close(struct snd_soc_component *component,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct q6apm_dai_rtd *prtd = runtime->private_data;
 
+	if (q6apm_dai_voice(substream))
+		return 0;
+
 	if (prtd->state) {
 		/* only stop graph that is started */
 		q6apm_graph_stop(prtd->graph);
-		q6apm_free_fragments(prtd->graph, substream->stream);
 	}
 
 	q6apm_graph_close(prtd->graph);
@@ -478,6 +556,9 @@ static snd_pcm_uframes_t q6apm_dai_pointer(struct snd_soc_component *component,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct q6apm_dai_rtd *prtd = runtime->private_data;
 	snd_pcm_uframes_t ptr;
+
+	if (q6apm_dai_voice(substream))
+		return 0;
 
 	if (q6apm_is_graph_in_push_pull_mode(prtd->graph)) {
 		int retries = 10;
@@ -512,6 +593,9 @@ static int q6apm_dai_hw_params(struct snd_soc_component *component,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct q6apm_dai_rtd *prtd = runtime->private_data;
 
+	if (q6apm_dai_voice(substream))
+		return 0;
+
 	prtd->pcm_size = params_buffer_bytes(params);
 	prtd->periods = params_periods(params);
 
@@ -534,6 +618,8 @@ static int q6apm_dai_memory_map(struct snd_soc_component *component,
 				int graph_id, bool is_push_pull)
 {
 	struct q6apm_dai_data *pdata;
+	struct q6apm_dai_dma_buffer *buffer;
+	struct q6apm *apm = dev_get_drvdata(component->dev->parent);
 	struct device *dev = component->dev;
 	phys_addr_t phys;
 	int ret;
@@ -544,14 +630,22 @@ static int q6apm_dai_memory_map(struct snd_soc_component *component,
 		return -EINVAL;
 	}
 
+	/* Reserve quarantine metadata before any command can transfer DMA ownership. */
+	buffer = kzalloc_obj(*buffer);
+	if (!buffer)
+		return -ENOMEM;
+	buffer->substream = substream;
+	guard(mutex)(&pdata->dma_lock);
 	if (pdata->sid < 0)
 		phys = substream->dma_buffer.addr;
 	else
 		phys = substream->dma_buffer.addr | (pdata->sid << 32);
 
 	ret = q6apm_map_memory_fixed_region(dev, graph_id, phys, BUFFER_BYTES_MAX);
-	if (ret < 0)
+	if (ret < 0) {
 		dev_err(dev, "Audio Start: Buffer Allocation failed rc = %d\n",	ret);
+		goto out;
+	}
 
 	if (is_push_pull) {
 		if (pdata->sid < 0)
@@ -560,12 +654,20 @@ static int q6apm_dai_memory_map(struct snd_soc_component *component,
 			phys = (substream->dma_buffer.addr + BUFFER_BYTES_MAX) | (pdata->sid << 32);
 
 		ret = q6apm_map_pos_buffer(dev, graph_id, phys, POS_BUFFER_BYTES);
-		if (ret < 0)
+		if (ret < 0) {
 			dev_err(dev, "Audio Start: Buffer Allocation failed rc = %d\n",	ret);
-	} else {
-
+			/* The data mapping is already owned even if position MAP was not sent. */
+			WRITE_ONCE(apm->topology_uncertain, true);
+			goto out;
+		}
 	}
-
+	list_add_tail(&buffer->node, &pdata->pcm_buffers);
+	return 0;
+out:
+	if (READ_ONCE(apm->topology_uncertain))
+		q6apm_dai_retain_dma(dev, buffer, &substream->dma_buffer);
+	else
+		kfree(buffer);
 	return ret;
 }
 
@@ -582,6 +684,9 @@ static int q6apm_dai_pcm_new(struct snd_soc_component *component, struct snd_soc
 	int graph_id, ret;
 	bool is_push_pull;
 	struct snd_pcm_substream *substream = NULL;
+
+	if (q6apm_voice_backend_link(rtd))
+		return 0;
 
 	graph_id = cpu_dai->driver->id;
 
@@ -616,7 +721,13 @@ static void q6apm_dai_memory_unmap(struct snd_soc_component *component,
 {
 	struct snd_soc_pcm_runtime *soc_prtd;
 	struct snd_soc_dai *cpu_dai;
-	int graph_id;
+	struct q6apm_dai_data *pdata = snd_soc_component_get_drvdata(component);
+	struct q6apm_dai_dma_buffer *buffer, *found = NULL;
+	struct q6apm *apm = dev_get_drvdata(component->dev->parent);
+	int graph_id, ret;
+
+	if (!substream->dma_buffer.area)
+		return;
 
 	soc_prtd = snd_soc_substream_to_rtd(substream);
 	if (!soc_prtd)
@@ -626,16 +737,35 @@ static void q6apm_dai_memory_unmap(struct snd_soc_component *component,
 	if (!cpu_dai)
 		return;
 
+	guard(mutex)(&pdata->dma_lock);
+	list_for_each_entry(buffer, &pdata->pcm_buffers, node)
+		if (buffer->substream == substream) {
+			found = buffer;
+			break;
+		}
+	if (!found)
+		return;
 	graph_id = cpu_dai->driver->id;
-	q6apm_unmap_memory_fixed_region(component->dev, graph_id);
+	ret = q6apm_unmap_memory_fixed_region(component->dev, graph_id);
 
-	if (q6apm_is_graph_in_push_pull_mode_from_id(component->dev, graph_id, substream->stream))
-		q6apm_unmap_pos_buffer(component->dev, graph_id);
+	if (!ret && q6apm_is_graph_in_push_pull_mode_from_id(component->dev, graph_id,
+							     substream->stream))
+		ret = q6apm_unmap_pos_buffer(component->dev, graph_id);
+	list_del(&found->node);
+	if (ret) {
+		WRITE_ONCE(apm->topology_uncertain, true);
+		q6apm_dai_retain_dma(component->dev, found, &substream->dma_buffer);
+	} else {
+		kfree(found);
+	}
 }
 
 static void q6apm_dai_pcm_free(struct snd_soc_component *component, struct snd_pcm *pcm)
 {
 	struct snd_pcm_substream *substream;
+
+	if (q6apm_voice_backend_link(pcm->private_data))
+		return;
 
 	substream = pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
 	if (substream)
@@ -662,16 +792,25 @@ static int q6apm_dai_compr_open(struct snd_soc_component *component,
 	pdata = snd_soc_component_get_drvdata(component);
 	if (!pdata)
 		return -EINVAL;
+	if (!q6apm_voice_pcm_allowed(pdata->voice))
+		return -EBUSY;
 
 	prtd = kzalloc_obj(*prtd);
 	if (prtd == NULL)
 		return -ENOMEM;
 
+	mutex_init(&prtd->lock);
+	prtd->dma_reserve = kzalloc_obj(*prtd->dma_reserve);
+	if (!prtd->dma_reserve) {
+		kfree(prtd);
+		return -ENOMEM;
+	}
 	prtd->cstream = stream;
 	prtd->graph = q6apm_graph_open(dev, event_handler_compr, prtd, graph_id,
 					SNDRV_PCM_STREAM_PLAYBACK);
 	if (IS_ERR(prtd->graph)) {
 		ret = PTR_ERR(prtd->graph);
+		kfree(prtd->dma_reserve);
 		kfree(prtd);
 		return ret;
 	}
@@ -680,8 +819,13 @@ static int q6apm_dai_compr_open(struct snd_soc_component *component,
 	runtime->dma_bytes = BUFFER_BYTES_MAX;
 	size = COMPR_PLAYBACK_MAX_FRAGMENT_SIZE * COMPR_PLAYBACK_MAX_NUM_FRAGMENTS;
 	ret = snd_dma_alloc_pages(SNDRV_DMA_TYPE_DEV, dev, size, &prtd->dma_buffer);
-	if (ret)
+	if (ret) {
+		q6apm_graph_close(prtd->graph);
+		runtime->private_data = NULL;
+		kfree(prtd->dma_reserve);
+		kfree(prtd);
 		return ret;
+	}
 
 	if (pdata->sid < 0)
 		prtd->phys = prtd->dma_buffer.addr;
@@ -689,7 +833,6 @@ static int q6apm_dai_compr_open(struct snd_soc_component *component,
 		prtd->phys = prtd->dma_buffer.addr | (pdata->sid << 32);
 
 	snd_compr_set_runtime_buffer(stream, &prtd->dma_buffer);
-	spin_lock_init(&prtd->lock);
 
 	q6apm_enable_compress_module(dev, prtd->graph, true);
 	return 0;
@@ -700,17 +843,35 @@ static int q6apm_dai_compr_free(struct snd_soc_component *component,
 {
 	struct snd_compr_runtime *runtime = stream->runtime;
 	struct q6apm_dai_rtd *prtd = runtime->private_data;
+	struct q6apm *apm = dev_get_drvdata(component->dev->parent);
+	int ret, close_ret;
 
-	q6apm_graph_stop(prtd->graph);
-	q6apm_free_fragments(prtd->graph, SNDRV_PCM_STREAM_PLAYBACK);
-	q6apm_unmap_memory_fixed_region(component->dev, prtd->graph->id);
-	q6apm_graph_close(prtd->graph);
-	snd_dma_free_pages(&prtd->dma_buffer);
+	/* Finish any refill and prevent new writes before STOP/UNMAP. */
+	mutex_lock(&prtd->lock);
+	prtd->state = Q6APM_STREAM_STOPPED;
+	prtd->notify_on_drain = false;
+	mutex_unlock(&prtd->lock);
+
+	ret = q6apm_graph_stop(prtd->graph);
+	if (!ret)
+		ret = q6apm_unmap_memory_fixed_region(component->dev, prtd->graph->id);
+	/* CLOSE drains callbacks before the compressed core can release its stream. */
+	close_ret = q6apm_graph_close(prtd->graph);
+	if (!ret)
+		ret = close_ret;
+	if (ret) {
+		WRITE_ONCE(apm->topology_uncertain, true);
+		snd_compr_set_runtime_buffer(stream, NULL);
+		q6apm_dai_retain_dma(component->dev, prtd->dma_reserve, &prtd->dma_buffer);
+	} else {
+		snd_dma_free_pages(&prtd->dma_buffer);
+		kfree(prtd->dma_reserve);
+	}
 	prtd->graph = NULL;
 	kfree(prtd);
 	runtime->private_data = NULL;
 
-	return 0;
+	return ret;
 }
 
 static int q6apm_dai_compr_get_caps(struct snd_soc_component *component,
@@ -754,7 +915,7 @@ static int q6apm_dai_compr_pointer(struct snd_soc_component *component,
 	struct q6apm_dai_rtd *prtd = runtime->private_data;
 	uint64_t temp_copied_total;
 
-	guard(spinlock_irqsave)(&prtd->lock);
+	guard(mutex)(&prtd->lock);
 	tstamp->copied_total = prtd->copied_total;
 	temp_copied_total = tstamp->copied_total;
 	tstamp->byte_offset = do_div(temp_copied_total, prtd->pcm_size);
@@ -801,7 +962,7 @@ static int q6apm_dai_compr_ack(struct snd_soc_component *component, struct snd_c
 	struct snd_compr_runtime *runtime = stream->runtime;
 	struct q6apm_dai_rtd *prtd = runtime->private_data;
 
-	guard(spinlock_irqsave)(&prtd->lock);
+	guard(mutex)(&prtd->lock);
 	prtd->bytes_received += count;
 
 	return count;
@@ -961,7 +1122,7 @@ static int q6apm_compr_copy(struct snd_soc_component *component,
 			return -EFAULT;
 	}
 
-	guard(spinlock_irqsave)(&prtd->lock);
+	guard(mutex)(&prtd->lock);
 	bytes_in_flight = prtd->bytes_received - prtd->copied_total;
 
 	if (prtd->next_track) {
@@ -1001,8 +1162,33 @@ static const struct snd_compress_ops q6apm_dai_compress_ops = {
 	.copy		= q6apm_compr_copy,
 };
 
+static int q6apm_dai_component_probe(struct snd_soc_component *component)
+{
+	struct q6apm_dai_data *pdata = snd_soc_component_get_drvdata(component);
+	int ret;
+
+	pdata->voice = q6apm_voice_create(component);
+	if (IS_ERR_OR_NULL(pdata->voice))
+		return PTR_ERR_OR_ZERO(pdata->voice);
+	ret = q6apm_voice_pcm_create(component);
+	if (ret) {
+		q6apm_voice_free(pdata->voice);
+		pdata->voice = NULL;
+	}
+	return ret;
+}
+
+static void q6apm_dai_component_remove(struct snd_soc_component *component)
+{
+	struct q6apm_dai_data *pdata = snd_soc_component_get_drvdata(component);
+
+	q6apm_voice_free(pdata->voice);
+}
+
 static const struct snd_soc_component_driver q6apm_fe_dai_component = {
 	.name		= DRV_NAME,
+	.probe		= q6apm_dai_component_probe,
+	.remove		= q6apm_dai_component_remove,
 	.open		= q6apm_dai_open,
 	.close		= q6apm_dai_close,
 	.prepare	= q6apm_dai_prepare,
@@ -1029,6 +1215,8 @@ static int q6apm_dai_probe(struct platform_device *pdev)
 	if (!pdata)
 		return -ENOMEM;
 
+	mutex_init(&pdata->dma_lock);
+	INIT_LIST_HEAD(&pdata->pcm_buffers);
 	rc = of_parse_phandle_with_fixed_args(node, "iommus", 1, 0, &args);
 	if (rc < 0)
 		pdata->sid = -1;

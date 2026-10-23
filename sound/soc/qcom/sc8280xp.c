@@ -15,6 +15,7 @@
 #include "qdsp6/q6apm.h"
 #include "qdsp6/q6prm.h"
 #include "qdsp6/q6dsp-common.h"
+#include "qdsp6/q6apm-voice-backend.h"
 #include "common.h"
 #include "sdw.h"
 
@@ -390,6 +391,70 @@ static void sc8280xp_add_be_ops(struct snd_soc_card *card)
 	}
 }
 
+static void sc8280xp_put_voice_node(void *node)
+{
+	of_node_put(node);
+}
+
+/*
+ * Boards with modem voice graphs get two private links, copies of the
+ * physical backends the graphs use. The voice driver opens them to power
+ * codecs, clocks and SoundWire while the DSP moves the call audio.
+ */
+static int sc8280xp_add_voice_links(struct snd_soc_card *card)
+{
+	const struct q6apm_voice_board *board = q6apm_voice_board();
+	struct snd_soc_dai_link *links, *rx = NULL, *tx = NULL;
+	struct snd_soc_dai_link_component *platform;
+	struct device_node *dais;
+	int i, ret, count = card->num_links;
+
+	if (!board)
+		return 0;
+	for (i = 0; i < count; i++) {
+		struct snd_soc_dai_link *link = &card->dai_link[i];
+
+		if (link->no_pcm && link->id == board->rx_port)
+			rx = link;
+		else if (link->no_pcm && link->id == board->tx_port)
+			tx = link;
+	}
+	if (!rx || !tx)
+		return -EINVAL;
+	links = devm_kcalloc(card->dev, count + 2, sizeof(*links), GFP_KERNEL);
+	platform = devm_kcalloc(card->dev, 2, sizeof(*platform), GFP_KERNEL);
+	if (!links || !platform)
+		return -ENOMEM;
+	/* Frontends are loaded from topology, so no FE exists in the DT link array. */
+	dais = of_get_compatible_child(rx->platforms[0].of_node, "qcom,q6apm-dais");
+	if (!dais)
+		return -ENODEV;
+	ret = devm_add_action_or_reset(card->dev, sc8280xp_put_voice_node, dais);
+	if (ret)
+		return ret;
+	memcpy(links, card->dai_link, count * sizeof(*links));
+	for (i = 0; i < 2; i++) {
+		struct snd_soc_dai_link *link = &links[count + i];
+
+		*link = i ? *tx : *rx;
+		platform[i].of_node = dais;
+		link->platforms = &platform[i];
+		link->num_platforms = 1;
+		link->name = i ? Q6APM_VOICE_TX_LINK : Q6APM_VOICE_RX_LINK;
+		link->stream_name = link->name;
+		/* Leave topology PCM IDs 0..2 and BE base 16 untouched. */
+		link->id = 14 + i;
+		link->no_pcm = 0;
+		link->dynamic = 0;
+		link->playback_only = !i;
+		link->capture_only = i;
+		link->be_hw_params_fixup = NULL;
+	}
+	card->dai_link = links;
+	card->num_links = count + 2;
+	return 0;
+}
+
 static int sc8280xp_platform_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card;
@@ -427,6 +492,9 @@ static int sc8280xp_platform_probe(struct platform_device *pdev)
 
 	card->driver_name = data->priv->driver_name;
 	sc8280xp_add_be_ops(card);
+	ret = sc8280xp_add_voice_links(card);
+	if (ret)
+		return ret;
 	return devm_snd_soc_register_card(dev, card);
 }
 

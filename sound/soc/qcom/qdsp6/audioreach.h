@@ -62,6 +62,8 @@ struct q6apm_graph;
 #define APM_CMD_GRAPH_FLUSH			0x01001005
 #define APM_CMD_SET_CFG				0x01001006
 #define APM_CMD_GET_CFG				0x01001007
+#define APM_CMD_REGISTER_CFG			0x01001008
+#define APM_CMD_DEREGISTER_CFG			0x01001009
 #define APM_CMD_SHARED_MEM_MAP_REGIONS		0x0100100C
 #define APM_CMD_SHARED_MEM_UNMAP_REGIONS	0x0100100D
 #define APM_CMD_REGISTER_MODULE_EVENTS		0x0100100E
@@ -159,6 +161,8 @@ struct apm_module_prop_cfg {
 } __packed;
 
 #define APM_PARAM_ID_MODULE_CONN		0x08001004
+#define APM_PARAM_ID_MODULE_CTRL_LINK_CFG	0x08001061
+#define APM_MODULE_PROP_ID_CTRL_LINK_INTENT_LIST	0x08001062
 
 struct apm_param_id_module_conn {
 	uint32_t num_connections;
@@ -470,6 +474,16 @@ struct apm_sg_prop_id_direction {
 #define APM_SUB_GRAPH_SID_AUDIO_PLAYBACK	0x1
 #define APM_SUB_GRAPH_SID_AUDIO_RECORD		0x2
 #define APM_SUB_GRAPH_SID_AUDIO_VOICE_CALL	0x3
+#define APM_SUB_GRAPH_PROP_ID_VSID		0x080010CC
+#define APM_SUB_GRAPH_VSID_DONT_CARE		0xFFFFFFFF
+#define VCPM_PARAM_ID_VSID			0x080011BC
+#define VCPM_PARAM_ID_VOICE_CONFIG		0x08001162
+#define VCPM_PROPERTY_ID_TAG_INFO			0x080011B2
+#define VCPM_PARAM_ID_TX_DEV_PP_CHANNEL_INFO	0x08001310
+#define VCPM_PARAM_ID_CAL_KEYS			0x0800116B
+#define VCPM_CAL_KEY_ID_VOLUME_LEVEL		0x08001166
+#define VCPM_CAL_KEY_ID_VOL_BOOST			0x080011B6
+#define VCPM_CAL_KEY_ID_BWE			0x08001167
 
 struct apm_sg_prop_id_scenario_id {
 	uint32_t scenario_id;
@@ -870,6 +884,20 @@ struct sh_mem_pull_push_mode_position_buffer {
 } __packed;
 
 /* Graph */
+struct audioreach_voice_tag {
+	u32 tag_id;
+	u32 module_instance_id;
+};
+
+struct audioreach_control_link {
+	u32 peer1_instance_id;
+	u32 peer1_port_id;
+	u32 peer2_instance_id;
+	u32 peer2_port_id;
+	u32 num_intents;
+	const u32 *intents;
+};
+
 struct audioreach_connection {
 	/* Connections */
 	uint32_t src_mod_inst_id;
@@ -891,6 +919,11 @@ struct audioreach_graph_info {
 	uint32_t src_mod_op_port_id;
 	uint32_t dst_mod_inst_id;
 	uint32_t dst_mod_ip_port_id;
+	/* Descriptor storage must remain valid until GRAPH_OPEN is serialized. */
+	u32 num_connections;
+	const struct apm_module_conn_obj *connections;
+	u32 num_control_links;
+	const struct audioreach_control_link *control_links;
 };
 
 struct audioreach_sub_graph {
@@ -903,9 +936,12 @@ struct audioreach_sub_graph {
 	struct audioreach_graph_info *info;
 	uint32_t num_containers;
 	struct list_head container_list;
+	u32 num_voice_tags;
+	const struct audioreach_voice_tag *voice_tags;
 };
 
 struct audioreach_container {
+	/* One module-list group per subgraph; shared firmware IDs use separate objects. */
 	uint32_t container_id;
 	uint32_t capability_id;
 	uint32_t graph_pos;
@@ -1025,6 +1061,10 @@ int audioreach_send_cmd_sync(struct device *dev, gpr_device_t *gdev, struct gpr_
 			     const struct gpr_pkt *pkt, uint32_t rsp_opcode);
 int audioreach_graph_send_cmd_sync(struct q6apm_graph *graph, const struct gpr_pkt *pkt,
 				   uint32_t rsp_opcode);
+int audioreach_voice_set_vsid(struct q6apm_graph *graph, u32 vsid);
+int audioreach_voice_set_tx_channels(struct q6apm_graph *graph, u32 vsid, u32 channels);
+int audioreach_voice_set_cal_keys(struct q6apm_graph *graph, u32 vsid, u32 volume,
+				  bool volume_boost, bool bwe);
 int audioreach_set_media_format(struct q6apm_graph *graph,
 				const struct audioreach_module *module,
 				const struct audioreach_module_config *cfg);
