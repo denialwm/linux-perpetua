@@ -1,0 +1,116 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/sony,imx890.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Sony IMX890 Image Sensor
+
+description:
+  Sony IMX890 is a 50MP image sensor. The sensor is controlled over a
+  serial camera control bus protocol, the widest output image frame size
+  is 8192x6144, data output format is RAW10 transferred over a 3-trio
+  MIPI C-PHY interface.
+
+maintainers:
+  - Shandorman <98683030+jiganomegsdfdf@users.noreply.github.com>
+
+allOf:
+  - $ref: /schemas/media/video-interface-devices.yaml#
+
+properties:
+  compatible:
+    const: sony,imx890
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    description: MCLK supply clock.
+    maxItems: 1
+
+  reset-gpios:
+    description: Active low GPIO connected to XCLR pad of the sensor.
+    maxItems: 1
+
+  avdd-supply:
+    description: Analogue voltage supply, 2.8 volts.
+
+  dvdd-supply:
+    description: Digital core voltage supply, 1.1 volts.
+
+  dovdd-supply:
+    description: Digital I/O voltage supply, 1.8 volts.
+
+  vaux1-supply:
+    description:
+      Module supply of 1.8 volts that the stock power sequence enables
+      along with the sensor supplies.
+
+  vaux2-supply:
+    description:
+      Module supply of 2.8 volts that the stock power sequence enables
+      along with the sensor supplies.
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    additionalProperties: false
+
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
+
+        properties:
+          bus-type:
+            const: 1
+
+          data-lanes:
+            items:
+              - const: 0
+              - const: 1
+              - const: 2
+
+        required:
+          - bus-type
+          - data-lanes
+          - link-frequencies
+
+required:
+  - compatible
+  - reg
+  - port
+
+unevaluatedProperties: false
+
+examples:
+  - |
+      #include <dt-bindings/gpio/gpio.h>
+      #include <dt-bindings/media/video-interfaces.h>
+
+      i2c {
+          #address-cells = <1>;
+          #size-cells = <0>;
+
+          camera@1a {
+              compatible = "sony,imx890";
+              reg = <0x1a>;
+              clocks = <&camera_mclk 0>;
+              assigned-clocks = <&camera_mclk 0>;
+              assigned-clock-rates = <19200000>;
+              reset-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
+              avdd-supply = <&vreg_2p8>;
+              dvdd-supply = <&vreg_1p1>;
+              dovdd-supply = <&vreg_1p8>;
+
+              port {
+                  endpoint {
+                      bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+                      data-lanes = <0 1 2>;
+                      link-frequencies = /bits/ 64 <708000000>;
+                      remote-endpoint = <&mipi_csi2_ep>;
+                  };
+              };
+          };
+      };
+...
