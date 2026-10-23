@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/sound/nxp,tfa987x.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: NXP/Goodix TFA9872, TFA9873 and TFA9874 (TFA2) Audio Amplifiers
+
+maintainers:
+  - Shandorman <98683030+jiganomegsdfdf@users.noreply.github.com>
+
+description:
+  Mono class-D speaker amplifiers with a boost converter and no DSP,
+  controlled over I2C and fed over I2S/TDM.
+
+allOf:
+  - $ref: dai-common.yaml#
+
+properties:
+  compatible:
+    enum:
+      - nxp,tfa9872
+      - nxp,tfa9873
+      - nxp,tfa9874
+
+  reg:
+    maxItems: 1
+
+  '#sound-dai-cells':
+    const: 0
+
+  reset-gpios:
+    maxItems: 1
+
+  vddd-supply:
+    description: Digital supply.
+
+  nxp,tdm-slot:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    maximum: 15
+    default: 0
+    description: Slot of the I2S/TDM frame that the amplifier plays.
+
+  sound-name-prefix: true
+
+required:
+  - compatible
+  - reg
+  - '#sound-dai-cells'
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    i2c {
+      #address-cells = <1>;
+      #size-cells = <0>;
+
+      audio-codec@34 {
+        compatible = "nxp,tfa9873";
+        reg = <0x34>;
+        reset-gpios = <&tlmm 56 GPIO_ACTIVE_HIGH>;
+        vddd-supply = <&vreg_l15b_1p8>;
+        sound-name-prefix = "Top";
+        #sound-dai-cells = <0>;
+      };
+
+      audio-codec@35 {
+        compatible = "nxp,tfa9873";
+        reg = <0x35>;
+        reset-gpios = <&tlmm 173 GPIO_ACTIVE_HIGH>;
+        vddd-supply = <&vreg_l15b_1p8>;
+        nxp,tdm-slot = <1>;
+        sound-name-prefix = "Bottom";
+        #sound-dai-cells = <0>;
+      };
+    };
