@@ -8,6 +8,7 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/linux-event-codes.h>
 #include <dt-bindings/leds/common.h>
+#include <dt-bindings/media/video-interfaces.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 #include "sm8550.dtsi"
 #include "pm8010.dtsi"
@@ -94,7 +95,8 @@
 	};
 
 	pmic-glink {
-		compatible = "qcom,sm8550-pmic-glink", "qcom,pmic-glink";
+		compatible = "oneplus,sm8550-pmic-glink", "qcom,sm8550-pmic-glink",
+			     "qcom,pmic-glink";
 		#address-cells = <1>;
 		#size-cells = <0>;
 
@@ -130,6 +132,22 @@
 		enable-active-high;
 
 		pinctrl-0 = <&ts_avdd_en>;
+		pinctrl-names = "default";
+	};
+
+	/* GPIO 52 switches the main camera's focus motor supply, 2.8 V (stock). */
+	cam_vaf_2p8: regulator-cam-vaf {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_vaf_2p8";
+		regulator-min-microvolt = <2800000>;
+		regulator-max-microvolt = <2800000>;
+		/* Stock waits 10 ms after this supply before the first write. */
+		startup-delay-us = <10000>;
+
+		gpio = <&tlmm 52 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&cam_vaf_en>;
 		pinctrl-names = "default";
 	};
 
@@ -296,6 +314,9 @@
 
 	sound {
 		compatible = "qcom,sm8550-sndcard", "qcom,sm8450-sndcard";
+		pinctrl-0 = <&i2s1_default>;
+		pinctrl-names = "default";
+
 		model = "astonsnd";
 		audio-routing = "IN1_HPHL", "HPHL_OUT",
 				"IN2_HPHR", "HPHR_OUT",
@@ -308,6 +329,22 @@
 				"TX SWR_INPUT1", "ADC2_OUTPUT",
 				"TX SWR_INPUT0", "ADC3_OUTPUT",
 				"TX SWR_INPUT1", "ADC4_OUTPUT";
+
+		secondary-i2s-dai-link {
+			link-name = "Secondary MI2S Playback";
+
+			cpu {
+				sound-dai = <&q6apmbedai SECONDARY_MI2S_RX>;
+			};
+
+			codec {
+				sound-dai = <&speaker_top>, <&speaker_bottom>;
+			};
+
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
 
 		wcd-playback-dai-link {
 			link-name = "WCD Playback";
@@ -779,10 +816,10 @@
 		vdd-l6-supply = <&vreg_s6g_1p8>;
 		vdd-l7-supply = <&vreg_bob1>;
 
-		vreg_l1m_1p2: ldo1 {
-			regulator-name = "vreg_l1m_1p2";
-			regulator-min-microvolt = <1200000>;
-			regulator-max-microvolt = <1200000>;
+		vreg_l1m_1p1: ldo1 {
+			regulator-name = "vreg_l1m_1p1";
+			regulator-min-microvolt = <1104000>;
+			regulator-max-microvolt = <1104000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
@@ -889,6 +926,182 @@
 	};
 };
 
+&camss {
+	vdda-phy-supply = <&vreg_l1e_0p88>;
+	vdda-pll-supply = <&vreg_l3e_1p2>;
+
+	status = "okay";
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@1 {
+			reg = <1>;
+
+			csiphy1_ep: endpoint {
+				clock-lanes = <4>;
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&cam_front_ep>;
+			};
+		};
+
+		port@2 {
+			reg = <2>;
+
+			csiphy2_ep: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+				data-lanes = <0 1 2>;
+				remote-endpoint = <&cam_main_ep>;
+			};
+		};
+
+		port@3 {
+			reg = <3>;
+
+			csiphy3_ep: endpoint {
+				clock-lanes = <4>;
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&cam_ultrawide_ep>;
+			};
+		};
+	};
+};
+
+&cci0 {
+	status = "okay";
+};
+
+&cci0_i2c0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/*
+	 * Main camera focus motor, JD5516W. It has the DW9719 register layout
+	 * and reports ID 0xf2. Stock settings: SAC3, prescale 8.
+	 */
+	vcm_main: actuator@c {
+		compatible = "dongwoon,dw9719";
+		reg = <0x0c>;
+
+		vdd-supply = <&cam_vaf_2p8>;
+
+		dongwoon,sac-mode = <4>;
+		dongwoon,vcm-prescale = <8>;
+	};
+
+	/* Main, 50 MP. Stock: camera 0, CSIPHY2 C-PHY, MCLK2, reset gpio117. */
+	camera@1a {
+		compatible = "sony,imx890";
+		reg = <0x1a>;
+
+		clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 117 GPIO_ACTIVE_LOW>;
+		pinctrl-0 = <&cam2_default>;
+		pinctrl-names = "default";
+
+		avdd-supply = <&vreg_l3m_2p8>;
+		dvdd-supply = <&vreg_l1m_1p1>;
+		dovdd-supply = <&vreg_l10b_1p8>;
+		vaux1-supply = <&vreg_l5m_1p8>;
+		vaux2-supply = <&vreg_l7m_2p85>;
+
+		lens-focus = <&vcm_main>;
+		orientation = <1>;
+		rotation = <90>;
+
+		port {
+			cam_main_ep: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+				data-lanes = <0 1 2>;
+				link-frequencies = /bits/ 64 <708000000>;
+				remote-endpoint = <&csiphy2_ep>;
+			};
+		};
+	};
+};
+
+&cci0_i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/* Ultrawide, 8 MP. Stock: camera 1, CSIPHY3, MCLK1, reset gpio118. */
+	camera@1a {
+		compatible = "sony,imx355";
+		reg = <0x1a>;
+
+		clocks = <&camcc CAM_CC_MCLK1_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK1_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 118 GPIO_ACTIVE_LOW>;
+		pinctrl-0 = <&cam1_default>;
+		pinctrl-names = "default";
+
+		avdd-supply = <&vreg_l6m_2p8>;
+		dvdd-supply = <&vreg_l2m_1p08>;
+		dovdd-supply = <&vreg_l10b_1p8>;
+
+		orientation = <1>;
+		rotation = <90>;
+
+		port {
+			cam_ultrawide_ep: endpoint {
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <360000000>;
+				remote-endpoint = <&csiphy3_ep>;
+			};
+		};
+	};
+};
+
+&cci1 {
+	pinctrl-0 = <&cci1_0_default &cci1_1_default>;
+	pinctrl-1 = <&cci1_0_sleep &cci1_1_sleep>;
+
+	status = "okay";
+
+	/* Second master on the always-on CCI pins */
+	cci1_i2c1: i2c-bus@1 {
+		reg = <1>;
+		clock-frequency = <1000000>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* Front, 16 MP. Stock: camera 3, CSIPHY1, MCLK4, reset gpio120. */
+		camera@10 {
+			compatible = "samsung,s5k3p9";
+			reg = <0x10>;
+
+			clocks = <&camcc CAM_CC_MCLK4_CLK>;
+			assigned-clocks = <&camcc CAM_CC_MCLK4_CLK>;
+			assigned-clock-rates = <19200000>;
+
+			reset-gpios = <&tlmm 120 GPIO_ACTIVE_LOW>;
+			pinctrl-0 = <&cam4_default>;
+			pinctrl-names = "default";
+
+			vdda-supply = <&vreg_l4m_2p8>;
+			vddd-supply = <&vreg_l2g_1p2>;
+			vddio-supply = <&vreg_l10b_1p8>;
+
+			orientation = <0>;
+			rotation = <270>;
+
+			port {
+				cam_front_ep: endpoint {
+					data-lanes = <1 2 3 4>;
+					link-frequencies = /bits/ 64 <563200000>;
+					remote-endpoint = <&csiphy1_ep>;
+				};
+			};
+		};
+	};
+};
+
 &gpi_dma1 {
 	status = "okay";
 };
@@ -905,13 +1118,54 @@
 	firmware-name = "qcom/sm8550/aston/a740_zap.mbn";
 };
 
+&i2c6 {
+	clock-frequency = <400000>;
+
+	status = "okay";
+
+	speaker_top: audio-codec@34 {
+		compatible = "nxp,tfa9873";
+		reg = <0x34>;
+		reset-gpios = <&tlmm 56 GPIO_ACTIVE_HIGH>;
+		vddd-supply = <&vreg_l15b_1p8>;
+		sound-name-prefix = "Top";
+		#sound-dai-cells = <0>;
+	};
+
+	speaker_bottom: audio-codec@35 {
+		compatible = "nxp,tfa9873";
+		reg = <0x35>;
+		reset-gpios = <&tlmm 173 GPIO_ACTIVE_HIGH>;
+		vddd-supply = <&vreg_l15b_1p8>;
+		nxp,tdm-slot = <1>;
+		sound-name-prefix = "Bottom";
+		#sound-dai-cells = <0>;
+	};
+};
+
 &i2c8 {
 	status = "okay";
 
-	fuel-gauge@55 {
+	fuel_gauge: fuel-gauge@55 {
 		compatible = "ti,bq28z610";
 		reg = <0x55>;
 		monitored-battery = <&bat>;
+	};
+};
+
+&i2c12 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	charger@69 {
+		compatible = "southchip,sc8517";
+		reg = <0x69>;
+		interrupts-extended = <&tlmm 9 IRQ_TYPE_EDGE_FALLING>;
+		fuel-gauge = <&fuel_gauge>;
+		switch-ctrl-gpios = <&pm8550b_gpios 2 GPIO_ACTIVE_HIGH>;
+		vphy-switch-gpios = <&pm8550b_gpios 8 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&vooc_irq_default &vooc_switch_default>;
 	};
 };
 
@@ -1041,6 +1295,17 @@
 	vdd3-supply = <&vreg_l5b_3p1>;
 };
 
+&pm8550b_gpios {
+	vooc_switch_default: vooc-switch-default-state {
+		pins = "gpio2", "gpio8";
+		function = "normal";
+		power-source = <0>;
+		bias-disable;
+		output-low;
+		qcom,drive-strength = <3>;
+	};
+};
+
 &pm8550b_haptics {
 	qcom,vmax-microvolt = <1250000>;
 	qcom,lra-period-us = <5880>;
@@ -1094,6 +1359,17 @@
 	linux,code = <KEY_VOLUMEUP>;
 
 	status = "okay";
+};
+
+&q6apmbedai {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	dai@12 {
+		reg = <SECONDARY_MI2S_RX>;
+		clocks = <&q6prmcc LPASS_CLK_ID_SEC_MI2S_IBIT LPASS_CLK_ATTRIBUTE_COUPLE_NO>;
+		clock-names = "bclk";
+	};
 };
 
 &qup_i2c8_data_clk {
@@ -1188,6 +1464,14 @@
 &tlmm {
 	gpio-reserved-ranges = <32 8>;
 
+	vooc_irq_default: vooc-irq-default-state {
+		pins = "gpio9";
+		function = "gpio";
+		bias-pull-up;
+		drive-strength = <2>;
+		input-enable;
+	};
+
 	fingerprint_default: fingerprint-default-state {
 		reset-pins {
 			pins = "gpio42";
@@ -1216,6 +1500,57 @@
 		sw-ctrl-pins {
 			pins = "gpio82";
 			function = "gpio";
+			bias-pull-down;
+		};
+	};
+
+	cam_vaf_en: cam-vaf-en-state {
+		pins = "gpio52";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cci1_1_default: cci1-1-default-state {
+		pins = "gpio208", "gpio209";
+		function = "aon_cci";
+		drive-strength = <6>;
+		bias-pull-up;
+	};
+
+	cci1_1_sleep: cci1-1-sleep-state {
+		pins = "gpio208", "gpio209";
+		function = "aon_cci";
+		drive-strength = <6>;
+		bias-pull-down;
+	};
+
+	i2s1_default: i2s1-default-state {
+		sck-pins {
+			pins = "gpio121";
+			function = "i2s1_sck";
+			drive-strength = <6>;
+			bias-disable;
+		};
+
+		data0-pins {
+			pins = "gpio122";
+			function = "i2s1_data0";
+			drive-strength = <6>;
+			bias-disable;
+		};
+
+		ws-pins {
+			pins = "gpio123";
+			function = "i2s1_ws";
+			drive-strength = <6>;
+			bias-disable;
+		};
+
+		data1-pins {
+			pins = "gpio124";
+			function = "i2s1_data1";
+			drive-strength = <6>;
 			bias-pull-down;
 		};
 	};
