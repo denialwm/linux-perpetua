@@ -1037,24 +1037,11 @@ static int aa551_unprepare(struct drm_panel *panel)
 }
 
 /*
- * One horizontal timing for every rate. 165 Hz raises the pixel clock; the
- * rates below 120 Hz keep about the 120 Hz clock and stretch the vertical
- * front porch.
+ * One horizontal timing for every rate. 120 Hz is the panel's fastest, as in
+ * the vendor's timings; the slower rates keep about its clock and stretch the
+ * vertical front porch.
  */
 static const struct drm_display_mode aa551_modes[] = {
-	{
-		.clock = (1264 + 26 + 2 + 26) * (2780 + 22 + 2 + 42) * 165 / 1000,
-		.hdisplay = 1264,
-		.hsync_start = 1264 + 26,
-		.hsync_end = 1264 + 26 + 2,
-		.htotal = 1264 + 26 + 2 + 26,
-		.vdisplay = 2780,
-		.vsync_start = 2780 + 22,
-		.vsync_end = 2780 + 22 + 2,
-		.vtotal = 2780 + 22 + 2 + 42,
-		.width_mm = 71,
-		.height_mm = 157,
-	},
 	{
 		.clock = (1264 + 26 + 2 + 26) * (2780 + 22 + 2 + 42) * 120 / 1000,
 		.hdisplay = 1264,
@@ -1110,7 +1097,7 @@ static const struct drm_display_mode aa551_modes[] = {
 };
 
 /* Index of the 120 Hz mode in aa551_modes */
-#define AA551_PREFERRED_MODE	1
+#define AA551_PREFERRED_MODE	0
 
 static int aa551_get_modes(struct drm_panel *panel,
 			   struct drm_connector *connector)
