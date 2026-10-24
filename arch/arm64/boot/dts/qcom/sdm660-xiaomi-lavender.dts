@@ -33,10 +33,9 @@
 		bootargs = "rdinit=/init console=ttyMSM0,115200n8 earlycon panic=0";
 
 		fdt-handoff {
-			stock-compatible = "qcom,sdm660-mtp";
-			stock-model =
-				"Qualcomm Technologies, Inc. SDM 660 PM660 + PM660L MTP, Lavender",
-				"Qualcomm Technologies, Inc. SDM 660 PM660 + PM660L MTP F7A";
+			stock-compatible = "qcom,sdm660-mtp", "qcom,sdm660";
+			/* The bootloader names this board by its selected Tianma panel. */
+			stock-bootargs = "mdss_mdp.panel=1:dsi:0:qcom,mdss_dsi_nt36672a_tianma_fhdplus_video:config0:1:none:cfg:single_dsi";
 			keep-initrd;
 		};
 
