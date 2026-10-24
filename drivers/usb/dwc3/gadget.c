@@ -3051,8 +3051,9 @@ static int dwc3_gadget_start(struct usb_gadget *g,
 	int			ret;
 	int			irq;
 
-	pr_info("lavender-trace: DMA mask=%#llx event=%pad len=%u ep0=%pad hwparams0=%#x\n",
+	pr_info("lavender-trace: DMA mask=%#llx limit=%#llx event=%pad len=%u ep0=%pad hwparams0=%#x\n",
 		(unsigned long long)dma_get_mask(dwc->sysdev),
+		(unsigned long long)dwc->sysdev->bus_dma_limit,
 		&dwc->ev_buf->dma, dwc->ev_buf->length,
 		&dwc->ep0_trb_addr, dwc->hwparams.hwparams0);
 	irq = dwc->irq_gadget;
@@ -4675,8 +4676,9 @@ static irqreturn_t dwc3_thread_interrupt(int irq, void *_evt)
 	unsigned int n = atomic_inc_return(&seen);
 
 	if (n <= 8)
-		pr_info("lavender-trace: IRQ thread entry %u count=%u pos=%u\n",
-			n, evt->count, evt->lpos);
+		pr_info("lavender-trace: IRQ thread entry %u count=%u pos=%u raw=%#x\n",
+			n, evt->count, evt->lpos,
+			le32_to_cpup((__le32 *)(evt->cache + evt->lpos)));
 	local_bh_disable();
 	spin_lock_irqsave(&dwc->lock, flags);
 	ret = dwc3_process_event_buf(evt);

@@ -444,6 +444,8 @@
 };
 
 &usb3 {
+	/* Diagnostic: isolate the reset with USB DMA below 4 GiB. */
+	dma-ranges = <0 0 0xffffffff>;
 	qcom,select-utmi-as-pipe-clk;
 
 	status = "okay";
