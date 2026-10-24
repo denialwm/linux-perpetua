@@ -42,6 +42,7 @@ properties:
               - qcom,apss-wdt-sc7280
               - qcom,apss-wdt-sc8180x
               - qcom,apss-wdt-sc8280xp
+              - qcom,apss-wdt-sdm660
               - qcom,apss-wdt-sdm845
               - qcom,apss-wdt-sdx55
               - qcom,apss-wdt-sdx65
