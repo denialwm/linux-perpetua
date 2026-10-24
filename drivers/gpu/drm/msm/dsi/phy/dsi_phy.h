@@ -107,6 +107,7 @@ struct msm_dsi_phy {
 	int id;
 
 	struct regulator_bulk_data *supplies;
+	struct clk *ahb_clk;
 
 	struct msm_dsi_dphy_timing timing;
 	const struct msm_dsi_phy_cfg *cfg;
