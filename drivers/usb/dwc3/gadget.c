@@ -3051,6 +3051,10 @@ static int dwc3_gadget_start(struct usb_gadget *g,
 	int			ret;
 	int			irq;
 
+	pr_info("lavender-trace: DMA mask=%#llx event=%pad len=%u ep0=%pad hwparams0=%#x\n",
+		(unsigned long long)dma_get_mask(dwc->sysdev),
+		&dwc->ev_buf->dma, dwc->ev_buf->length,
+		&dwc->ep0_trb_addr, dwc->hwparams.hwparams0);
 	irq = dwc->irq_gadget;
 	pr_info("lavender-trace: dwc3 request IRQ %d begin\n", irq);
 	ret = request_threaded_irq(irq, dwc3_interrupt, dwc3_thread_interrupt,
@@ -4667,12 +4671,19 @@ static irqreturn_t dwc3_thread_interrupt(int irq, void *_evt)
 	struct dwc3 *dwc = evt->dwc;
 	unsigned long flags;
 	irqreturn_t ret = IRQ_NONE;
+	static atomic_t seen = ATOMIC_INIT(0);
+	unsigned int n = atomic_inc_return(&seen);
 
+	if (n <= 8)
+		pr_info("lavender-trace: IRQ thread entry %u count=%u pos=%u\n",
+			n, evt->count, evt->lpos);
 	local_bh_disable();
 	spin_lock_irqsave(&dwc->lock, flags);
 	ret = dwc3_process_event_buf(evt);
 	spin_unlock_irqrestore(&dwc->lock, flags);
 	local_bh_enable();
+	if (n <= 8)
+		pr_info("lavender-trace: IRQ thread exit %u ret=%u\n", n, ret);
 
 	return ret;
 }
@@ -4754,8 +4765,18 @@ static irqreturn_t dwc3_check_event_buf(struct dwc3_event_buffer *evt)
 static irqreturn_t dwc3_interrupt(int irq, void *_evt)
 {
 	struct dwc3_event_buffer	*evt = _evt;
+	static atomic_t seen = ATOMIC_INIT(0);
+	unsigned int n = atomic_inc_return(&seen);
+	irqreturn_t ret;
 
-	return dwc3_check_event_buf(evt);
+	if (n <= 8)
+		pr_info("lavender-trace: IRQ %d entry %u flags=%#x\n",
+			irq, n, evt->flags);
+	ret = dwc3_check_event_buf(evt);
+	if (n <= 8)
+		pr_info("lavender-trace: IRQ %d exit %u ret=%u count=%u\n",
+			irq, n, ret, evt->count);
+	return ret;
 }
 
 static int dwc3_gadget_get_irq(struct dwc3 *dwc)
