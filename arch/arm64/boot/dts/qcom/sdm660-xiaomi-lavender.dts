@@ -444,15 +444,14 @@
 };
 
 &usb3 {
-	/* Diagnostic: isolate the reset with USB DMA below 4 GiB. */
-	dma-ranges = <0 0 0xffffffff>;
 	qcom,select-utmi-as-pipe-clk;
 
 	status = "okay";
 };
 
 &usb3_dwc3 {
-	maximum-speed = "high-speed";
+	/* Diagnostic: separate high-speed negotiation from the reset path. */
+	maximum-speed = "full-speed";
 	phys = <&qusb2phy0>;
 	phy-names = "usb2-phy";
 
