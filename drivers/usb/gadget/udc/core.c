@@ -1659,19 +1659,25 @@ static int gadget_bind_driver(struct device *dev)
 
 	usb_gadget_udc_set_speed(udc, driver->max_speed);
 
+	pr_info("lavender-trace: gadget driver bind begin\n");
 	ret = driver->bind(udc->gadget, driver);
+	pr_info("lavender-trace: gadget driver bind returned %d\n", ret);
 	if (ret)
 		goto err_bind;
 
 	mutex_lock(&udc->connect_lock);
+	pr_info("lavender-trace: UDC hardware start begin\n");
 	ret = usb_gadget_udc_start_locked(udc);
+	pr_info("lavender-trace: UDC hardware start returned %d\n", ret);
 	if (ret) {
 		mutex_unlock(&udc->connect_lock);
 		goto err_start;
 	}
 	usb_gadget_enable_async_callbacks(udc);
 	udc->allow_connect = true;
+	pr_info("lavender-trace: UDC connect begin\n");
 	ret = usb_udc_connect_control_locked(udc);
+	pr_info("lavender-trace: UDC connect returned %d\n", ret);
 	if (ret)
 		goto err_connect_control;
 

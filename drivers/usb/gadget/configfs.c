@@ -1698,7 +1698,9 @@ static int configfs_composite_bind(struct usb_gadget *gadget,
 	gi->unbind = 0;
 	cdev->gadget = gadget;
 	set_gadget_data(gadget, cdev);
+	pr_info("lavender-trace: composite prepare begin\n");
 	ret = composite_dev_prepare(composite, cdev);
+	pr_info("lavender-trace: composite prepare returned %d\n", ret);
 	if (ret)
 		return ret;
 	/* and now the gadget bind */
@@ -1799,7 +1801,10 @@ static int configfs_composite_bind(struct usb_gadget *gadget,
 
 		list_for_each_entry_safe(f, tmp, &cfg->func_list, list) {
 			list_del(&f->list);
+			pr_info("lavender-trace: function %s bind begin\n", f->name);
 			ret = usb_add_function(c, f);
+			pr_info("lavender-trace: function %s bind returned %d\n",
+				f->name, ret);
 			if (ret) {
 				list_add(&f->list, &cfg->func_list);
 				goto err_purge_funcs;

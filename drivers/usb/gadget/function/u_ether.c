@@ -793,7 +793,9 @@ struct eth_dev *gether_setup_name(struct usb_gadget *g,
 	SET_NETDEV_DEV(net, &g->dev);
 	SET_NETDEV_DEVTYPE(net, &gadget_type);
 
+	pr_info("lavender-trace: register netdev begin\n");
 	status = register_netdev(net);
+	pr_info("lavender-trace: register netdev returned %d\n", status);
 	if (status < 0) {
 		dev_dbg(&g->dev, "register_netdev failed, %d\n", status);
 		free_netdev(net);
@@ -870,13 +872,16 @@ int gether_register_netdev(struct net_device *net)
 
 	eth_hw_addr_set(net, dev->dev_mac);
 
+	pr_info("lavender-trace: register netdev begin\n");
 	status = register_netdev(net);
+	pr_info("lavender-trace: register netdev returned %d\n", status);
 	if (status < 0) {
 		dev_dbg(&g->dev, "register_netdev failed, %d\n", status);
 		return status;
 	} else {
 		INFO(dev, "HOST MAC %pM\n", dev->host_mac);
 		INFO(dev, "MAC %pM\n", dev->dev_mac);
+		pr_info("lavender-trace: netdev MAC logs complete\n");
 
 		/* two kinds of host-initiated state changes:
 		 *  - iff DATA transfer is active, carrier is "on"

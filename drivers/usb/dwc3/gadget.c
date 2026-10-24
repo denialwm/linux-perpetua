@@ -2824,6 +2824,7 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 
 	is_on = !!is_on;
 
+	pr_info("lavender-trace: dwc3 pullup %d begin\n", is_on);
 	dwc->softconnect = is_on;
 
 	/*
@@ -2842,7 +2843,9 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 	 * successful resume, the DWC3 runtime PM resume routine will handle
 	 * the run stop sequence, so avoid duplicate operations here.
 	 */
+	pr_info("lavender-trace: dwc3 runtime resume begin\n");
 	ret = pm_runtime_get_sync(dwc->dev);
+	pr_info("lavender-trace: dwc3 runtime resume returned %d\n", ret);
 	if (!ret || ret < 0) {
 		pm_runtime_put(dwc->dev);
 		if (ret < 0)
@@ -2863,6 +2866,7 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 		ret = dwc3_gadget_soft_disconnect(dwc);
 	else
 		ret = dwc3_gadget_soft_connect(dwc);
+	pr_info("lavender-trace: dwc3 soft connect/disconnect returned %d\n", ret);
 	mutex_unlock(&dwc->connect_mutex);
 
 	pm_runtime_put(dwc->dev);
@@ -3048,8 +3052,10 @@ static int dwc3_gadget_start(struct usb_gadget *g,
 	int			irq;
 
 	irq = dwc->irq_gadget;
+	pr_info("lavender-trace: dwc3 request IRQ %d begin\n", irq);
 	ret = request_threaded_irq(irq, dwc3_interrupt, dwc3_thread_interrupt,
 			IRQF_SHARED, "dwc3", dwc->ev_buf);
+	pr_info("lavender-trace: dwc3 request IRQ returned %d\n", ret);
 	if (ret) {
 		dev_err(dwc->dev, "failed to request irq #%d --> %d\n",
 				irq, ret);
@@ -4817,6 +4823,7 @@ static void dwc3_err_recovery_work(struct work_struct *work)
 			goto err_unrecoverable;
 
 		ret = dwc3_gadget_soft_connect(dwc);
+	pr_info("lavender-trace: dwc3 soft connect/disconnect returned %d\n", ret);
 		if (ret)
 			goto err_unrecoverable;
 	}
