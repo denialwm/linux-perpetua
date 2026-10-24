@@ -451,8 +451,7 @@
 };
 
 &usb3_dwc3 {
-	/* Diagnostic: separate high-speed negotiation from the reset path. */
-	maximum-speed = "full-speed";
+	maximum-speed = "high-speed";
 	phys = <&qusb2phy0>;
 	phy-names = "usb2-phy";
 
