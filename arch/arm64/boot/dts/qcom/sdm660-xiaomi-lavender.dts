@@ -30,12 +30,13 @@
 		ranges;
 
 		stdout-path = "serial0:115200n8";
-		bootargs = "rdinit=/init console=ttyMSM0,115200n8 earlycon=msm_serial_dm,0xc170000 loglevel=7 panic=0";
+		bootargs = "rdinit=/init console=ttyMSM0,115200n8 earlycon panic=0";
 
 		fdt-handoff {
 			stock-compatible = "qcom,sdm660-mtp";
-			stock-model = "Qualcomm Technologies, Inc. SDM 660 PM660 + PM660L MTP, Lavender",
-				      "Qualcomm Technologies, Inc. SDM 660 PM660 + PM660L MTP F7A";
+			stock-model =
+				"Qualcomm Technologies, Inc. SDM 660 PM660 + PM660L MTP, Lavender",
+				"Qualcomm Technologies, Inc. SDM 660 PM660 + PM660L MTP F7A";
 			keep-initrd;
 		};
 
