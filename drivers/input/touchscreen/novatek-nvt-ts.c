@@ -393,7 +393,6 @@ static int nvt_ts_probe(struct i2c_client *client)
 	return nvt_ts_initial_power_on_and_register_inputdev(data);
 }
 
-
 static const struct nvt_ts_i2c_chip_data nvt_nt11205_ts_data = {
 	.chip_id = 0x05,
 };
