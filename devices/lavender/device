@@ -1,0 +1,5 @@
+# Xiaomi Redmi Note 7 (Tianma panel)
+name='Xiaomi Redmi Note 7'
+vendor=qcom
+soc=sdm660
+boot=android-legacy

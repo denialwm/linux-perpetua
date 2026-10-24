@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
+"""Pack an Android v1 boot image with a gzip kernel and appended vendor DTBs.
+
+Usage: android-legacy TEMPLATE IMAGE RAMDISK OUTPUT [EVIDENCE]
+Preserve the template header, addresses, vendor DTBs and unsigned AVB properties.
+IMAGE must carry the Perpetua built-in DTB; RAMDISK is a gzip newc initramfs.
+No device access. OUTPUT must not exist.
+"""
+import gzip
+import hashlib
+import json
+from pathlib import Path
+import re
+import struct
+import subprocess
+import sys
+import tempfile
+import zlib
+
+
+def run(*args):
+    return subprocess.check_output(list(map(str, args)))
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def appended_dtbs(kernel):
+    stream = zlib.decompressobj(31)
+    stream.decompress(kernel)
+    assert stream.eof, "template kernel is not complete gzip"
+    tail = stream.unused_data
+    assert tail, "template has no appended vendor DTBs"
+    pos = count = 0
+    while pos < len(tail):
+        assert tail[pos:pos + 4] == b"\xd0\x0d\xfe\xed", "invalid appended DTB"
+        size = struct.unpack_from(">I", tail, pos + 4)[0]
+        assert 40 <= size <= len(tail) - pos, "invalid DTB size"
+        pos += size
+        count += 1
+    return tail, count
+
+
+def main():
+    if len(sys.argv) not in (5, 6):
+        sys.exit(__doc__)
+    template, source, ramdisk, output = map(Path, sys.argv[1:5])
+    evidence = Path(sys.argv[5]) if len(sys.argv) == 6 else None
+    assert not output.exists(), "refusing to replace an existing image"
+    stock = template.read_bytes()
+    assert stock[:8] == b"ANDROID!", "not an Android boot image"
+    assert struct.unpack_from("<I", stock, 40)[0] == 1, "requires header v1"
+    page = struct.unpack_from("<I", stock, 36)[0]
+    assert page == 4096, "requires 4096-byte pages"
+    assert struct.unpack_from("<I", stock, 24)[0] == 0, "second payload unsupported"
+    assert struct.unpack_from("<I", stock, 1632)[0] == 0, "recovery DTBO unsupported"
+    old_size = struct.unpack_from("<I", stock, 8)[0]
+    tail, count = appended_dtbs(stock[page:page + old_size])
+    image = source.read_bytes()
+    assert image[56:60] == b"ARM\x64", "not an ARM64 Image"
+    payload = gzip.compress(image, compresslevel=9, mtime=0) + tail
+    initrd = ramdisk.read_bytes()
+    assert gzip.decompress(initrd)[:6] in (b"070701", b"070702"), "ramdisk is not gzip newc"
+    header = bytearray(stock[:page])
+    struct.pack_into("<I", header, 8, len(payload))
+    struct.pack_into("<I", header, 16, len(initrd))
+    ident = hashlib.sha1()
+    for data in (payload, initrd, b"", b""):
+        ident.update(data)
+        ident.update(struct.pack("<I", len(data)))
+    header[576:608] = ident.digest() + bytes(12)
+    info = run("avbtool", "info_image", "--image", template).decode()
+    assert re.search(r"^Algorithm:\s+NONE$", info, re.M), "signed template unsupported"
+    salt = re.search(r"^\s*Salt:\s*([0-9a-f]+)\s*$", info, re.M).group(1)
+    props = re.findall(r"^\s*Prop: (\S+) -> '(.*)'$", info, re.M)
+    packed = bytes(header) + payload + bytes(-len(payload) % page)
+    packed += initrd + bytes(-len(initrd) % page)
+    assert len(packed) + 65536 < len(stock), "image exceeds boot partition"
+    output.write_bytes(packed)
+    run("avbtool", "add_hash_footer", "--image", output,
+        "--partition_size", len(stock), "--partition_name", "boot",
+        "--hash_algorithm", "sha256", "--algorithm", "NONE", "--salt", salt,
+        *[a for key, value in props for a in ("--prop", f"{key}:{value}")])
+    with tempfile.TemporaryDirectory(prefix="legacy-boot-") as tmp:
+        named = Path(tmp) / "boot.img"
+        named.symlink_to(output.resolve())
+        verified = run("avbtool", "verify_image", "--image", named)
+        unpacked = Path(tmp) / "unpacked"
+        described = run("unpack_bootimg", "--boot_img", output, "--out", unpacked)
+        assert (unpacked / "kernel").read_bytes() == payload
+        assert (unpacked / "ramdisk").read_bytes() == initrd
+    generated = output.read_bytes()
+    assert len(generated) == len(stock)
+    assert generated[:page] == header
+    # Apart from payload sizes and ID, every bootloader header byte is unchanged.
+    restored = bytearray(header)
+    for start, end in ((8, 12), (16, 20), (576, 608)):
+        restored[start:end] = stock[start:end]
+    assert restored == stock[:page]
+    record = dict(bytes=len(generated), sha256=sha(generated),
+                  template_sha256=sha(stock), image_sha256=sha(image),
+                  ramdisk_sha256=sha(initrd), vendor_dtbs=count,
+                  vendor_dtbs_sha256=sha(tail), header_version=1, page_size=page)
+    if evidence:
+        evidence.mkdir(parents=True, exist_ok=True)
+        (evidence / "boot-verification.txt").write_bytes(verified)
+        (evidence / "boot-header.txt").write_bytes(described)
+        (evidence / "boot-format.json").write_text(json.dumps(record, indent=2) + "\n")
+    print(json.dumps(record))
+
+
+if __name__ == "__main__":
+    main()

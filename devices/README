@@ -81,6 +81,12 @@ devices/boot holds one tool per boot chain that writes the images:
                 image, keeping its header and AVB properties.
 
 
+  android-legacy  Android header version 1: a gzip kernel followed by the
+                  device's vendor DTBs, plus a ramdisk in the same boot
+                  partition. Keeps the template's header and unsigned AVB.
+                  Usage: TEMPLATE IMAGE RAMDISK OUTPUT [EVIDENCE].
+
+
 Checks
 ------
 
