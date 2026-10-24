@@ -30,7 +30,7 @@
 		ranges;
 
 		stdout-path = "serial0:115200n8";
-		bootargs = "rdinit=/init console=ttyMSM0,115200n8 earlycon panic=0";
+		bootargs = "rdinit=/init console=ttyMSM0,115200n8 earlycon panic=0 clk_ignore_unused pd_ignore_unused";
 
 		fdt-handoff {
 			stock-compatible = "qcom,sdm660-mtp", "qcom,sdm660";
