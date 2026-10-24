@@ -279,6 +279,13 @@
 };
 
 &soc {
+	apss_wdt: watchdog@17817000 {
+		compatible = "qcom,apss-wdt-sdm660", "qcom,kpss-wdt";
+		reg = <0x17817000 0x1000>;
+		clocks = <&sleep_clk>;
+		interrupts = <GIC_SPI 3 IRQ_TYPE_EDGE_RISING>;
+	};
+
 	cdsp_smmu: iommu@5180000 {
 		compatible = "qcom,sdm630-smmu-v2", "qcom,smmu-v2";
 		reg = <0x5180000 0x40000>;
