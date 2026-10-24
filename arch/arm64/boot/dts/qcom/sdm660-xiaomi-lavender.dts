@@ -392,7 +392,8 @@
 };
 
 &pm660l_wled {
-	status = "okay";
+	/* Temporary graphics isolation for the USB bootstrap diagnosis. */
+	status = "disabled";
 
 	qcom,switching-freq = <800>;
 	qcom,current-limit-microamp = <20000>;
@@ -458,7 +459,8 @@
 };
 
 &adreno_gpu {
-	status = "okay";
+	/* Temporary graphics isolation for the USB bootstrap diagnosis. */
+	status = "disabled";
 };
 
 &adreno_gpu_zap {
@@ -484,11 +486,13 @@
 };
 
 &mdss {
-	status = "okay";
+	/* Temporary graphics isolation for the USB bootstrap diagnosis. */
+	status = "disabled";
 };
 
 &mdss_dsi0 {
-	status = "okay";
+	/* Temporary graphics isolation for the USB bootstrap diagnosis. */
+	status = "disabled";
 	vdd-supply = <&vreg_l1b_0p925>;
 	vdda-supply = <&vreg_l1a_1p225>;
 
@@ -518,7 +522,7 @@
 
 &mdss_dsi0_phy {
 	vcca-supply = <&vreg_l1b_0p925>;
-	status = "okay";
+	status = "disabled";
 };
 
 &mmss_smmu {
