@@ -43,6 +43,26 @@ properties:
       - const: ovl0
       - const: ovl1
 
+  clocks:
+    items:
+      - description: high-speed clock of the first DSI link, from its PHY
+      - description: high-speed clock of the second DSI link, from its PHY
+
+  clock-names:
+    items:
+      - const: dsi0-hs
+      - const: dsi1-hs
+
+  phys:
+    items:
+      - description: MIPI D-PHY of the first DSI link
+      - description: MIPI D-PHY of the second DSI link
+
+  phy-names:
+    items:
+      - const: dsi0
+      - const: dsi1
+
   "#address-cells":
     const: 1
 
@@ -61,6 +81,10 @@ required:
   - reg-names
   - interrupts
   - interrupt-names
+  - clocks
+  - clock-names
+  - phys
+  - phy-names
 
 additionalProperties: false
 
@@ -77,6 +101,10 @@ examples:
         interrupts = <GIC_SPI 387 IRQ_TYPE_LEVEL_HIGH>,
                      <GIC_SPI 431 IRQ_TYPE_LEVEL_HIGH>;
         interrupt-names = "ovl0", "ovl1";
+        clocks = <&mipi_tx0>, <&mipi_tx1>;
+        clock-names = "dsi0-hs", "dsi1-hs";
+        phys = <&mipi_tx0>, <&mipi_tx1>;
+        phy-names = "dsi0", "dsi1";
         #address-cells = <1>;
         #size-cells = <0>;
 
