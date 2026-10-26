@@ -9,10 +9,12 @@
  */
 
 #include <linux/aperture.h>
+#include <linux/clk.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 
 #include <drm/clients/drm_client_setup.h>
@@ -291,6 +293,13 @@ static void dpu_encoder_atomic_enable(struct drm_encoder *encoder,
 	struct dpu *dpu = to_dpu(encoder->dev);
 	struct drm_crtc_state *crtc_state =
 		drm_atomic_get_new_crtc_state(state, encoder->crtc);
+	int ret;
+
+	ret = dpu_dsi_power_on(dpu);
+	if (ret) {
+		drm_err(&dpu->drm, "failed to power the DSI PHYs: %d\n", ret);
+		return;
+	}
 
 	dpu_dsi_config(dpu, &crtc_state->adjusted_mode);
 	drm_panel_prepare(dpu->panel);
@@ -306,6 +315,7 @@ static void dpu_encoder_atomic_disable(struct drm_encoder *encoder,
 	drm_panel_disable(dpu->panel);
 	dpu_dsi_video_stop(dpu);
 	drm_panel_unprepare(dpu->panel);
+	dpu_dsi_power_off(dpu);
 }
 
 static const struct drm_encoder_helper_funcs dpu_encoder_helper_funcs = {
@@ -549,6 +559,17 @@ static int dpu_probe(struct platform_device *pdev)
 								       name);
 		if (IS_ERR(dpu->dsi[pipe]))
 			return PTR_ERR(dpu->dsi[pipe]);
+
+		dpu->dsi_phy[pipe] = devm_phy_get(dev, name);
+		if (IS_ERR(dpu->dsi_phy[pipe]))
+			return dev_err_probe(dev, PTR_ERR(dpu->dsi_phy[pipe]),
+					     "no PHY for %s\n", name);
+
+		snprintf(name, sizeof(name), "dsi%u-hs", pipe);
+		dpu->dsi_hs[pipe] = devm_clk_get(dev, name);
+		if (IS_ERR(dpu->dsi_hs[pipe]))
+			return dev_err_probe(dev, PTR_ERR(dpu->dsi_hs[pipe]),
+					     "no %s clock\n", name);
 	}
 
 	ret = dpu_check_boot_pipeline(dpu);

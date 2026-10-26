@@ -9,9 +9,11 @@
 
 #include <linux/bitfield.h>
 #include <linux/bits.h>
+#include <linux/clk.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
+#include <linux/phy/phy.h>
 #include <linux/unaligned.h>
 
 #include <drm/display/drm_dsc.h>
@@ -196,6 +198,44 @@ void dpu_dsi_video_start(struct dpu *dpu)
 
 	dsi_dual(dpu, true);
 	dsi_start(dpu);
+}
+
+/* Run the PHYs of the links at the lane rate of the panel. */
+int dpu_dsi_power_on(struct dpu *dpu)
+{
+	unsigned int link;
+	int ret = 0;
+
+	for (link = 0; link < dpu->soc->num_pipes; link++) {
+		ret = clk_set_rate(dpu->dsi_hs[link], dpu->dsi_device->hs_rate);
+		if (!ret)
+			ret = phy_power_on(dpu->dsi_phy[link]);
+		if (ret)
+			break;
+	}
+
+	if (ret) {
+		while (link--)
+			phy_power_off(dpu->dsi_phy[link]);
+		return ret;
+	}
+
+	dpu->dsi_powered = true;
+
+	return 0;
+}
+
+void dpu_dsi_power_off(struct dpu *dpu)
+{
+	unsigned int link;
+
+	if (!dpu->dsi_powered)
+		return;
+
+	for (link = 0; link < dpu->soc->num_pipes; link++)
+		phy_power_off(dpu->dsi_phy[link]);
+
+	dpu->dsi_powered = false;
 }
 
 /* D-PHY timings in byte clock cycles, from the lane rate in Mbps. */

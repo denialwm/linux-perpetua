@@ -17,6 +17,9 @@
 #include <drm/drm_modes.h>
 #include <drm/drm_plane.h>
 
+struct clk;
+struct phy;
+
 #define DPU_MAX_PIPES	2
 
 /*
@@ -53,6 +56,9 @@ struct dpu {
 	const struct dpu_soc *soc;
 	void __iomem *ovl[DPU_MAX_PIPES];
 	void __iomem *dsi[DPU_MAX_PIPES];
+	struct clk *dsi_hs[DPU_MAX_PIPES];
+	struct phy *dsi_phy[DPU_MAX_PIPES];
+	bool dsi_powered;
 	int irq;
 
 	/* The frame size the bootloader set the pipes up for. */
@@ -91,6 +97,8 @@ int dpu_bind(struct dpu *dpu, struct mipi_dsi_device *device);
 void dpu_unbind(struct dpu *dpu);
 
 int dpu_dsi_host_register(struct dpu *dpu);
+int dpu_dsi_power_on(struct dpu *dpu);
+void dpu_dsi_power_off(struct dpu *dpu);
 void dpu_dsi_config(struct dpu *dpu, const struct drm_display_mode *mode);
 int dpu_dsi_video_stop(struct dpu *dpu);
 void dpu_dsi_video_start(struct dpu *dpu);
