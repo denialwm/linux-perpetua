@@ -6,6 +6,8 @@ config DRM_MEDIATEK_DPU
 	select DRM_CLIENT_SELECTION
 	select DRM_KMS_HELPER
 	select DRM_GEM_DMA_HELPER
+	select DRM_MIPI_DSI
+	select DRM_PANEL
 	help
 	  Choose this option for the display pipeline of MediaTek Dimensity
 	  SoCs that split it into overlay (OVL) and display subsystems,

@@ -16,6 +16,7 @@
 #define  OVL_INT_FRAME_START		BIT(14)
 #define OVL_ROI_SIZE			0x020
 #define  OVL_ROI_WIDTH			GENMASK(12, 0)
+#define  OVL_ROI_HEIGHT			GENMASK(28, 16)
 #define OVL_SRC_CON			0x02c
 #define  OVL_SRC_CON_LAYER_EN(n)	BIT(n)
 #define OVL_L_PITCH(n)			(0x044 + 0x20 * (n))
@@ -84,6 +85,11 @@ bool dpu_ovl_frame_start(u32 status)
 u32 dpu_ovl_width(void __iomem *ovl)
 {
 	return FIELD_GET(OVL_ROI_WIDTH, readl(ovl + OVL_ROI_SIZE));
+}
+
+u32 dpu_ovl_height(void __iomem *ovl)
+{
+	return FIELD_GET(OVL_ROI_HEIGHT, readl(ovl + OVL_ROI_SIZE));
 }
 
 dma_addr_t dpu_ovl_addr(void __iomem *ovl)

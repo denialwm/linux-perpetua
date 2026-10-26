@@ -4,7 +4,8 @@
  *
  * The bootloader powers the display up, programs the whole pipeline and
  * leaves it scanning out its splash buffer. This driver takes that running
- * pipeline over and flips its overlay engines between framebuffers.
+ * pipeline over, flips its overlay engines between framebuffers and drives
+ * the panel on its DSI links.
  */
 
 #include <linux/aperture.h>
@@ -25,25 +26,12 @@
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
+#include <drm/drm_panel.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
-#include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_vblank.h>
 
 #include "dpu.h"
-
-/*
- * Lenovo Idea Tab Pro: the 144 Hz mode its bootloader sets up for the
- * Tianma NT36532 panel. It moves to the panel driver once this driver
- * drives DSI itself.
- */
-static const struct drm_display_mode dpu_boot_mode = {
-	DRM_MODE("2944x1840", DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED,
-		 890618, 2944, 2944 + 36, 2944 + 36 + 6, 2944 + 36 + 6 + 31, 0,
-		 1840, 1840 + 26, 1840 + 26 + 2, 1840 + 26 + 2 + 182, 0, 0),
-	.width_mm = 274,
-	.height_mm = 171,
-};
 
 static const u32 dpu_formats[] = {
 	DRM_FORMAT_XRGB8888,
@@ -211,19 +199,37 @@ static void dpu_crtc_atomic_enable(struct drm_crtc *crtc,
 	drm_crtc_vblank_on(crtc);
 }
 
+/*
+ * The encoder stopped the DSI links before this runs, so no frame starts:
+ * drop the queued updates and turn the overlays off at once.
+ */
 static void dpu_crtc_atomic_disable(struct drm_crtc *crtc,
 				    struct drm_atomic_commit *state)
 {
 	struct dpu *dpu = to_dpu(crtc->dev);
+	const struct dpu_scanout off = { };
+	unsigned int pipe;
 
-	/* Scan out nothing: the panel shows the background colour. */
-	if (!drm_crtc_vblank_get(crtc)) {
-		dpu->next.enabled = false;
-		dpu_queue(dpu, NULL);
-		if (!wait_event_timeout(dpu->applied, !dpu->has_pending &&
-					!dpu->armed, msecs_to_jiffies(100)))
-			drm_warn(crtc->dev, "overlays did not stop\n");
+	spin_lock_irq(&crtc->dev->event_lock);
+	if (dpu->has_pending) {
+		if (dpu->pending_event)
+			drm_crtc_send_vblank_event(crtc, dpu->pending_event);
+		dpu->pending_event = NULL;
+		dpu->has_pending = false;
+		drm_crtc_vblank_put(crtc);
 	}
+	if (dpu->armed) {
+		if (dpu->armed_event)
+			drm_crtc_send_vblank_event(crtc, dpu->armed_event);
+		dpu->armed_event = NULL;
+		dpu->armed = false;
+		drm_crtc_vblank_put(crtc);
+	}
+	spin_unlock_irq(&crtc->dev->event_lock);
+
+	for (pipe = 0; pipe < dpu->soc->num_pipes; pipe++)
+		dpu_ovl_scanout(dpu->ovl[pipe], &off, pipe);
+
 	drm_crtc_vblank_off(crtc);
 
 	spin_lock_irq(&crtc->dev->event_lock);
@@ -254,7 +260,10 @@ static enum drm_mode_status dpu_crtc_mode_valid(struct drm_crtc *crtc,
 {
 	struct dpu *dpu = to_dpu(crtc->dev);
 
-	return drm_mode_equal(mode, &dpu->mode) ? MODE_OK : MODE_BAD;
+	if (mode->hdisplay != dpu->width || mode->vdisplay != dpu->height)
+		return MODE_BAD;
+
+	return MODE_OK;
 }
 
 static const struct drm_crtc_helper_funcs dpu_crtc_helper_funcs = {
@@ -275,11 +284,41 @@ static const struct drm_crtc_funcs dpu_crtc_funcs = {
 	.disable_vblank = dpu_crtc_disable_vblank,
 };
 
+/* The panel needs command mode to power up, then gets its video stream. */
+static void dpu_encoder_atomic_enable(struct drm_encoder *encoder,
+				      struct drm_atomic_commit *state)
+{
+	struct dpu *dpu = to_dpu(encoder->dev);
+
+	drm_panel_prepare(dpu->panel);
+	dpu_dsi_video_start(dpu);
+	drm_panel_enable(dpu->panel);
+}
+
+static void dpu_encoder_atomic_disable(struct drm_encoder *encoder,
+				       struct drm_atomic_commit *state)
+{
+	struct dpu *dpu = to_dpu(encoder->dev);
+
+	drm_panel_disable(dpu->panel);
+	dpu_dsi_video_stop(dpu);
+	drm_panel_unprepare(dpu->panel);
+}
+
+static const struct drm_encoder_helper_funcs dpu_encoder_helper_funcs = {
+	.atomic_enable = dpu_encoder_atomic_enable,
+	.atomic_disable = dpu_encoder_atomic_disable,
+};
+
+static const struct drm_encoder_funcs dpu_encoder_funcs = {
+	.destroy = drm_encoder_cleanup,
+};
+
 static int dpu_connector_get_modes(struct drm_connector *connector)
 {
 	struct dpu *dpu = to_dpu(connector->dev);
 
-	return drm_connector_helper_get_modes_fixed(connector, &dpu->mode);
+	return drm_panel_get_modes(dpu->panel, connector);
 }
 
 static const struct drm_connector_helper_funcs dpu_connector_helper_funcs = {
@@ -314,10 +353,10 @@ static int dpu_kms_init(struct dpu *dpu)
 	if (ret)
 		return ret;
 
-	drm->mode_config.min_width = dpu->mode.hdisplay;
-	drm->mode_config.max_width = dpu->mode.hdisplay;
-	drm->mode_config.min_height = dpu->mode.vdisplay;
-	drm->mode_config.max_height = dpu->mode.vdisplay;
+	drm->mode_config.min_width = dpu->width;
+	drm->mode_config.max_width = dpu->width;
+	drm->mode_config.min_height = dpu->height;
+	drm->mode_config.max_height = dpu->height;
 	drm->mode_config.preferred_depth = 24;
 	drm->mode_config.funcs = &dpu_mode_config_funcs;
 	drm->mode_config.helper_private = &dpu_mode_config_helpers;
@@ -335,10 +374,11 @@ static int dpu_kms_init(struct dpu *dpu)
 		return ret;
 	drm_crtc_helper_add(&dpu->crtc, &dpu_crtc_helper_funcs);
 
-	ret = drm_simple_encoder_init(drm, &dpu->encoder,
-				      DRM_MODE_ENCODER_DSI);
+	ret = drm_encoder_init(drm, &dpu->encoder, &dpu_encoder_funcs,
+			       DRM_MODE_ENCODER_DSI, NULL);
 	if (ret)
 		return ret;
+	drm_encoder_helper_add(&dpu->encoder, &dpu_encoder_helper_funcs);
 	dpu->encoder.possible_crtcs = drm_crtc_mask(&dpu->crtc);
 
 	ret = drm_connector_init(drm, &dpu->connector, &dpu_connector_funcs,
@@ -361,16 +401,20 @@ static int dpu_kms_init(struct dpu *dpu)
 }
 
 /*
- * Check that the pipes run the split this driver assumes: each OVL as
- * wide as its stripe plus the overlap, the second one starting @overlap
- * pixels left of the middle of the bootloader's frame.
+ * Take the frame size from the bootloader's pipes and check that they run
+ * the split this driver assumes: each OVL as wide as its stripe plus the
+ * overlap, the second one starting @overlap pixels left of the middle of
+ * the bootloader's frame.
  */
 static int dpu_check_boot_pipeline(struct dpu *dpu)
 {
-	unsigned int width = dpu->mode.hdisplay / dpu->soc->num_pipes;
-	unsigned int ovl_width = width + dpu->soc->overlap;
+	unsigned int ovl_width = dpu_ovl_width(dpu->ovl[0]);
+	unsigned int width = ovl_width - dpu->soc->overlap;
 	dma_addr_t base = dpu_ovl_addr(dpu->ovl[0]);
 	unsigned int pipe;
+
+	dpu->width = width * dpu->soc->num_pipes;
+	dpu->height = dpu_ovl_height(dpu->ovl[0]);
 
 	for (pipe = 0; pipe < dpu->soc->num_pipes; pipe++) {
 		u32 have = dpu_ovl_width(dpu->ovl[pipe]);
@@ -401,53 +445,33 @@ static const struct drm_driver dpu_driver = {
 	.minor = 0,
 };
 
-static int dpu_probe(struct platform_device *pdev)
+/*
+ * The panel attached to the DSI host: stop the bootloader's video stream,
+ * which leaves the panel to this driver, and bring the DRM device up. The
+ * first modeset powers the panel up again.
+ */
+int dpu_bind(struct dpu *dpu, struct mipi_dsi_device *device)
 {
-	struct device *dev = &pdev->dev;
-	struct dpu *dpu;
-	unsigned int pipe;
+	struct drm_panel *panel;
 	int ret;
 
-	dpu = devm_drm_dev_alloc(dev, &dpu_driver, struct dpu, drm);
-	if (IS_ERR(dpu))
-		return PTR_ERR(dpu);
+	/* KMS is set up once; a panel that comes back needs a new device. */
+	if (dpu->attached)
+		return -EBUSY;
 
-	dpu->soc = of_device_get_match_data(dev);
-	dpu->mode = dpu_boot_mode;
-	init_waitqueue_head(&dpu->applied);
-	platform_set_drvdata(pdev, dpu);
+	panel = of_drm_find_panel(device->dev.of_node);
+	if (IS_ERR(panel))
+		return PTR_ERR(panel);
 
-	for (pipe = 0; pipe < dpu->soc->num_pipes; pipe++) {
-		char name[8];
-
-		snprintf(name, sizeof(name), "ovl%u", pipe);
-		dpu->ovl[pipe] = devm_platform_ioremap_resource_byname(pdev,
-								       name);
-		if (IS_ERR(dpu->ovl[pipe]))
-			return PTR_ERR(dpu->ovl[pipe]);
-	}
-
-	ret = dpu_check_boot_pipeline(dpu);
-	if (ret)
-		return ret;
-
-	/*
-	 * The overlays read physical memory: the bootloader leaves their
-	 * ports outside the IOMMU. An address takes 36 bits.
-	 */
-	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(36));
-	if (ret)
-		return ret;
+	dpu->attached = true;
+	dpu->panel = panel;
+	dpu->dsi_device = device;
 
 	ret = dpu_kms_init(dpu);
 	if (ret)
 		return ret;
 
-	dpu_ovl_irq_enable(dpu->ovl[0], false);
-	dpu->irq = platform_get_irq_byname(pdev, "ovl0");
-	if (dpu->irq < 0)
-		return dpu->irq;
-	ret = devm_request_irq(dev, dpu->irq, dpu_irq, 0, dev_name(dev), dpu);
+	ret = dpu_dsi_video_stop(dpu);
 	if (ret)
 		return ret;
 
@@ -464,19 +488,85 @@ static int dpu_probe(struct platform_device *pdev)
 	return 0;
 }
 
+void dpu_unbind(struct dpu *dpu)
+{
+	if (!dpu->drm.registered)
+		return;
+
+	drm_dev_unplug(&dpu->drm);
+	drm_atomic_helper_shutdown(&dpu->drm);
+	drm_panel_put(dpu->panel);
+}
+
+static int dpu_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct dpu *dpu;
+	unsigned int pipe;
+	int ret;
+
+	dpu = devm_drm_dev_alloc(dev, &dpu_driver, struct dpu, drm);
+	if (IS_ERR(dpu))
+		return PTR_ERR(dpu);
+
+	dpu->soc = of_device_get_match_data(dev);
+	init_waitqueue_head(&dpu->applied);
+	platform_set_drvdata(pdev, dpu);
+
+	for (pipe = 0; pipe < dpu->soc->num_pipes; pipe++) {
+		char name[8];
+
+		snprintf(name, sizeof(name), "ovl%u", pipe);
+		dpu->ovl[pipe] = devm_platform_ioremap_resource_byname(pdev,
+								       name);
+		if (IS_ERR(dpu->ovl[pipe]))
+			return PTR_ERR(dpu->ovl[pipe]);
+
+		snprintf(name, sizeof(name), "dsi%u", pipe);
+		dpu->dsi[pipe] = devm_platform_ioremap_resource_byname(pdev,
+								       name);
+		if (IS_ERR(dpu->dsi[pipe]))
+			return PTR_ERR(dpu->dsi[pipe]);
+	}
+
+	ret = dpu_check_boot_pipeline(dpu);
+	if (ret)
+		return ret;
+
+	/*
+	 * The overlays read physical memory: the bootloader leaves their
+	 * ports outside the IOMMU. An address takes 36 bits.
+	 */
+	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(36));
+	if (ret)
+		return ret;
+
+	dpu_ovl_irq_enable(dpu->ovl[0], false);
+	dpu->irq = platform_get_irq_byname(pdev, "ovl0");
+	if (dpu->irq < 0)
+		return dpu->irq;
+	ret = devm_request_irq(dev, dpu->irq, dpu_irq, 0, dev_name(dev), dpu);
+	if (ret)
+		return ret;
+
+	/* The rest waits for the panel to attach. */
+	return dpu_dsi_host_register(dpu);
+}
+
 static void dpu_remove(struct platform_device *pdev)
 {
 	struct dpu *dpu = platform_get_drvdata(pdev);
 
-	drm_dev_unplug(&dpu->drm);
-	drm_atomic_helper_shutdown(&dpu->drm);
+	mipi_dsi_host_unregister(&dpu->dsi_host);
+	dpu_unbind(dpu);
 }
 
 static void dpu_shutdown(struct platform_device *pdev)
 {
 	struct dpu *dpu = platform_get_drvdata(pdev);
 
-	drm_atomic_helper_shutdown(&dpu->drm);
+	if (dpu->drm.registered)
+		drm_atomic_helper_shutdown(&dpu->drm);
 }
 
 static const struct dpu_soc mt6897_dpu = {
