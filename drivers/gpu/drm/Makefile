@@ -208,6 +208,7 @@ obj-y 			+= imx/
 obj-$(CONFIG_DRM_INGENIC) += ingenic/
 obj-$(CONFIG_DRM_LOGICVC) += logicvc/
 obj-$(CONFIG_DRM_MEDIATEK) += mediatek/
+obj-$(CONFIG_DRM_MEDIATEK_DPU) += mediatek-dpu/
 obj-$(CONFIG_DRM_MESON)	+= meson/
 obj-y			+= panel/
 obj-y			+= bridge/

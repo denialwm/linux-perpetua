@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config DRM_MEDIATEK_DPU
+	tristate "MediaTek Dimensity display processor"
+	depends on DRM && OF
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	select DRM_CLIENT_SELECTION
+	select DRM_KMS_HELPER
+	select DRM_GEM_DMA_HELPER
+	help
+	  Choose this option for the display pipeline of MediaTek Dimensity
+	  SoCs that split it into overlay (OVL) and display subsystems,
+	  such as the MT6897.
+
+	  If M is selected the module will be called mediatek-dpu.
