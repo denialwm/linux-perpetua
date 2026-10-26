@@ -17,8 +17,11 @@ description: |
 
 properties:
   compatible:
-    enum:
-      - ti,tps65132
+    oneOf:
+      - const: ti,tps65132
+      - items:
+          - const: siliconmitus,sm5109
+          - const: ti,tps65132
 
   reg:
     maxItems: 1
