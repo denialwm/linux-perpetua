@@ -14,6 +14,7 @@
 #include "ipa_mem.h"
 #include "ipa_modem.h"
 #include "ipa_qmi_msg.h"
+#include "ipa_uc.h"
 
 /**
  * DOC: AP/Modem QMI Handshake
@@ -152,6 +153,9 @@ static void ipa_qmi_ready(struct ipa_qmi *ipa_qmi)
 	ret = ipa_modem_start(ipa);
 	if (ret)
 		dev_err(ipa->dev, "error %d starting modem\n", ret);
+
+	/* The modem handshake is complete; it no longer needs proxy power */
+	ipa_uc_power_modem_done(ipa);
 }
 
 /* All QMI clients from the modem node are gone (modem shut down or crashed). */

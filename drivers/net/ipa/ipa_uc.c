@@ -212,8 +212,22 @@ void ipa_uc_power(struct ipa *ipa)
 	static bool already;
 	int ret;
 
-	if (already)
+	/* When the modem restarts, the microcontroller is already running
+	 * and won't report again.  The modem still accesses IPA while it
+	 * boots, so hold power until the modem handshake completes.
+	 */
+	if (already) {
+		if (ipa->modem_powered)
+			return;
+		ret = pm_runtime_get_sync(dev);
+		if (ret < 0) {
+			pm_runtime_put_noidle(dev);
+			dev_err(dev, "error %d getting modem proxy power\n", ret);
+		} else {
+			ipa->modem_powered = true;
+		}
 		return;
+	}
 	already = true;		/* Only do this on first boot */
 
 	/* This power reference dropped in ipa_uc_response_hdlr() above */
@@ -224,6 +238,16 @@ void ipa_uc_power(struct ipa *ipa)
 	} else {
 		ipa->uc_powered = true;
 	}
+}
+
+/* Drop the power reference taken for a restarting modem (if any) */
+void ipa_uc_power_modem_done(struct ipa *ipa)
+{
+	if (!ipa->modem_powered)
+		return;
+
+	ipa->modem_powered = false;
+	(void)pm_runtime_put_autosuspend(ipa->dev);
 }
 
 /* Send a command to the microcontroller */

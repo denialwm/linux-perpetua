@@ -42,6 +42,12 @@ void ipa_uc_deconfig(struct ipa *ipa);
 void ipa_uc_power(struct ipa *ipa);
 
 /**
+ * ipa_uc_power_modem_done() - Drop the proxy power held for a restarting modem
+ * @ipa:	IPA pointer
+ */
+void ipa_uc_power_modem_done(struct ipa *ipa);
+
+/**
  * ipa_uc_panic_notifier()
  * @ipa:	IPA pointer
  *

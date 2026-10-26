@@ -40,6 +40,7 @@ struct ipa_smp2p;
  * @interrupt:		IPA Interrupt information
  * @uc_powered:		true if power is active by proxy for microcontroller
  * @uc_loaded:		true after microcontroller has reported it's ready
+ * @modem_powered:	true if power is active by proxy for a restarting modem
  * @reg_virt:		Virtual address used for IPA register access
  * @regs:		IPA register definitions
  * @mem_addr:		DMA address of IPA-local memory space
@@ -93,6 +94,7 @@ struct ipa {
 	struct ipa_interrupt *interrupt;
 	bool uc_powered;
 	bool uc_loaded;
+	bool modem_powered;
 
 	void __iomem *reg_virt;
 	const struct regs *regs;

@@ -471,6 +471,7 @@ static int ipa_modem_notify(struct notifier_block *nb, unsigned long action,
 			 notify_data->crashed ? "crashed" : "stopping");
 		if (ipa->setup_complete)
 			ipa_modem_crashed(ipa);
+		ipa_uc_power_modem_done(ipa);
 		break;
 
 	case QCOM_SSR_AFTER_SHUTDOWN:
