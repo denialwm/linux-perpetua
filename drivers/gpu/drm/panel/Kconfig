@@ -686,6 +686,19 @@ config DRM_PANEL_ONEPLUS_ICELAND_NT36536
 	  around the Novatek NT36536 display controller in OnePlus Pad 4
 	  tablets.
 
+config DRM_PANEL_NOVATEK_NT36532
+	tristate "Novatek NT36532 DSI panel"
+	depends on OF
+	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
+	help
+	  Say Y here if you want to enable support for panels based on the
+	  Novatek NT36532 display driver IC, fed by two DSI links in video
+	  mode, such as the 2944x1840 panel of the Lenovo Idea Tab Pro.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called panel-novatek-nt36532.
+
 config DRM_PANEL_NOVATEK_NT36672A
 	tristate "Novatek NT36672A DSI panel"
 	depends on GPIOLIB
