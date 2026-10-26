@@ -74,6 +74,10 @@ properties:
           - const: mediatek,mt6797
       - items:
           - enum:
+              - lenovo,tb373fu
+          - const: mediatek,mt6897
+      - items:
+          - enum:
               - bananapi,bpi-r64
               - mediatek,mt7622-rfb1
           - const: mediatek,mt7622
