@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/leds/sgmicro,sgm37604a.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: SG Micro SGM37604A four-string white LED driver
+
+maintainers:
+  - Doctor Logix <doctor.logix@gmail.com>
+
+description:
+  The SGM37604A drives up to four white LED strings, usually a display
+  backlight, from a boost converter. A 12-bit code set over I2C controls
+  the current of all strings together.
+
+properties:
+  compatible:
+    const: sgmicro,sgm37604a
+
+  reg:
+    maxItems: 1
+
+  led:
+    type: object
+    $ref: common.yaml#
+    unevaluatedProperties: false
+
+    properties:
+      led-sources:
+        description: The strings wired to LEDs, numbered 0 to 3. All four
+          when absent.
+        minItems: 1
+        maxItems: 4
+        items:
+          enum: [0, 1, 2, 3]
+
+required:
+  - compatible
+  - reg
+  - led
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/leds/common.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        led-controller@36 {
+            compatible = "sgmicro,sgm37604a";
+            reg = <0x36>;
+
+            led {
+                color = <LED_COLOR_ID_WHITE>;
+                function = LED_FUNCTION_BACKLIGHT;
+                led-sources = <0 1 2 3>;
+            };
+        };
+    };
