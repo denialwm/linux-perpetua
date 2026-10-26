@@ -12,8 +12,9 @@ maintainers:
 description:
   The display pipeline of the MediaTek MT6897 (Dimensity 8300) SoC. Each
   frame is split into two vertical stripes, one per pipe; each pipe has
-  its own overlay engine (OVL) in its own OVL subsystem, its own display
-  subsystem and its own DSC encoder and DSI link.
+  its own overlay engine (OVL) in its own OVL subsystem, and its own DSC
+  encoder and DSI link in its own display subsystem. The processor owns
+  each subsystem whole, with its routing, its mutexes and its engines.
 
 properties:
   compatible:
@@ -21,21 +22,18 @@ properties:
 
   reg:
     items:
-      - description: overlay engine of the first pipe
-      - description: overlay engine of the second pipe
-      - description: DSI link of the first pipe, the master
-      - description: DSI link of the second pipe
-      - description: DSC encoder of the first pipe
-      - description: DSC encoder of the second pipe
+      - description: display subsystem of the first pipe, with the master
+          DSI link
+      - description: display subsystem of the second pipe
+      - description: OVL subsystem of the first pipe
+      - description: OVL subsystem of the second pipe
 
   reg-names:
     items:
-      - const: ovl0
-      - const: ovl1
-      - const: dsi0
-      - const: dsi1
-      - const: dsc0
-      - const: dsc1
+      - const: dispsys0
+      - const: dispsys1
+      - const: ovlsys0
+      - const: ovlsys1
 
   interrupts:
     items:
@@ -97,12 +95,11 @@ examples:
     #include <dt-bindings/interrupt-controller/arm-gic.h>
     #include <dt-bindings/interrupt-controller/irq.h>
 
-    display-controller@14402000 {
+    display-controller@14000000 {
         compatible = "mediatek,mt6897-dpu";
-        reg = <0x14402000 0x1000>, <0x14602000 0x1000>,
-              <0x1400d000 0x1000>, <0x1420d000 0x1000>,
-              <0x1400c000 0x1000>, <0x1420c000 0x1000>;
-        reg-names = "ovl0", "ovl1", "dsi0", "dsi1", "dsc0", "dsc1";
+        reg = <0x14000000 0xe000>, <0x14200000 0xe000>,
+              <0x14400000 0x3000>, <0x14600000 0x3000>;
+        reg-names = "dispsys0", "dispsys1", "ovlsys0", "ovlsys1";
         interrupts = <GIC_SPI 387 IRQ_TYPE_LEVEL_HIGH>,
                      <GIC_SPI 431 IRQ_TYPE_LEVEL_HIGH>;
         interrupt-names = "ovl0", "ovl1";
