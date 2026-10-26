@@ -24,6 +24,9 @@
 /* "Canary" value placed between memory regions to detect overflow */
 #define IPA_MEM_CANARY_VAL		cpu_to_le32(0xdeadbeef)
 
+/* Marker the microcontroller expects at the start of its descriptor RAM */
+#define IPA_MEM_UC_DESC_MARKER		0xabcdef01
+
 /* SMEM host id representing the modem. */
 #define QCOM_SMEM_HOST_MODEM	1
 
@@ -383,6 +386,17 @@ int ipa_mem_config(struct ipa *ipa)
 	if (mem && mem->offset % 1024) {
 		dev_err(dev, "microcontroller ring not 1024-byte aligned\n");
 		goto err_dma_free;
+	}
+
+	/* Starting with IPA v5.5, the first word of the microcontroller
+	 * descriptor RAM must hold a marker before the microcontroller
+	 * firmware is started.
+	 */
+	if (mem && ipa->version >= IPA_VERSION_5_5) {
+		u32 *uc_desc = ipa->mem_virt + ipa->mem_offset + mem->offset;
+
+		*uc_desc = cpu_to_le32(IPA_MEM_UC_DESC_MARKER);
+		wmb();
 	}
 
 	return 0;
