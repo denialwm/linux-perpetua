@@ -148,6 +148,9 @@ static int mtk_mipi_tx_probe(struct platform_device *pdev)
 						  6000);
 	}
 
+	mipi_tx->de_emphasis = of_property_read_bool(dev->of_node,
+						     "mediatek,de-emphasis");
+
 	ref_clk_name = __clk_get_name(ref_clk);
 
 	ret = of_property_read_string(dev->of_node, "clock-output-names",

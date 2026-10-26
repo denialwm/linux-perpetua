@@ -20,6 +20,7 @@
 #define RG_DSI_BG_LPF_EN		BIT(6)
 #define RG_DSI_BG_CORE_EN		BIT(7)
 #define RG_DSI_PAD_TIEL_SEL		BIT(8)
+#define RG_DSI_DEM_EN			BIT(9)
 
 #define MIPITX_VOLTAGE_SEL	0x0008
 #define RG_DSI_HSTX_LDO_REF_SEL		GENMASK(9, 6)
@@ -158,6 +159,8 @@ static void mtk_mipi_tx_power_on_signal(struct phy *phy)
 	/* Wait for MIPI core to enable */
 	usleep_range(30, 100);
 	writel(RG_DSI_BG_CORE_EN | RG_DSI_BG_LPF_EN, base + MIPITX_LANE_CON);
+	if (mipi_tx->de_emphasis)
+		mtk_phy_set_bits(base + MIPITX_LANE_CON, RG_DSI_DEM_EN);
 
 	/* Switch OFF each Lane */
 	mtk_phy_clear_bits(base + MIPITX_D0_SW_CTL_EN, DSI_SW_CTL_EN);
