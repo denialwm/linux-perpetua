@@ -67,6 +67,12 @@
 		#size-cells = <2>;
 		ranges;
 
+		/* The GPUEB's shared memory, where the bootloader places it. */
+		gpueb_shared_memory: memory@7fe70000 {
+			reg = <0 0x7fe70000 0 0x4000>;
+			no-map;
+		};
+
 		/*
 		 * The bootloader allocates its MET buffer here on every boot and
 		 * leaves it alone across a warm reset, unlike its own ramoops
@@ -108,6 +114,15 @@
 		avee-supply = <&panel_avee>;
 		backlight = <&backlight>;
 	};
+};
+
+&gpu {
+	status = "okay";
+};
+
+&gpufreq {
+	memory-region = <&gpueb_shared_memory>;
+	status = "okay";
 };
 
 &i2c3 {
