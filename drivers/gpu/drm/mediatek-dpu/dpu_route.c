@@ -7,9 +7,11 @@
  * subsystem, where it skips the picture quality engines on its way to the
  * DSC encoder and the DSI link. Crossbars in each subsystem's config block
  * make these connections, and a mutex in each subsystem starts its engines
- * together on every frame of the link.
+ * together on every frame of the link. The config blocks also gate the
+ * clock of each engine.
  */
 
+#include <linux/array_size.h>
 #include <linux/bits.h>
 #include <linux/io.h>
 
@@ -58,6 +60,52 @@
 #define  DISP_MOD_DLI_ASYNC0		BIT(9)
 #define  DISP_MOD_DSC0			BIT(18)
 #define  DISP_MOD_DSI0			BIT(20)
+
+/*
+ * Clock gates, in banks of three registers: the status, then one where a
+ * 1 gates a clock and one where a 1 opens it.
+ */
+#define CG_SET				0x4
+#define CG_CLR				0x8
+
+#define CG_CONFIG			BIT(0)
+#define OVLSYS_CG			0x100
+#define  OVLSYS_CG_MUTEX0		BIT(3)
+#define  OVLSYS_CG_OVL0			BIT(4)
+#define  OVLSYS_CG_DLO_ASYNC3		BIT(19)
+#define  OVLSYS_CG_SMI			BIT(24)
+#define DISP_CG0			0x100
+#define  DISP_CG0_MUTEX0		BIT(1)
+#define  DISP_CG0_DLI_ASYNC0		BIT(11)
+#define  DISP_CG0_DSC0			BIT(20)
+#define  DISP_CG0_DSI0			BIT(21)
+#define DISP_CG1			0x110
+#define  DISP_CG1_SMI			BIT(6)
+#define DISP_CG2			0x1a0
+#define  DISP_CG2_DSI_DIGITAL		BIT(0)
+#define  DISP_CG2_26M			BIT(10)
+
+/*
+ * A bank, the clocks of the engines that each pipe runs through, and the
+ * clocks that always run: the config block's own, as it holds the gates.
+ */
+struct dpu_gates {
+	unsigned int bank;
+	u32 path;
+	u32 always;
+};
+
+static const struct dpu_gates dpu_ovlsys_gates[] = {
+	{ OVLSYS_CG, OVLSYS_CG_MUTEX0 | OVLSYS_CG_OVL0 | OVLSYS_CG_DLO_ASYNC3 |
+		     OVLSYS_CG_SMI, CG_CONFIG },
+};
+
+static const struct dpu_gates dpu_dispsys_gates[] = {
+	{ DISP_CG0, DISP_CG0_MUTEX0 | DISP_CG0_DLI_ASYNC0 | DISP_CG0_DSC0 |
+		    DISP_CG0_DSI0, CG_CONFIG },
+	{ DISP_CG1, DISP_CG1_SMI },
+	{ DISP_CG2, DISP_CG2_DSI_DIGITAL | DISP_CG2_26M },
+};
 
 /* Start and end of frame come from the link: source 1 in its own subsystem. */
 #define MUTEX_SOF_LINK(src)		((src) | (src) << 6)
@@ -127,4 +175,46 @@ void dpu_route_disable(struct dpu *dpu)
 		writel(0, dpu->dispsys[pipe] + MUTEX_EN);
 		writel(0, dpu->ovlsys[pipe] + MUTEX_EN);
 	}
+}
+
+static void dpu_gates_write(void __iomem *base, const struct dpu_gates *gates,
+			    unsigned int num, unsigned int reg, bool path)
+{
+	unsigned int i;
+
+	for (i = 0; i < num; i++)
+		writel(path ? gates[i].path : ~(gates[i].path | gates[i].always),
+		       base + gates[i].bank + reg);
+}
+
+static void dpu_gates(struct dpu *dpu, unsigned int reg, bool path)
+{
+	unsigned int pipe;
+
+	for (pipe = 0; pipe < dpu->soc->num_pipes; pipe++) {
+		dpu_gates_write(dpu->ovlsys[pipe], dpu_ovlsys_gates,
+				ARRAY_SIZE(dpu_ovlsys_gates), reg, path);
+		dpu_gates_write(dpu->dispsys[pipe], dpu_dispsys_gates,
+				ARRAY_SIZE(dpu_dispsys_gates), reg, path);
+	}
+}
+
+/* Run the engines of the pipes; their registers need the clock too. */
+void dpu_route_clocks_on(struct dpu *dpu)
+{
+	dpu_gates(dpu, CG_CLR, true);
+}
+
+void dpu_route_clocks_off(struct dpu *dpu)
+{
+	dpu_gates(dpu, CG_SET, true);
+}
+
+/*
+ * The bootloader leaves every engine clock running. Gate the ones the
+ * pipes do not use, once its frames have stopped.
+ */
+void dpu_route_clocks_unused_off(struct dpu *dpu)
+{
+	dpu_gates(dpu, CG_SET, false);
 }

@@ -196,6 +196,7 @@ static void dpu_crtc_atomic_flush(struct drm_crtc *crtc,
 static void dpu_crtc_atomic_enable(struct drm_crtc *crtc,
 				   struct drm_atomic_commit *state)
 {
+	dpu_route_clocks_on(to_dpu(crtc->dev));
 	drm_crtc_vblank_on(crtc);
 }
 
@@ -238,6 +239,10 @@ static void dpu_crtc_atomic_disable(struct drm_crtc *crtc,
 		crtc->state->event = NULL;
 	}
 	spin_unlock_irq(&crtc->dev->event_lock);
+
+	/* The engines stop with their clocks: nothing may touch them now. */
+	synchronize_irq(dpu->irq);
+	dpu_route_clocks_off(dpu);
 }
 
 static int dpu_crtc_enable_vblank(struct drm_crtc *crtc)
@@ -481,6 +486,7 @@ int dpu_bind(struct dpu *dpu, struct mipi_dsi_device *device)
 	ret = dpu_dsi_video_stop(dpu);
 	if (ret)
 		return ret;
+	dpu_route_clocks_unused_off(dpu);
 
 	ret = aperture_remove_all_conflicting_devices(dpu_driver.name);
 	if (ret)
@@ -559,6 +565,8 @@ static int dpu_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	/* A driver unbound before may have left them gated. */
+	dpu_route_clocks_on(dpu);
 	dpu_ovl_irq_enable(dpu->ovl[0], false);
 	dpu->irq = platform_get_irq_byname(pdev, "ovl0");
 	if (dpu->irq < 0)

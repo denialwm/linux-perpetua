@@ -106,6 +106,9 @@ void dpu_dsc_disable(struct dpu *dpu);
 
 void dpu_route_enable(struct dpu *dpu, const struct drm_display_mode *mode);
 void dpu_route_disable(struct dpu *dpu);
+void dpu_route_clocks_on(struct dpu *dpu);
+void dpu_route_clocks_off(struct dpu *dpu);
+void dpu_route_clocks_unused_off(struct dpu *dpu);
 
 int dpu_dsi_host_register(struct dpu *dpu);
 int dpu_dsi_power_on(struct dpu *dpu);
