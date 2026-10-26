@@ -330,12 +330,11 @@
 			status = "disabled";
 		};
 
-		dpu: display-controller@14402000 {
+		dpu: display-controller@14000000 {
 			compatible = "mediatek,mt6897-dpu";
-			reg = <0 0x14402000 0 0x1000>, <0 0x14602000 0 0x1000>,
-			      <0 0x1400d000 0 0x1000>, <0 0x1420d000 0 0x1000>,
-			      <0 0x1400c000 0 0x1000>, <0 0x1420c000 0 0x1000>;
-			reg-names = "ovl0", "ovl1", "dsi0", "dsi1", "dsc0", "dsc1";
+			reg = <0 0x14000000 0 0xe000>, <0 0x14200000 0 0xe000>,
+			      <0 0x14400000 0 0x3000>, <0 0x14600000 0 0x3000>;
+			reg-names = "dispsys0", "dispsys1", "ovlsys0", "ovlsys1";
 			interrupts = <GIC_SPI 387 IRQ_TYPE_LEVEL_HIGH 0>,
 				     <GIC_SPI 431 IRQ_TYPE_LEVEL_HIGH 0>;
 			interrupt-names = "ovl0", "ovl1";
