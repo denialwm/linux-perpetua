@@ -241,6 +241,8 @@ struct otg_switch_mtk {
  *		but when use dual-role mode, can't disable u2port0
  * @u3p_dis_msk: mask of disabling usb3 ports, for example, bit0==1 to
  *		disable u3port0, bit1==1 to disable u3port1,... etc
+ * @force_vbus: VBUS is not wired to the controller, so device mode forces
+ *		it valid instead of detecting it
  * @dbgfs_root: only used when supports manual dual-role switch via debugfs
  * @uwk_en: it's true when supports remote wakeup in host mode
  * @uwk: syscon including usb wakeup glue layer between SSUSB IP and SPM
@@ -266,6 +268,7 @@ struct ssusb_mtk {
 	int u3_ports;
 	int u2p_dis_msk;
 	int u3p_dis_msk;
+	bool force_vbus;
 	struct dentry *dbgfs_root;
 	/* usb wakeup for host mode */
 	bool uwk_en;

@@ -272,6 +272,7 @@ static int get_ssusb_rscs(struct platform_device *pdev, struct ssusb_mtk *ssusb)
 		ssusb->dr_mode = USB_DR_MODE_OTG;
 
 	of_property_read_u32(node, "mediatek,u3p-dis-msk", &ssusb->u3p_dis_msk);
+	ssusb->force_vbus = of_property_read_bool(node, "mediatek,force-vbus");
 
 	if (ssusb->dr_mode == USB_DR_MODE_PERIPHERAL)
 		goto out;
