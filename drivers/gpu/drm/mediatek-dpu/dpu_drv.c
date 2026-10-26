@@ -339,9 +339,28 @@ static const struct drm_mode_config_funcs dpu_mode_config_funcs = {
 	.atomic_commit = drm_atomic_helper_commit,
 };
 
-/* Enable the CRTC before its planes: updates queue only on a live CRTC. */
+/*
+ * Enable the CRTC before its planes: updates queue only on a live CRTC.
+ * An update reaches the screen one or two frame starts after its flush, so
+ * the commit waits for its event, not for the next vblank, before the old
+ * framebuffers go.
+ */
+static void dpu_commit_tail(struct drm_atomic_commit *state)
+{
+	struct drm_device *drm = state->dev;
+
+	drm_atomic_helper_commit_modeset_disables(drm, state);
+	drm_atomic_helper_commit_modeset_enables(drm, state);
+	drm_atomic_helper_commit_planes(drm, state,
+					DRM_PLANE_COMMIT_ACTIVE_ONLY);
+	drm_atomic_helper_fake_vblank(state);
+	drm_atomic_helper_commit_hw_done(state);
+	drm_atomic_helper_wait_for_flip_done(drm, state);
+	drm_atomic_helper_cleanup_planes(drm, state);
+}
+
 static const struct drm_mode_config_helper_funcs dpu_mode_config_helpers = {
-	.atomic_commit_tail = drm_atomic_helper_commit_tail_rpm,
+	.atomic_commit_tail = dpu_commit_tail,
 };
 
 static int dpu_kms_init(struct dpu *dpu)
