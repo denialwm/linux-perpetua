@@ -22,14 +22,19 @@ struct drm_dsc_config;
 struct phy;
 
 #define DPU_MAX_PIPES	2
+/* The engines take sizes of up to 13 bits. */
+#define DPU_MAX_STRIPE	8191
 
 /*
- * A frame is split into one vertical stripe per pipe. Neighbouring stripes
- * overlap by @overlap pixels on each side of the split.
+ * A frame is split into one vertical stripe per pipe. Each pipe runs
+ * through an OVL subsystem and a display subsystem, and the engines sit at
+ * fixed offsets in their subsystem.
  */
 struct dpu_soc {
 	unsigned int num_pipes;
-	unsigned int overlap;
+	unsigned int ovl_offset;
+	unsigned int dsc_offset;
+	unsigned int dsi_offset;
 
 	/* The display clock and the link buffers, for their thresholds. */
 	unsigned int mmsys_mhz;
@@ -55,6 +60,8 @@ struct dpu {
 	struct drm_connector connector;
 
 	const struct dpu_soc *soc;
+	void __iomem *ovlsys[DPU_MAX_PIPES];
+	void __iomem *dispsys[DPU_MAX_PIPES];
 	void __iomem *ovl[DPU_MAX_PIPES];
 	void __iomem *dsc[DPU_MAX_PIPES];
 	void __iomem *dsi[DPU_MAX_PIPES];
@@ -62,10 +69,6 @@ struct dpu {
 	struct phy *dsi_phy[DPU_MAX_PIPES];
 	bool dsi_powered;
 	int irq;
-
-	/* The frame size the bootloader set the pipes up for. */
-	unsigned int width;
-	unsigned int height;
 
 	/* The panel on the DSI links; set once, when it attaches. */
 	struct mipi_dsi_host dsi_host;
@@ -101,6 +104,9 @@ void dpu_unbind(struct dpu *dpu);
 void dpu_dsc_enable(struct dpu *dpu, const struct drm_dsc_config *cfg);
 void dpu_dsc_disable(struct dpu *dpu);
 
+void dpu_route_enable(struct dpu *dpu, const struct drm_display_mode *mode);
+void dpu_route_disable(struct dpu *dpu);
+
 int dpu_dsi_host_register(struct dpu *dpu);
 int dpu_dsi_power_on(struct dpu *dpu);
 void dpu_dsi_power_off(struct dpu *dpu);
@@ -108,14 +114,13 @@ void dpu_dsi_config(struct dpu *dpu, const struct drm_display_mode *mode);
 int dpu_dsi_video_stop(struct dpu *dpu);
 void dpu_dsi_video_start(struct dpu *dpu);
 
+void dpu_ovl_config(void __iomem *ovl, unsigned int width,
+		    unsigned int height);
 void dpu_ovl_scanout(void __iomem *ovl, const struct dpu_scanout *scanout,
 		     unsigned int pipe);
 void dpu_ovl_irq_enable(void __iomem *ovl, bool enable);
 u32 dpu_ovl_irq_status(void __iomem *ovl);
 bool dpu_ovl_frame_done(u32 status);
 bool dpu_ovl_frame_start(u32 status);
-u32 dpu_ovl_width(void __iomem *ovl);
-u32 dpu_ovl_height(void __iomem *ovl);
-dma_addr_t dpu_ovl_addr(void __iomem *ovl);
 
 #endif /* __MEDIATEK_DPU_H__ */

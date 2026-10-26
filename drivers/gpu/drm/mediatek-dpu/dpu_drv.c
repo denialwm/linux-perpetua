@@ -127,9 +127,7 @@ static void dpu_plane_atomic_update(struct drm_plane *plane,
 	dpu->next.enabled = plane_state->visible;
 	dpu->next.pitch = fb->pitches[0];
 	for (pipe = 0; pipe < dpu->soc->num_pipes; pipe++) {
-		unsigned int x = pipe ? pipe * stripe - dpu->soc->overlap : 0;
-
-		dpu->next.addr[pipe] = addr + x * fb->format->cpp[0];
+		dpu->next.addr[pipe] = addr + pipe * stripe * fb->format->cpp[0];
 	}
 }
 
@@ -262,8 +260,13 @@ static enum drm_mode_status dpu_crtc_mode_valid(struct drm_crtc *crtc,
 {
 	struct dpu *dpu = to_dpu(crtc->dev);
 
-	if (mode->hdisplay != dpu->width || mode->vdisplay != dpu->height)
-		return MODE_BAD;
+	/* Each pipe takes an equal stripe. */
+	if (mode->hdisplay % dpu->soc->num_pipes)
+		return MODE_BAD_HVALUE;
+	if (mode->hdisplay / dpu->soc->num_pipes > DPU_MAX_STRIPE)
+		return MODE_H_ILLEGAL;
+	if (mode->vdisplay > DPU_MAX_STRIPE)
+		return MODE_V_ILLEGAL;
 
 	return MODE_OK;
 }
@@ -301,6 +304,7 @@ static void dpu_encoder_atomic_enable(struct drm_encoder *encoder,
 		return;
 	}
 
+	dpu_route_enable(dpu, &crtc_state->adjusted_mode);
 	dpu_dsi_config(dpu, &crtc_state->adjusted_mode);
 	dpu_dsc_enable(dpu, dpu->dsi_device->dsc);
 	drm_panel_prepare(dpu->panel);
@@ -316,6 +320,7 @@ static void dpu_encoder_atomic_disable(struct drm_encoder *encoder,
 	drm_panel_disable(dpu->panel);
 	dpu_dsi_video_stop(dpu);
 	dpu_dsc_disable(dpu);
+	dpu_route_disable(dpu);
 	drm_panel_unprepare(dpu->panel);
 	dpu_dsi_power_off(dpu);
 }
@@ -387,10 +392,10 @@ static int dpu_kms_init(struct dpu *dpu)
 	if (ret)
 		return ret;
 
-	drm->mode_config.min_width = dpu->width;
-	drm->mode_config.max_width = dpu->width;
-	drm->mode_config.min_height = dpu->height;
-	drm->mode_config.max_height = dpu->height;
+	drm->mode_config.min_width = dpu->soc->num_pipes;
+	drm->mode_config.max_width = DPU_MAX_STRIPE * dpu->soc->num_pipes;
+	drm->mode_config.min_height = 1;
+	drm->mode_config.max_height = DPU_MAX_STRIPE;
 	drm->mode_config.preferred_depth = 24;
 	drm->mode_config.funcs = &dpu_mode_config_funcs;
 	drm->mode_config.helper_private = &dpu_mode_config_helpers;
@@ -430,38 +435,6 @@ static int dpu_kms_init(struct dpu *dpu)
 		return ret;
 
 	drm_mode_config_reset(drm);
-
-	return 0;
-}
-
-/*
- * Take the frame size from the bootloader's pipes and check that they run
- * the split this driver assumes: each OVL as wide as its stripe plus the
- * overlap, the second one starting @overlap pixels left of the middle of
- * the bootloader's frame.
- */
-static int dpu_check_boot_pipeline(struct dpu *dpu)
-{
-	unsigned int ovl_width = dpu_ovl_width(dpu->ovl[0]);
-	unsigned int width = ovl_width - dpu->soc->overlap;
-	dma_addr_t base = dpu_ovl_addr(dpu->ovl[0]);
-	unsigned int pipe;
-
-	dpu->width = width * dpu->soc->num_pipes;
-	dpu->height = dpu_ovl_height(dpu->ovl[0]);
-
-	for (pipe = 0; pipe < dpu->soc->num_pipes; pipe++) {
-		u32 have = dpu_ovl_width(dpu->ovl[pipe]);
-		unsigned int x = pipe ? pipe * width - dpu->soc->overlap : 0;
-		dma_addr_t addr = dpu_ovl_addr(dpu->ovl[pipe]);
-
-		if (have != ovl_width || addr != base + x * 4) {
-			drm_err(&dpu->drm,
-				"pipe %u: %u pixels at %pad, expected %u at %pad + %u\n",
-				pipe, have, &addr, ovl_width, &base, x * 4);
-			return -ENODEV;
-		}
-	}
 
 	return 0;
 }
@@ -548,26 +521,24 @@ static int dpu_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, dpu);
 
 	for (pipe = 0; pipe < dpu->soc->num_pipes; pipe++) {
-		char name[8];
+		char name[12];
 
-		snprintf(name, sizeof(name), "ovl%u", pipe);
-		dpu->ovl[pipe] = devm_platform_ioremap_resource_byname(pdev,
-								       name);
-		if (IS_ERR(dpu->ovl[pipe]))
-			return PTR_ERR(dpu->ovl[pipe]);
+		snprintf(name, sizeof(name), "ovlsys%u", pipe);
+		dpu->ovlsys[pipe] = devm_platform_ioremap_resource_byname(pdev,
+									  name);
+		if (IS_ERR(dpu->ovlsys[pipe]))
+			return PTR_ERR(dpu->ovlsys[pipe]);
+		dpu->ovl[pipe] = dpu->ovlsys[pipe] + dpu->soc->ovl_offset;
 
-		snprintf(name, sizeof(name), "dsc%u", pipe);
-		dpu->dsc[pipe] = devm_platform_ioremap_resource_byname(pdev,
-								       name);
-		if (IS_ERR(dpu->dsc[pipe]))
-			return PTR_ERR(dpu->dsc[pipe]);
+		snprintf(name, sizeof(name), "dispsys%u", pipe);
+		dpu->dispsys[pipe] = devm_platform_ioremap_resource_byname(pdev,
+									   name);
+		if (IS_ERR(dpu->dispsys[pipe]))
+			return PTR_ERR(dpu->dispsys[pipe]);
+		dpu->dsc[pipe] = dpu->dispsys[pipe] + dpu->soc->dsc_offset;
+		dpu->dsi[pipe] = dpu->dispsys[pipe] + dpu->soc->dsi_offset;
 
 		snprintf(name, sizeof(name), "dsi%u", pipe);
-		dpu->dsi[pipe] = devm_platform_ioremap_resource_byname(pdev,
-								       name);
-		if (IS_ERR(dpu->dsi[pipe]))
-			return PTR_ERR(dpu->dsi[pipe]);
-
 		dpu->dsi_phy[pipe] = devm_phy_get(dev, name);
 		if (IS_ERR(dpu->dsi_phy[pipe]))
 			return dev_err_probe(dev, PTR_ERR(dpu->dsi_phy[pipe]),
@@ -579,10 +550,6 @@ static int dpu_probe(struct platform_device *pdev)
 			return dev_err_probe(dev, PTR_ERR(dpu->dsi_hs[pipe]),
 					     "no %s clock\n", name);
 	}
-
-	ret = dpu_check_boot_pipeline(dpu);
-	if (ret)
-		return ret;
 
 	/*
 	 * The overlays read physical memory: the bootloader leaves their
@@ -622,7 +589,9 @@ static void dpu_shutdown(struct platform_device *pdev)
 
 static const struct dpu_soc mt6897_dpu = {
 	.num_pipes = 2,
-	.overlap = 11,
+	.ovl_offset = 0x2000,
+	.dsc_offset = 0xc000,
+	.dsi_offset = 0xd000,
 	.mmsys_mhz = 208,
 	.dsi_buf_size = 2426,
 	.dsi_sram_unit = 18,
