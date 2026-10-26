@@ -18,6 +18,7 @@
 #include <drm/drm_plane.h>
 
 struct clk;
+struct drm_dsc_config;
 struct phy;
 
 #define DPU_MAX_PIPES	2
@@ -55,6 +56,7 @@ struct dpu {
 
 	const struct dpu_soc *soc;
 	void __iomem *ovl[DPU_MAX_PIPES];
+	void __iomem *dsc[DPU_MAX_PIPES];
 	void __iomem *dsi[DPU_MAX_PIPES];
 	struct clk *dsi_hs[DPU_MAX_PIPES];
 	struct phy *dsi_phy[DPU_MAX_PIPES];
@@ -95,6 +97,9 @@ static inline struct dpu *to_dpu(struct drm_device *drm)
 
 int dpu_bind(struct dpu *dpu, struct mipi_dsi_device *device);
 void dpu_unbind(struct dpu *dpu);
+
+void dpu_dsc_enable(struct dpu *dpu, const struct drm_dsc_config *cfg);
+void dpu_dsc_disable(struct dpu *dpu);
 
 int dpu_dsi_host_register(struct dpu *dpu);
 int dpu_dsi_power_on(struct dpu *dpu);

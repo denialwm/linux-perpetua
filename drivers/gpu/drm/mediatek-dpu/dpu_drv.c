@@ -302,6 +302,7 @@ static void dpu_encoder_atomic_enable(struct drm_encoder *encoder,
 	}
 
 	dpu_dsi_config(dpu, &crtc_state->adjusted_mode);
+	dpu_dsc_enable(dpu, dpu->dsi_device->dsc);
 	drm_panel_prepare(dpu->panel);
 	dpu_dsi_video_start(dpu);
 	drm_panel_enable(dpu->panel);
@@ -314,6 +315,7 @@ static void dpu_encoder_atomic_disable(struct drm_encoder *encoder,
 
 	drm_panel_disable(dpu->panel);
 	dpu_dsi_video_stop(dpu);
+	dpu_dsc_disable(dpu);
 	drm_panel_unprepare(dpu->panel);
 	dpu_dsi_power_off(dpu);
 }
@@ -553,6 +555,12 @@ static int dpu_probe(struct platform_device *pdev)
 								       name);
 		if (IS_ERR(dpu->ovl[pipe]))
 			return PTR_ERR(dpu->ovl[pipe]);
+
+		snprintf(name, sizeof(name), "dsc%u", pipe);
+		dpu->dsc[pipe] = devm_platform_ioremap_resource_byname(pdev,
+								       name);
+		if (IS_ERR(dpu->dsc[pipe]))
+			return PTR_ERR(dpu->dsc[pipe]);
 
 		snprintf(name, sizeof(name), "dsi%u", pipe);
 		dpu->dsi[pipe] = devm_platform_ioremap_resource_byname(pdev,
