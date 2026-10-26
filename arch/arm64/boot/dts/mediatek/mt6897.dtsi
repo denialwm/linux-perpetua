@@ -284,6 +284,28 @@
 			};
 		};
 
+		mipi_tx0: dsi-phy@11e50000 {
+			compatible = "mediatek,mt6897-mipi-tx",
+				     "mediatek,mt8196-mipi-tx";
+			reg = <0 0x11e50000 0 0x1000>;
+			clocks = <&clk26m>;
+			clock-output-names = "mipi_tx0_pll";
+			#clock-cells = <0>;
+			#phy-cells = <0>;
+			status = "disabled";
+		};
+
+		mipi_tx1: dsi-phy@11e60000 {
+			compatible = "mediatek,mt6897-mipi-tx",
+				     "mediatek,mt8196-mipi-tx";
+			reg = <0 0x11e60000 0 0x1000>;
+			clocks = <&clk26m>;
+			clock-output-names = "mipi_tx1_pll";
+			#clock-cells = <0>;
+			#phy-cells = <0>;
+			status = "disabled";
+		};
+
 		i2c3: i2c@11f00000 {
 			compatible = "mediatek,mt6897-i2c", "mediatek,mt8188-i2c";
 			reg = <0 0x11f00000 0 0x1000>, <0 0x11300400 0 0x80>;
@@ -316,6 +338,10 @@
 			interrupts = <GIC_SPI 387 IRQ_TYPE_LEVEL_HIGH 0>,
 				     <GIC_SPI 431 IRQ_TYPE_LEVEL_HIGH 0>;
 			interrupt-names = "ovl0", "ovl1";
+			clocks = <&mipi_tx0>, <&mipi_tx1>;
+			clock-names = "dsi0-hs", "dsi1-hs";
+			phys = <&mipi_tx0>, <&mipi_tx1>;
+			phy-names = "dsi0", "dsi1";
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
