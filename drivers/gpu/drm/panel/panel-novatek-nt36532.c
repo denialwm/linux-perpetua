@@ -13,6 +13,8 @@
 #include <linux/of.h>
 #include <linux/regulator/consumer.h>
 
+#include <drm/display/drm_dsc.h>
+#include <drm/display/drm_dsc_helper.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_panel.h>
@@ -20,6 +22,7 @@
 
 struct nt36532_desc {
 	const struct drm_display_mode *mode;
+	unsigned long hs_rate;
 	void (*init)(struct mipi_dsi_multi_context *ctx);
 };
 
@@ -31,6 +34,7 @@ struct nt36532 {
 	struct regulator *avdd;
 	struct regulator *avee;
 	struct gpio_desc *reset_gpio;
+	struct drm_dsc_config dsc;
 };
 
 static inline struct nt36532 *to_nt36532(struct drm_panel *panel)
@@ -195,6 +199,40 @@ static const struct drm_panel_funcs nt36532_funcs = {
 	.get_modes = nt36532_get_modes,
 };
 
+/*
+ * Each link carries one stripe, compressed to 8 bits per pixel in two
+ * slices of 20 lines, with the DSC 1.1 rate control.
+ */
+static int nt36532_dsc_init(struct nt36532 *nt)
+{
+	struct drm_dsc_config *dsc = &nt->dsc;
+	int ret;
+
+	dsc->dsc_version_major = 1;
+	dsc->dsc_version_minor = 1;
+	dsc->pic_width = nt->desc->mode->hdisplay / 2;
+	dsc->pic_height = nt->desc->mode->vdisplay;
+	dsc->slice_count = 2;
+	dsc->slice_width = dsc->pic_width / dsc->slice_count;
+	dsc->slice_height = 20;
+	dsc->bits_per_component = 8;
+	dsc->bits_per_pixel = 8 << 4;
+	dsc->line_buf_depth = 9;
+	dsc->block_pred_enable = true;
+	dsc->convert_rgb = true;
+
+	drm_dsc_set_const_params(dsc);
+	drm_dsc_set_rc_buf_thresh(dsc);
+	ret = drm_dsc_setup_rc_params(dsc, DRM_DSC_1_1_PRE_SCR);
+	if (ret)
+		return ret;
+	/* The panel's decoder takes the offset for 20-line slices. */
+	dsc->first_line_bpg_offset = 13;
+	dsc->initial_scale_value = drm_dsc_initial_scale_value(dsc);
+
+	return drm_dsc_compute_rc_parameters(dsc);
+}
+
 static int nt36532_probe(struct mipi_dsi_device *dsi)
 {
 	struct device *dev = &dsi->dev;
@@ -208,6 +246,10 @@ static int nt36532_probe(struct mipi_dsi_device *dsi)
 
 	nt->desc = of_device_get_match_data(dev);
 	nt->dsi = dsi;
+
+	ret = nt36532_dsc_init(nt);
+	if (ret)
+		return dev_err_probe(dev, ret, "invalid DSC configuration\n");
 
 	nt->vddi = devm_regulator_get(dev, "vddi");
 	if (IS_ERR(nt->vddi))
@@ -230,6 +272,8 @@ static int nt36532_probe(struct mipi_dsi_device *dsi)
 		return dev_err_probe(dev, ret, "no backlight\n");
 
 	dsi->lanes = 4;
+	dsi->hs_rate = nt->desc->hs_rate;
+	dsi->dsc = &nt->dsc;
 	dsi->format = MIPI_DSI_FMT_RGB888;
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_VIDEO_SYNC_PULSE |
 			  MIPI_DSI_MODE_LPM;
@@ -265,6 +309,7 @@ static const struct drm_display_mode tb373fu_tianma_mode = {
 
 static const struct nt36532_desc tb373fu_tianma = {
 	.mode = &tb373fu_tianma_mode,
+	.hs_rate = 998137000,
 	.init = tb373fu_tianma_init,
 };
 
