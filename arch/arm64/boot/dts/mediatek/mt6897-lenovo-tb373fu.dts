@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * Lenovo Idea Tab Pro (TB373FU)
+ */
+
+/dts-v1/;
+
+#include "mt6897.dtsi"
+
+/ {
+	model = "Lenovo Idea Tab Pro";
+	compatible = "lenovo,tb373fu", "mediatek,mt6897";
+	chassis-type = "tablet";
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		bootargs = "console=tty0 fbcon=font:TER16x32 root=PARTUUID=0000004f-39c2-4488-9bb0-00cb43c9ccd4 rootfstype=ext4 rootwait rw init=/usr/lib/systemd/systemd panic=10 arm64.nomte clk_ignore_unused pd_ignore_unused";
+
+		/* The bootloader's splash buffer; the panel runs in video mode. */
+		framebuffer0: framebuffer@fc16f000 {
+			compatible = "simple-framebuffer";
+			reg = <0 0xfc16f000 0 (2944 * 1840 * 4)>;
+			width = <2944>;
+			height = <1840>;
+			stride = <(2944 * 4)>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * The bootloader allocates its MET buffer here on every boot and
+		 * leaves it alone across a warm reset, unlike its own ramoops
+		 * region, which it overwrites from expdb.
+		 */
+		ramoops@9f17f000 {
+			compatible = "ramoops";
+			reg = <0 0x9f17f000 0 0x100000>;
+			no-map;
+			record-size = <0x20000>;
+			console-size = <0x80000>;
+			pmsg-size = <0x40000>;
+		};
+
+		framebuffer@fc16f000 {
+			reg = <0 0xfc16f000 0 0x3e90000>;
+			no-map;
+		};
+	};
+};
+
+&ssusb {
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+	status = "okay";
+};
+
+&ufshci {
+	status = "okay";
+};
+
+&xsphy {
+	status = "okay";
+};
