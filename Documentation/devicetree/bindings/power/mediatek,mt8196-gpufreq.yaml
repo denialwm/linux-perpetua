@@ -19,15 +19,18 @@ properties:
 
   compatible:
     enum:
+      - mediatek,mt6897-gpufreq
       - mediatek,mt8196-gpufreq
 
   reg:
+    minItems: 1
     items:
       - description: GPR memory area
       - description: RPC memory area
       - description: SoC variant ID register
 
   reg-names:
+    minItems: 1
     items:
       - const: gpr
       - const: rpc
@@ -90,13 +93,36 @@ required:
   - compatible
   - reg
   - reg-names
-  - clocks
-  - clock-names
   - mboxes
   - mbox-names
   - memory-region
   - "#clock-cells"
   - "#power-domain-cells"
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: mediatek,mt6897-gpufreq
+    then:
+      # The EB runs from boot, with clocks and regulators of its own.
+      properties:
+        reg:
+          maxItems: 1
+        reg-names:
+          maxItems: 1
+        clocks: false
+        clock-names: false
+    else:
+      properties:
+        reg:
+          minItems: 3
+        reg-names:
+          minItems: 3
+      required:
+        - clocks
+        - clock-names
 
 additionalProperties: false
 
