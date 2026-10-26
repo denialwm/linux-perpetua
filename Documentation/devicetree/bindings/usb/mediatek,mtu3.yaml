@@ -212,6 +212,12 @@ properties:
     description: The mask to disable u3ports, bit0 for u3port0,
       bit1 for u3port1, ... etc
 
+  mediatek,force-vbus:
+    type: boolean
+    description: VBUS is not wired to the controller, for example when the
+      charger senses it on a USB-C port. The controller then forces VBUS
+      valid in device mode instead of detecting it.
+
   mediatek,u2p-dis-msk:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: The mask to disable u2ports, bit0 for u2port0,
