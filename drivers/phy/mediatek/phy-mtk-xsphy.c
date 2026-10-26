@@ -62,7 +62,27 @@
 #define P2A6_RG_BC11_SW_EN	BIT(23)
 #define P2A6_RG_OTG_VBUSCMP_EN	BIT(20)
 
+#define XSP_USBPHYACR4		((SSUSB_SIFSLV_U2PHY_COM) + 0x020)
+#define P2A4_RG_USB20_GPIO_CTL	BIT(9)
+#define P2A4_USB20_GPIO_MODE	BIT(8)
+
+#define XSP_U2PHYDTM0		((SSUSB_SIFSLV_U2PHY_COM) + 0x068)
+#define P2D_FORCE_UART_EN	BIT(26)
+#define P2D_FORCE_DATAIN	BIT(23)
+#define P2D_FORCE_DM_PULLDOWN	BIT(21)
+#define P2D_FORCE_DP_PULLDOWN	BIT(20)
+#define P2D_FORCE_XCVRSEL	BIT(19)
+#define P2D_FORCE_SUSPENDM	BIT(18)
+#define P2D_FORCE_TERMSEL	BIT(17)
+#define P2D_RG_DATAIN		GENMASK(13, 10)
+#define P2D_RG_DMPULLDOWN	BIT(7)
+#define P2D_RG_DPPULLDOWN	BIT(6)
+#define P2D_RG_XCVRSEL		GENMASK(5, 4)
+#define P2D_RG_SUSPENDM		BIT(3)
+#define P2D_RG_TERMSEL		BIT(2)
+
 #define XSP_U2PHYDTM1		((SSUSB_SIFSLV_U2PHY_COM) + 0x06C)
+#define P2D_RG_UART_EN		BIT(16)
 #define P2D_FORCE_IDDIG		BIT(9)
 #define P2D_RG_VBUSVALID	BIT(5)
 #define P2D_RG_SESSEND		BIT(4)
@@ -192,6 +212,28 @@ static void u2_phy_instance_power_on(struct mtk_xsphy *xsphy,
 {
 	void __iomem *pbase = inst->port_base;
 	u32 index = inst->index;
+
+	/* Wake the port from suspend through the forced SUSPENDM. */
+	mtk_phy_set_bits(pbase + XSP_U2PHYDTM0, P2D_FORCE_SUSPENDM);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_RG_SUSPENDM);
+	mtk_phy_set_bits(pbase + XSP_U2PHYDTM0, P2D_RG_SUSPENDM);
+	udelay(30);
+
+	/*
+	 * Hand D+ and D- back to the USB controller from the UART, GPIO and
+	 * forced line states a bootloader may leave the port in.
+	 */
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0, P2D_FORCE_UART_EN);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM1, P2D_RG_UART_EN);
+	mtk_phy_clear_bits(pbase + XSP_USBPHYACR4,
+			   P2A4_RG_USB20_GPIO_CTL | P2A4_USB20_GPIO_MODE);
+	mtk_phy_clear_bits(pbase + XSP_U2PHYDTM0,
+			   P2D_FORCE_DATAIN | P2D_FORCE_DM_PULLDOWN |
+			   P2D_FORCE_DP_PULLDOWN | P2D_FORCE_XCVRSEL |
+			   P2D_FORCE_SUSPENDM | P2D_FORCE_TERMSEL |
+			   P2D_RG_DATAIN | P2D_RG_DMPULLDOWN |
+			   P2D_RG_DPPULLDOWN | P2D_RG_XCVRSEL |
+			   P2D_RG_TERMSEL | P2D_RG_SUSPENDM);
 
 	mtk_phy_set_bits(pbase + XSP_USBPHYACR6, P2A6_RG_OTG_VBUSCMP_EN);
 
