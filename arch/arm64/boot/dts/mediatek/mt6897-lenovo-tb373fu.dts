@@ -74,7 +74,19 @@
 			reg = <0 0xfc16f000 0 0x3e90000>;
 			no-map;
 		};
+
+		/* Scanout buffers: the display reads physical memory. */
+		linux,cma {
+			compatible = "shared-dma-pool";
+			reusable;
+			size = <0 0x10000000>;
+			linux,cma-default;
+		};
 	};
+};
+
+&dpu {
+	status = "okay";
 };
 
 &i2c3 {
