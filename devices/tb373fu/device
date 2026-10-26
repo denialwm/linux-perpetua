@@ -1,0 +1,5 @@
+# Lenovo Idea Tab Pro
+name='Lenovo Idea Tab Pro'
+vendor=mediatek
+soc=mt6897
+boot=mediatek-lk
