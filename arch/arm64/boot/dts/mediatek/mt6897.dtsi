@@ -132,6 +132,21 @@
 		clock-output-names = "clk26m";
 	};
 
+	/* The rates the bootloader sets, until topckgen has a driver. */
+	i2c_ck: clock-i2c {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <124800000>;
+		clock-output-names = "i2c_ck";
+	};
+
+	peri_faxi_ck: clock-peri-faxi {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <156000000>;
+		clock-output-names = "peri_faxi_ck";
+	};
+
 	psci {
 		compatible = "arm,psci-1.0";
 		method = "smc";
@@ -202,6 +217,30 @@
 			status = "disabled";
 		};
 
+		i2c13: i2c@11cc3000 {
+			compatible = "mediatek,mt6897-i2c", "mediatek,mt8188-i2c";
+			reg = <0 0x11cc3000 0 0x1000>, <0 0x11300b00 0 0x80>;
+			interrupts = <GIC_SPI 199 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&i2c_ck>, <&peri_faxi_ck>;
+			clock-names = "main", "dma";
+			clock-div = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		i2c7: i2c@11d02000 {
+			compatible = "mediatek,mt6897-i2c", "mediatek,mt8188-i2c";
+			reg = <0 0x11d02000 0 0x1000>, <0 0x11300680 0 0x100>;
+			interrupts = <GIC_SPI 193 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&i2c_ck>, <&peri_faxi_ck>;
+			clock-names = "main", "dma";
+			clock-div = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
 		xsphy: xs-phy@11e40000 {
 			compatible = "mediatek,mt6897-xsphy", "mediatek,xsphy";
 			#address-cells = <1>;
@@ -215,6 +254,30 @@
 				clock-names = "ref";
 				#phy-cells = <1>;
 			};
+		};
+
+		i2c3: i2c@11f00000 {
+			compatible = "mediatek,mt6897-i2c", "mediatek,mt8188-i2c";
+			reg = <0 0x11f00000 0 0x1000>, <0 0x11300400 0 0x80>;
+			interrupts = <GIC_SPI 189 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&i2c_ck>, <&peri_faxi_ck>;
+			clock-names = "main", "dma";
+			clock-div = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		i2c5: i2c@11f01000 {
+			compatible = "mediatek,mt6897-i2c", "mediatek,mt8188-i2c";
+			reg = <0 0x11f01000 0 0x1000>, <0 0x11300580 0 0x80>;
+			interrupts = <GIC_SPI 191 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&i2c_ck>, <&peri_faxi_ck>;
+			clock-names = "main", "dma";
+			clock-div = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
 		};
 
 		watchdog: watchdog@1c00a000 {
