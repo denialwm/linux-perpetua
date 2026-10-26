@@ -289,7 +289,10 @@ static void dpu_encoder_atomic_enable(struct drm_encoder *encoder,
 				      struct drm_atomic_commit *state)
 {
 	struct dpu *dpu = to_dpu(encoder->dev);
+	struct drm_crtc_state *crtc_state =
+		drm_atomic_get_new_crtc_state(state, encoder->crtc);
 
+	dpu_dsi_config(dpu, &crtc_state->adjusted_mode);
 	drm_panel_prepare(dpu->panel);
 	dpu_dsi_video_start(dpu);
 	drm_panel_enable(dpu->panel);
@@ -591,6 +594,12 @@ static void dpu_shutdown(struct platform_device *pdev)
 static const struct dpu_soc mt6897_dpu = {
 	.num_pipes = 2,
 	.overlap = 11,
+	.mmsys_mhz = 208,
+	.dsi_buf_size = 2426,
+	.dsi_sram_unit = 18,
+	.dsi_buf_unit = 32,
+	.dsi_urgent_high_us = 15,
+	.dsi_urgent_low_us = 14,
 };
 
 static const struct of_device_id dpu_of_match[] = {

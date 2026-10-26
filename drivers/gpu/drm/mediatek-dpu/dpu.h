@@ -14,6 +14,7 @@
 #include <drm/drm_device.h>
 #include <drm/drm_encoder.h>
 #include <drm/drm_mipi_dsi.h>
+#include <drm/drm_modes.h>
 #include <drm/drm_plane.h>
 
 #define DPU_MAX_PIPES	2
@@ -25,6 +26,14 @@
 struct dpu_soc {
 	unsigned int num_pipes;
 	unsigned int overlap;
+
+	/* The display clock and the link buffers, for their thresholds. */
+	unsigned int mmsys_mhz;
+	unsigned int dsi_buf_size;
+	unsigned int dsi_sram_unit;
+	unsigned int dsi_buf_unit;
+	unsigned int dsi_urgent_high_us;
+	unsigned int dsi_urgent_low_us;
 };
 
 /* What the OVLs scan out, as one update for all pipes. */
@@ -82,6 +91,7 @@ int dpu_bind(struct dpu *dpu, struct mipi_dsi_device *device);
 void dpu_unbind(struct dpu *dpu);
 
 int dpu_dsi_host_register(struct dpu *dpu);
+void dpu_dsi_config(struct dpu *dpu, const struct drm_display_mode *mode);
 int dpu_dsi_video_stop(struct dpu *dpu);
 void dpu_dsi_video_start(struct dpu *dpu);
 
