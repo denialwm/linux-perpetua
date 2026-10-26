@@ -77,6 +77,12 @@ properties:
     maximum: 6000
     default: 4600
 
+  mediatek,de-emphasis:
+    type: boolean
+    description:
+      Enable the de-emphasis of the high-speed lane transmitters, for
+      boards whose lane traces need it.
+
 required:
   - compatible
   - reg
@@ -84,6 +90,17 @@ required:
   - clock-output-names
   - "#phy-cells"
   - "#clock-cells"
+
+allOf:
+  - if:
+      not:
+        properties:
+          compatible:
+            contains:
+              const: mediatek,mt8196-mipi-tx
+    then:
+      properties:
+        mediatek,de-emphasis: false
 
 additionalProperties: false
 
