@@ -61,8 +61,143 @@ static const struct ipa_qsb_data ipa_qsb_data[] = {
 	},
 };
 
+/* Kaanapali limits outstanding DDR writes to 12 (downstream driver) */
+static const struct ipa_qsb_data ipa_qsb_data_kaanapali[] = {
+	[IPA_QSB_MASTER_DDR] = {
+		.max_writes		= 12,
+		.max_reads		= 0,	/* no limit (hardware max) */
+		.max_reads_beats	= 0,
+	},
+	[IPA_QSB_MASTER_PCIE] = {
+		.max_writes		= 8,
+		.max_reads		= 0,	/* no limit (hardware max) */
+		.max_reads_beats	= 0,
+	},
+};
+
 /* Endpoint configuration data for an SoC having IPA v5.5 */
 static const struct ipa_gsi_endpoint_data ipa_gsi_endpoint_data[] = {
+	[IPA_ENDPOINT_AP_COMMAND_TX] = {
+		.ee_id		= GSI_EE_AP,
+		.channel_id	= 12,
+		.endpoint_id	= 14,
+		.toward_ipa	= true,
+		.channel = {
+			.tre_count	= 256,
+			.event_count	= 256,
+			.tlv_count	= 20,
+		},
+		.endpoint = {
+			.config = {
+				.resource_group	= IPA_RSRC_GROUP_SRC_UL,
+				.dma_mode	= true,
+				.dma_endpoint	= IPA_ENDPOINT_AP_LAN_RX,
+				.tx = {
+					.seq_type = IPA_SEQ_DMA,
+				},
+			},
+		},
+	},
+	[IPA_ENDPOINT_AP_LAN_RX] = {
+		.ee_id		= GSI_EE_AP,
+		.channel_id	= 14,
+		.endpoint_id	= 17,
+		.toward_ipa	= false,
+		.channel = {
+			.tre_count	= 256,
+			.event_count	= 256,
+			.tlv_count	= 9,
+		},
+		.endpoint = {
+			.config = {
+				.resource_group	= IPA_RSRC_GROUP_DST_UL,
+				.aggregation	= true,
+				.status_enable	= true,
+				.rx = {
+					.buffer_size	= 8192,
+					.pad_align	= ilog2(sizeof(u32)),
+					.aggr_time_limit = 500,
+				},
+			},
+		},
+	},
+	[IPA_ENDPOINT_AP_MODEM_TX] = {
+		.ee_id		= GSI_EE_AP,
+		.channel_id	= 11,
+		.endpoint_id	= 2,
+		.toward_ipa	= true,
+		.channel = {
+			.tre_count	= 512,
+			.event_count	= 512,
+			.tlv_count	= 25,
+		},
+		.endpoint = {
+			.filter_support	= true,
+			.config = {
+				.resource_group	= IPA_RSRC_GROUP_SRC_UL,
+				.checksum       = true,
+				.qmap		= true,
+				.status_enable	= true,
+				.tx = {
+					.seq_type = IPA_SEQ_2_PASS_SKIP_LAST_UC,
+					.status_endpoint =
+						IPA_ENDPOINT_MODEM_AP_RX,
+				},
+			},
+		},
+	},
+	[IPA_ENDPOINT_AP_MODEM_RX] = {
+		.ee_id		= GSI_EE_AP,
+		.channel_id	= 1,
+		.endpoint_id	= 24,
+		.toward_ipa	= false,
+		.channel = {
+			.tre_count	= 256,
+			.event_count	= 256,
+			.tlv_count	= 9,
+		},
+		.endpoint = {
+			.config = {
+				.resource_group	= IPA_RSRC_GROUP_DST_DL,
+				.checksum       = true,
+				.qmap		= true,
+				.aggregation	= true,
+				.rx = {
+					.buffer_size	= 8192,
+					.aggr_time_limit = 500,
+					.aggr_close_eof	= true,
+				},
+			},
+		},
+	},
+	[IPA_ENDPOINT_MODEM_AP_TX] = {
+		.ee_id		= GSI_EE_MODEM,
+		.channel_id	= 0,
+		.endpoint_id	= 12,
+		.toward_ipa	= true,
+		.endpoint = {
+			.filter_support	= true,
+		},
+	},
+	[IPA_ENDPOINT_MODEM_AP_RX] = {
+		.ee_id		= GSI_EE_MODEM,
+		.channel_id	= 7,
+		.endpoint_id	= 22,
+		.toward_ipa	= false,
+	},
+	[IPA_ENDPOINT_MODEM_DL_NLO_TX] = {
+		.ee_id		= GSI_EE_MODEM,
+		.channel_id	= 2,
+		.endpoint_id	= 15,
+		.toward_ipa	= true,
+		.endpoint = {
+			.filter_support	= true,
+		},
+	},
+};
+
+/* Kaanapali uses different endpoints for AP LAN RX, AP modem RX and modem AP RX */
+static const struct ipa_gsi_endpoint_data ipa_gsi_endpoint_data_kaanapali[] = {
 	[IPA_ENDPOINT_AP_COMMAND_TX] = {
 		.ee_id		= GSI_EE_AP,
 		.channel_id	= 12,
@@ -442,6 +577,148 @@ static const struct ipa_mem ipa_mem_local_data[] = {
 	},
 };
 
+/* IPA-resident memory region data for Kaanapali (from the downstream driver) */
+static const struct ipa_mem ipa_mem_local_data_kaanapali[] = {
+	{
+		.id		= IPA_MEM_UC_EVENT_RING,
+		.offset		= 0x0000,
+		.size		= 0x0300,
+		.canary_count	= 0,
+	},
+	{
+		.id		= IPA_MEM_UC_SHARED,
+		.offset		= 0x0300,
+		.size		= 0x0080,
+		.canary_count	= 0,
+	},
+	{
+		.id		= IPA_MEM_UC_INFO,
+		.offset		= 0x0380,
+		.size		= 0x0080,
+		.canary_count	= 0,
+	},
+	{
+		.id		= IPA_MEM_V4_FILTER_HASHED,
+		.offset		= 0x0408,
+		.size		= 0x0078,
+		.canary_count	= 2,
+	},
+	{
+		.id		= IPA_MEM_V4_FILTER,
+		.offset		= 0x0488,
+		.size		= 0x0078,
+		.canary_count	= 2,
+	},
+	{
+		.id		= IPA_MEM_V6_FILTER_HASHED,
+		.offset		= 0x0508,
+		.size		= 0x0078,
+		.canary_count	= 2,
+	},
+	{
+		.id		= IPA_MEM_V6_FILTER,
+		.offset		= 0x0588,
+		.size		= 0x0078,
+		.canary_count	= 2,
+	},
+	{
+		.id		= IPA_MEM_V4_ROUTE_HASHED,
+		.offset		= 0x0608,
+		.size		= 0x0098,
+		.canary_count	= 2,
+	},
+	{
+		.id		= IPA_MEM_V4_ROUTE,
+		.offset		= 0x06a8,
+		.size		= 0x0098,
+		.canary_count	= 2,
+	},
+	{
+		.id		= IPA_MEM_V6_ROUTE_HASHED,
+		.offset		= 0x0748,
+		.size		= 0x0098,
+		.canary_count	= 2,
+	},
+	{
+		.id		= IPA_MEM_V6_ROUTE,
+		.offset		= 0x07e8,
+		.size		= 0x0098,
+		.canary_count	= 2,
+	},
+	{
+		.id		= IPA_MEM_MODEM_HEADER,
+		.offset		= 0x0888,
+		.size		= 0x0240,
+		.canary_count	= 2,
+	},
+	{
+		.id		= IPA_MEM_AP_HEADER,
+		.offset		= 0x0ac8,
+		.size		= 0x01e0,
+		.canary_count	= 0,
+	},
+	{
+		.id		= IPA_MEM_MODEM_PROC_CTX,
+		.offset		= 0x0cc0,
+		.size		= 0x0b20,
+		.canary_count	= 2,
+	},
+	{
+		.id		= IPA_MEM_AP_PROC_CTX,
+		.offset		= 0x17e0,
+		.size		= 0x0200,
+		.canary_count	= 0,
+	},
+	{
+		.id		= IPA_MEM_STATS_QUOTA_MODEM,
+		.offset		= 0x19e8,
+		.size		= 0x0060,
+		.canary_count	= 2,
+	},
+	{
+		.id		= IPA_MEM_STATS_QUOTA_AP,
+		.offset		= 0x1a48,
+		.size		= 0x0048,
+		.canary_count	= 0,
+	},
+	{
+		.id		= IPA_MEM_STATS_TETHERING,
+		.offset		= 0x1a90,
+		.size		= 0x03c0,
+		.canary_count	= 0,
+	},
+	{
+		.id		= IPA_MEM_STATS_FILTER_ROUTE,
+		.offset		= 0x1e50,
+		.size		= 0x1000,
+		.canary_count	= 0,
+	},
+	{
+		.id		= IPA_MEM_STATS_DROP,
+		.offset		= 0x2e50,
+		.size		= 0x0020,
+		.canary_count	= 0,
+	},
+	{
+		.id		= IPA_MEM_MODEM,
+		.offset		= 0x2e78,
+		.size		= 0x0d48,
+		.canary_count	= 2,
+	},
+	{
+		.id		= IPA_MEM_NAT_TABLE,
+		.offset		= 0x3bc0,
+		.size		= 0x0900,
+		.canary_count	= 0,
+	},
+	{
+		.id		= IPA_MEM_PDN_CONFIG,
+		.offset		= 0x44c8,
+		.size		= 0x0050,
+		.canary_count	= 2,
+	},
+};
+
 /* Memory configuration data for an SoC having IPA v5.5 */
 static const struct ipa_mem_data ipa_mem_data = {
 	.local_count	= ARRAY_SIZE(ipa_mem_local_data),
@@ -449,6 +726,15 @@ static const struct ipa_mem_data ipa_mem_data = {
 	.imem_addr	= 0x14688000,
 	.imem_size	= 0x00002000,
 	.smem_size	= 0x0000b000,
+};
+
+/* Kaanapali has the same IPA, but its modem uses a larger SMEM area */
+static const struct ipa_mem_data ipa_mem_data_kaanapali = {
+	.local_count	= ARRAY_SIZE(ipa_mem_local_data_kaanapali),
+	.local		= ipa_mem_local_data_kaanapali,
+	.imem_addr	= 0x14683000,
+	.imem_size	= 0x00002000,
+	.smem_size	= 0x00019000,
 };
 
 /* Interconnect rates are in 1000 byte/second units */
@@ -484,5 +770,19 @@ const struct ipa_data ipa_data_v5_5 = {
 	.endpoint_data		= ipa_gsi_endpoint_data,
 	.resource_data		= &ipa_resource_data,
 	.mem_data		= &ipa_mem_data,
+	.power_data		= &ipa_power_data,
+};
+
+/* Configuration data for IPA v5.5 on Kaanapali */
+const struct ipa_data ipa_data_v5_5_kaanapali = {
+	.version		= IPA_VERSION_5_5,
+	.qsb_count		= ARRAY_SIZE(ipa_qsb_data_kaanapali),
+	.qsb_data		= ipa_qsb_data_kaanapali,
+	.modem_route_count	= 11,
+	.modem_halt_channels	= GENMASK(8, 0),
+	.endpoint_count		= ARRAY_SIZE(ipa_gsi_endpoint_data_kaanapali),
+	.endpoint_data		= ipa_gsi_endpoint_data_kaanapali,
+	.resource_data		= &ipa_resource_data,
+	.mem_data		= &ipa_mem_data_kaanapali,
 	.power_data		= &ipa_power_data,
 };
