@@ -19,6 +19,13 @@
 
 		bootargs = "console=tty0 fbcon=font:TER16x32 root=PARTUUID=0000004f-39c2-4488-9bb0-00cb43c9ccd4 rootfstype=ext4 rootwait rw init=/usr/lib/systemd/systemd panic=10 arm64.nomte clk_ignore_unused pd_ignore_unused";
 
+		fdt-handoff {
+			stock-compatible = "mediatek,MT6897";
+			stock-model = "MT8792";
+			/* Lenovo's bootloader passes this word on every boot. */
+			stock-bootargs = "lenovoraw_backup_size=0";
+		};
+
 		/* The bootloader's splash buffer; the panel runs in video mode. */
 		framebuffer0: framebuffer@fc16f000 {
 			compatible = "simple-framebuffer";
