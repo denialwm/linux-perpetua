@@ -79,6 +79,12 @@ void dpu_ovl_scanout(void __iomem *ovl, const struct dpu_scanout *scanout,
 
 void dpu_ovl_irq_enable(void __iomem *ovl, bool enable)
 {
+	/*
+	 * The status keeps latching while the interrupts are masked: drop
+	 * it, or the first interrupt reports a frame that ended long ago.
+	 */
+	if (enable)
+		writel(0, ovl + OVL_INTSTA);
 	writel(enable ? OVL_INT_FRAME_DONE | OVL_INT_FRAME_START : 0,
 	       ovl + OVL_INTEN);
 }
