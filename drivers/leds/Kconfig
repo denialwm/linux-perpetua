@@ -864,6 +864,17 @@ config LEDS_SC27XX_BLTC
 	  This driver can also be built as a module. If so the module will be
 	  called leds-sc27xx-bltc.
 
+config LEDS_SGM37604A
+	tristate "LED support for the SG Micro SGM37604A"
+	depends on LEDS_CLASS && I2C
+	select REGMAP_I2C
+	help
+	  Say Y here to include support for the SG Micro SGM37604A, a
+	  four-string white LED driver used for display backlights.
+
+	  This driver can also be built as a module. If so the module will be
+	  called leds-sgm37604a.
+
 config LEDS_UPBOARD
 	tristate "LED support for the UP board"
 	depends on LEDS_CLASS && MFD_UPBOARD_FPGA
