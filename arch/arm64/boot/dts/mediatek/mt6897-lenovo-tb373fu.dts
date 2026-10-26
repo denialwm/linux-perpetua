@@ -69,6 +69,16 @@
 	};
 };
 
+&i2c7 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	fuel-gauge@55 {
+		compatible = "mitsumi,mm8013";
+		reg = <0x55>;
+	};
+};
+
 &ssusb {
 	dr_mode = "peripheral";
 	maximum-speed = "high-speed";
