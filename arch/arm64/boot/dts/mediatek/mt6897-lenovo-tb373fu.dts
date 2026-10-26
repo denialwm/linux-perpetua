@@ -170,6 +170,19 @@
 	};
 };
 
+/* The panel's lanes run with the drive and de-emphasis of the stock setup. */
+&mipi_tx0 {
+	drive-strength-microamp = <5200>;
+	mediatek,de-emphasis;
+	status = "okay";
+};
+
+&mipi_tx1 {
+	drive-strength-microamp = <5200>;
+	mediatek,de-emphasis;
+	status = "okay";
+};
+
 &ssusb {
 	dr_mode = "peripheral";
 	maximum-speed = "high-speed";
