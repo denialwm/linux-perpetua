@@ -330,6 +330,48 @@
 			status = "disabled";
 		};
 
+		gpu: gpu@13000000 {
+			compatible = "mediatek,mt6897-mali", "arm,mali-valhall-csf";
+			reg = <0 0x13000000 0 0x480000>;
+			clocks = <&gpufreq 0>, <&gpufreq 1>;
+			clock-names = "core", "stacks";
+			interrupts = <GIC_SPI 586 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 585 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 584 IRQ_TYPE_LEVEL_HIGH 0>;
+			interrupt-names = "job", "mmu", "gpu";
+			nvmem-cells = <&gpu_shader_present>;
+			nvmem-cell-names = "shader-present";
+			power-domains = <&gpufreq>;
+			status = "disabled";
+		};
+
+		/* The GPUEB needs its shared memory, which the board reserves. */
+		gpufreq: power-controller@13c2fd1c {
+			compatible = "mediatek,mt6897-gpufreq";
+			reg = <0 0x13c2fd1c 0 0x64>;
+			reg-names = "gpr";
+			mboxes = <&gpueb_mbox 0>, <&gpueb_mbox 1>, <&gpueb_mbox 2>,
+				 <&gpueb_mbox 3>, <&gpueb_mbox 4>, <&gpueb_mbox 5>,
+				 <&gpueb_mbox 7>;
+			mbox-names = "fast-dvfs-event", "gpufreq", "sleep", "timer",
+				     "fhctl", "ccf", "fast-dvfs";
+			#clock-cells = <1>;
+			#nvmem-cell-cells = <0>;
+			#power-domain-cells = <0>;
+			status = "disabled";
+
+			gpu_shader_present: shader-present {
+			};
+		};
+
+		gpueb_mbox: mailbox@13c2fd80 {
+			compatible = "mediatek,mt6897-gpueb-mbox";
+			reg = <0 0x13c2fd80 0 0x280>, <0 0x13c62000 0 0x7c>;
+			reg-names = "data", "ctl";
+			interrupts = <GIC_SPI 588 IRQ_TYPE_LEVEL_HIGH 0>;
+			#mbox-cells = <1>;
+		};
+
 		dpu: display-controller@14000000 {
 			compatible = "mediatek,mt6897-dpu";
 			reg = <0 0x14000000 0 0xe000>, <0 0x14200000 0 0xe000>,
