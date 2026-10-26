@@ -46,6 +46,9 @@
 
 #define TPS65132_ACT_DIS_TIME_SLACK		1000
 
+/* From the first output enable until the registers take writes. */
+#define TPS65132_POWER_UP_US			1000
+
 struct tps65132_reg_pdata {
 	struct gpio_desc *en_gpiod;
 	struct gpio_desc *act_dis_gpiod;
@@ -55,19 +58,57 @@ struct tps65132_reg_pdata {
 
 struct tps65132_regulator {
 	struct device *dev;
+	struct regmap *rmap;
 	struct tps65132_reg_pdata reg_pdata[TPS65132_MAX_REGULATORS];
 };
+
+/*
+ * The chip runs, and holds its registers, only while one of its outputs is
+ * enabled; at power-up it loads its defaults. An output without an enable
+ * GPIO keeps it running.
+ */
+static bool tps65132_powered(struct tps65132_regulator *tps)
+{
+	int id;
+
+	for (id = 0; id < TPS65132_MAX_REGULATORS; id++)
+		if (IS_ERR(tps->reg_pdata[id].en_gpiod) ||
+		    tps->reg_pdata[id].ena_gpio_state)
+			return true;
+
+	return false;
+}
+
+/* While the chip is off, writes go to the cache; power-up restores them. */
+static int tps65132_power_up(struct tps65132_regulator *tps)
+{
+	fsleep(TPS65132_POWER_UP_US);
+	regcache_cache_only(tps->rmap, false);
+	regcache_mark_dirty(tps->rmap);
+
+	return regcache_sync(tps->rmap);
+}
 
 static int tps65132_regulator_enable(struct regulator_dev *rdev)
 {
 	struct tps65132_regulator *tps = rdev_get_drvdata(rdev);
 	int id = rdev_get_id(rdev);
 	struct tps65132_reg_pdata *rpdata = &tps->reg_pdata[id];
+	bool powered = tps65132_powered(tps);
 	int ret;
 
 	if (!IS_ERR(rpdata->en_gpiod)) {
 		gpiod_set_value_cansleep(rpdata->en_gpiod, 1);
 		rpdata->ena_gpio_state = 1;
+	}
+
+	if (!powered) {
+		ret = tps65132_power_up(tps);
+		if (ret < 0) {
+			dev_err(tps->dev, "Failed to restore registers: %d\n",
+				ret);
+			return ret;
+		}
 	}
 
 	/* Hardware automatically enable discharge bit in enable */
@@ -101,6 +142,9 @@ static int tps65132_regulator_disable(struct regulator_dev *rdev)
 			     TPS65132_ACT_DIS_TIME_SLACK);
 		gpiod_set_value_cansleep(rpdata->act_dis_gpiod, 0);
 	}
+
+	if (!tps65132_powered(tps))
+		regcache_cache_only(tps->rmap, true);
 
 	return 0;
 }
@@ -215,7 +259,7 @@ static const struct regmap_config tps65132_regmap_config = {
 	.reg_bits	= 8,
 	.val_bits	= 8,
 	.max_register	= TPS65132_REG_CONTROL,
-	.cache_type	= REGCACHE_NONE,
+	.cache_type	= REGCACHE_MAPLE,
 	.rd_table	= &tps65132_no_reg_table,
 	.wr_table	= &tps65132_no_reg_table,
 };
@@ -243,6 +287,7 @@ static int tps65132_probe(struct i2c_client *client)
 
 	i2c_set_clientdata(client, tps);
 	tps->dev = dev;
+	tps->rmap = rmap;
 
 	for (id = 0; id < TPS65132_MAX_REGULATORS; ++id) {
 		config.regmap = rmap;
