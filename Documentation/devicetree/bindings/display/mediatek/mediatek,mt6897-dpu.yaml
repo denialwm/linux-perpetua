@@ -13,7 +13,7 @@ description:
   The display pipeline of the MediaTek MT6897 (Dimensity 8300) SoC. Each
   frame is split into two vertical stripes, one per pipe; each pipe has
   its own overlay engine (OVL) in its own OVL subsystem, its own display
-  subsystem and its own DSI link.
+  subsystem and its own DSC encoder and DSI link.
 
 properties:
   compatible:
@@ -25,6 +25,8 @@ properties:
       - description: overlay engine of the second pipe
       - description: DSI link of the first pipe, the master
       - description: DSI link of the second pipe
+      - description: DSC encoder of the first pipe
+      - description: DSC encoder of the second pipe
 
   reg-names:
     items:
@@ -32,6 +34,8 @@ properties:
       - const: ovl1
       - const: dsi0
       - const: dsi1
+      - const: dsc0
+      - const: dsc1
 
   interrupts:
     items:
@@ -96,8 +100,9 @@ examples:
     display-controller@14402000 {
         compatible = "mediatek,mt6897-dpu";
         reg = <0x14402000 0x1000>, <0x14602000 0x1000>,
-              <0x1400d000 0x1000>, <0x1420d000 0x1000>;
-        reg-names = "ovl0", "ovl1", "dsi0", "dsi1";
+              <0x1400d000 0x1000>, <0x1420d000 0x1000>,
+              <0x1400c000 0x1000>, <0x1420c000 0x1000>;
+        reg-names = "ovl0", "ovl1", "dsi0", "dsi1", "dsc0", "dsc1";
         interrupts = <GIC_SPI 387 IRQ_TYPE_LEVEL_HIGH>,
                      <GIC_SPI 431 IRQ_TYPE_LEVEL_HIGH>;
         interrupt-names = "ovl0", "ovl1";
