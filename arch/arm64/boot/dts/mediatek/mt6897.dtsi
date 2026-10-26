@@ -308,6 +308,16 @@
 			status = "disabled";
 		};
 
+		dpu: display-controller@14402000 {
+			compatible = "mediatek,mt6897-dpu";
+			reg = <0 0x14402000 0 0x1000>, <0 0x14602000 0 0x1000>;
+			reg-names = "ovl0", "ovl1";
+			interrupts = <GIC_SPI 387 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 431 IRQ_TYPE_LEVEL_HIGH 0>;
+			interrupt-names = "ovl0", "ovl1";
+			status = "disabled";
+		};
+
 		watchdog: watchdog@1c00a000 {
 			compatible = "mediatek,mt6897-wdt", "mediatek,mt6589-wdt";
 			reg = <0 0x1c00a000 0 0x100>;
