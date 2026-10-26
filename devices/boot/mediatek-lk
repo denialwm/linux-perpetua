@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0
+"""Writes a boot image for the MediaTek LK boot chain of Android 13+.
+
+LK loads a version 4 boot image that holds only the kernel, compressed as
+legacy LZ4; vendor_boot keeps the ramdisk and the bootloader's tree. The
+device's own working image of the partition is the template: its header,
+partition size, AVB algorithm, salt and properties are kept. The footer is
+signed again with KEY, which must be the key the template was signed with;
+the fingerprint property becomes the kernel release. Needs lz4, avbtool and
+unpack_bootimg.
+
+Usage: devices/boot/mediatek-lk TEMPLATE IMAGE KEY OUTPUT [EVIDENCE]
+
+EVIDENCE, when given, is a directory that receives the avbtool
+verification and the unpacked header.
+"""
+import hashlib
+import json
+from pathlib import Path
+import re
+import struct
+import subprocess
+import sys
+import tempfile
+
+PAGE = 4096
+# Version 4 header offsets: the kernel and ramdisk sizes, the header
+# version and the boot signature size.
+KERNEL_SIZE, RAMDISK_SIZE, HEADER_VERSION, SIGNATURE_SIZE = 8, 12, 40, 1580
+LEGACY_LZ4 = b'\x02\x21\x4c\x18'
+FINGERPRINT = 'com.android.build.boot.fingerprint'
+
+
+def run(*args):
+    return subprocess.run(list(map(str, args)), check=True, capture_output=True).stdout
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def main():
+    if len(sys.argv) not in (5, 6):
+        sys.exit(__doc__)
+    template, image, key, output = map(Path, sys.argv[1:5])
+    evidence = Path(sys.argv[5]) if len(sys.argv) == 6 else None
+    assert not output.exists(), f'{output} exists'
+    stock = template.read_bytes()
+    kernel = image.read_bytes()
+    release = re.search(rb'Linux version (\S+) \(', kernel).group(1).decode()
+
+    header = bytearray(stock[:PAGE])
+    assert header[:8] == b'ANDROID!', 'template is not an Android boot image'
+    assert struct.unpack_from('<I', header, HEADER_VERSION)[0] == 4, 'template header is not version 4'
+    assert struct.unpack_from('<I', header, SIGNATURE_SIZE)[0] == 0, 'template has a boot signature'
+    assert struct.unpack_from('<I', header, RAMDISK_SIZE)[0] == 0, 'template boot carries a ramdisk'
+    assert stock[PAGE:PAGE + 4] == LEGACY_LZ4, 'template kernel is not legacy LZ4'
+
+    info = run('avbtool', 'info_image', '--image', template).decode()
+    algorithm = re.search(r'^Algorithm:\s+(\S+)$', info, re.M).group(1)
+    assert algorithm.startswith('SHA256_RSA'), f'template footer is {algorithm}'
+    public = run('avbtool', 'extract_public_key', '--key', key, '--output', '/dev/stdout')
+    signer = re.search(r'^Public key \(sha1\):\s+([0-9a-f]+)$', info, re.M).group(1)
+    assert hashlib.sha1(public).hexdigest() == signer, 'KEY did not sign the template'
+    salt = re.search(r'^\s*Salt:\s*([0-9a-f]+)\s*$', info, re.M).group(1)
+    props = [(name, release if name == FINGERPRINT else value)
+             for name, value in re.findall(r"^\s*Prop: (\S+) -> '(.*)'$", info, re.M)]
+
+    with tempfile.TemporaryDirectory() as scratch:
+        packed = Path(scratch) / 'Image.lz4'
+        run('lz4', '-q', '-l', '-12', image, packed)
+        content = packed.read_bytes()
+        assert content[:4] == LEGACY_LZ4, 'lz4 did not write legacy LZ4'
+        struct.pack_into('<I', header, KERNEL_SIZE, len(content))
+        output.write_bytes(bytes(header) + content + b'\0' * (-len(content) % PAGE))
+        run('avbtool', 'add_hash_footer', '--image', output, '--partition_size', len(stock),
+            '--partition_name', 'boot', '--hash_algorithm', 'sha256', '--algorithm', algorithm,
+            '--key', key, '--salt', salt,
+            *[a for name, value in props for a in ('--prop', f'{name}:{value}')])
+        result = output.read_bytes()
+        assert len(result) == len(stock) and result[:PAGE] == header
+
+        # avbtool checks the hash descriptor against boot.img next to the
+        # image it verifies, whatever OUTPUT is called.
+        named = Path(scratch) / 'boot.img'
+        named.symlink_to(output.resolve())
+        verification = run('avbtool', 'verify_image', '--image', named)
+        unpacked = Path(scratch) / 'unpacked'
+        described = run('unpack_bootimg', '--boot_img', output, '--out', unpacked)
+        assert (unpacked / 'kernel').read_bytes() == content, 'unpacked kernel differs'
+    if evidence:
+        (evidence / 'boot-verification.txt').write_bytes(verification)
+        (evidence / 'boot-header.txt').write_bytes(described)
+    print(json.dumps({'bytes': len(result), 'sha256': sha256(result), 'release': release,
+                      'template_sha256': sha256(stock)}))
+
+
+if __name__ == '__main__':
+    main()

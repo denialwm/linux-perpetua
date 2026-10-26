@@ -87,6 +87,14 @@ devices/boot holds one tool per boot chain that writes the images:
                   Usage: TEMPLATE IMAGE RAMDISK OUTPUT [EVIDENCE].
 
 
+  mediatek-lk   MediaTek's LK bootloader with Android 13 and later: a
+                version 4 boot image with only the kernel, as legacy LZ4.
+                It writes from the device's own working image, keeping its
+                header and AVB properties, and signs the footer again with
+                the key that signed it. Usage: TEMPLATE IMAGE KEY OUTPUT
+                [EVIDENCE].
+
+
 Checks
 ------
 
