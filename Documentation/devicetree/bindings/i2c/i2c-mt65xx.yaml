@@ -53,6 +53,7 @@ properties:
       - items:
           - enum:
               - mediatek,mt6878-i2c
+              - mediatek,mt6897-i2c
               - mediatek,mt6991-i2c
               - mediatek,mt8189-i2c
               - mediatek,mt8196-i2c
