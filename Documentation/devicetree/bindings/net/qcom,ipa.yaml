@@ -60,6 +60,7 @@ properties:
           - const: qcom,sc7180-ipa
       - items:
           - enum:
+              - qcom,kaanapali-ipa
               - qcom,sm8650-ipa
           - const: qcom,sm8550-ipa
 
@@ -168,11 +169,15 @@ properties:
       absent, the AP loads GSI firmware.
 
   memory-region:
-    maxItems: 1
-    description:
-      If present, a phandle for a reserved memory area that holds
-      the firmware passed to Trust Zone for authentication.  Required
-      when the AP (not the modem) performs early initialization.
+    minItems: 1
+    items:
+      - description:
+          A reserved memory area that holds the firmware passed to Trust
+          Zone for authentication.  Required when the AP (not the modem)
+          performs early initialization.
+      - description:
+          IOVA ranges the IPA must not use for DMA, given as a reserved
+          memory node with an iommu-addresses property.
 
   firmware-name:
     maxItems: 1
