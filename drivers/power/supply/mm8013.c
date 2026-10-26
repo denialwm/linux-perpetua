@@ -11,6 +11,7 @@
 #define REG_BATID			0x00 /* This one is very unclear */
  #define BATID_101			0x0101 /* 107kOhm */
  #define BATID_102			0x0102 /* 10kOhm */
+ #define BATID_103			0x0103
 #define REG_TEMPERATURE			0x06
 #define REG_VOLTAGE			0x08
 #define REG_FLAGS			0x0a
@@ -57,7 +58,9 @@ static int mm8013_checkdevice(struct mm8013_chip *chip)
 	if (ret < 0)
 		return ret;
 
-	if (val == BATID_102)
+	if (val == BATID_103)
+		battery_id = 3;
+	else if (val == BATID_102)
 		battery_id = 2;
 	else if (val == BATID_101)
 		battery_id = 1;
