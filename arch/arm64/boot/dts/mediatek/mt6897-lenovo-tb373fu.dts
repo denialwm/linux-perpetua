@@ -5,12 +5,20 @@
 
 /dts-v1/;
 
+#include <dt-bindings/leds/common.h>
 #include "mt6897.dtsi"
 
 / {
 	model = "Lenovo Idea Tab Pro";
 	compatible = "lenovo,tb373fu", "mediatek,mt6897";
 	chassis-type = "tablet";
+
+	/* Two chips drive the panel's LED strings; one brightness for both. */
+	backlight: backlight {
+		compatible = "led-backlight";
+		leds = <&backlight_led0>, <&backlight_led1>;
+		default-brightness-level = <512>;
+	};
 
 	chosen {
 		#address-cells = <2>;
@@ -69,6 +77,20 @@
 	};
 };
 
+&i2c3 {
+	status = "okay";
+
+	led-controller@36 {
+		compatible = "sgmicro,sgm37604a";
+		reg = <0x36>;
+
+		backlight_led1: led {
+			color = <LED_COLOR_ID_WHITE>;
+			function = LED_FUNCTION_BACKLIGHT;
+		};
+	};
+};
+
 &i2c7 {
 	clock-frequency = <400000>;
 	status = "okay";
@@ -76,6 +98,20 @@
 	fuel-gauge@55 {
 		compatible = "mitsumi,mm8013";
 		reg = <0x55>;
+	};
+};
+
+&i2c13 {
+	status = "okay";
+
+	led-controller@36 {
+		compatible = "sgmicro,sgm37604a";
+		reg = <0x36>;
+
+		backlight_led0: led {
+			color = <LED_COLOR_ID_WHITE>;
+			function = LED_FUNCTION_BACKLIGHT;
+		};
 	};
 };
 
