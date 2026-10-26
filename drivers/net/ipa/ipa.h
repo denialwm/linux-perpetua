@@ -36,6 +36,7 @@ struct ipa_smp2p;
  * @route_count:	Total number of entries in a routing table
  * @modem_route_count:	Number of modem entries in a routing table
  * @modem_fnr_count:	Number of modem filter/route statistics counters
+ * @modem_halt_channels: Modem GSI channels to halt after the modem stops
  * @filter_count:	Maximum number of entries in a filter table
  * @interrupt:		IPA Interrupt information
  * @uc_powered:		true if power is active by proxy for microcontroller
@@ -89,6 +90,7 @@ struct ipa {
 	u32 route_count;
 	u32 modem_route_count;
 	u32 modem_fnr_count;
+	u32 modem_halt_channels;
 	u32 filter_count;
 
 	struct ipa_interrupt *interrupt;

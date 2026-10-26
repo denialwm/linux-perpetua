@@ -199,6 +199,16 @@ int gsi_channel_start(struct gsi *gsi, u32 channel_id);
 int gsi_channel_stop(struct gsi *gsi, u32 channel_id);
 
 /**
+ * gsi_modem_channels_halt() - Halt modem GSI channels
+ * @gsi:	GSI pointer
+ * @mask:	Bitmap of modem channel IDs to halt
+ *
+ * Some modems leave their channels running when they stop, and need
+ * them halted before they are started again.
+ */
+void gsi_modem_channels_halt(struct gsi *gsi, u32 mask);
+
+/**
  * gsi_modem_channel_flow_control() - Set channel flow control state (IPA v4.2+)
  * @gsi:	GSI pointer returned by gsi_setup()
  * @channel_id:	Modem TX channel to control

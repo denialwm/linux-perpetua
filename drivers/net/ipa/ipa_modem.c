@@ -448,6 +448,22 @@ out_power_put:
 	(void)pm_runtime_put_autosuspend(dev);
 }
 
+/* Halt the channels the modem left running before it is started again */
+static void ipa_modem_halt_channels(struct ipa *ipa)
+{
+	struct device *dev = ipa->dev;
+	int ret;
+
+	ret = pm_runtime_get_sync(dev);
+	if (ret < 0)
+		dev_err(dev, "error %d getting power to halt modem channels\n",
+			ret);
+	else
+		gsi_modem_channels_halt(&ipa->gsi, ipa->modem_halt_channels);
+
+	(void)pm_runtime_put_autosuspend(dev);
+}
+
 static int ipa_modem_notify(struct notifier_block *nb, unsigned long action,
 			    void *data)
 {
@@ -476,6 +492,8 @@ static int ipa_modem_notify(struct notifier_block *nb, unsigned long action,
 
 	case QCOM_SSR_AFTER_SHUTDOWN:
 		dev_info(dev, "received modem offline event\n");
+		if (ipa->setup_complete && ipa->modem_halt_channels)
+			ipa_modem_halt_channels(ipa);
 		break;
 
 	default:

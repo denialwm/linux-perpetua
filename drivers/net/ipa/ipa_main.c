@@ -850,6 +850,7 @@ static int ipa_probe(struct platform_device *pdev)
 	ipa->version = data->version;
 	ipa->modem_route_count = data->modem_route_count;
 	ipa->modem_fnr_count = data->modem_fnr_count;
+	ipa->modem_halt_channels = data->modem_halt_channels;
 	init_completion(&ipa->completion);
 
 	ret = ipa_reg_init(ipa, pdev);

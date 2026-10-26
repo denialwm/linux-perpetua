@@ -1837,6 +1837,21 @@ static void gsi_modem_channel_halt(struct gsi *gsi, u32 channel_id)
 			ret, channel_id);
 }
 
+/* Halt the modem GSI channels in a mask, after the modem has stopped */
+void gsi_modem_channels_halt(struct gsi *gsi, u32 mask)
+{
+	mutex_lock(&gsi->mutex);
+
+	while (mask) {
+		u32 channel_id = __ffs(mask);
+
+		mask ^= BIT(channel_id);
+		gsi_modem_channel_halt(gsi, channel_id);
+	}
+
+	mutex_unlock(&gsi->mutex);
+}
+
 /* Enable or disable flow control for a modem GSI TX channel (IPA v4.2+) */
 void
 gsi_modem_channel_flow_control(struct gsi *gsi, u32 channel_id, bool enable)
