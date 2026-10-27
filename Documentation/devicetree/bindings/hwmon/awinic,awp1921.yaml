@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/hwmon/awinic,awp1921.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Awinic AWP1921 piezoelectric micropump driver
+
+maintainers:
+  - Doctor Logix <doctor.logix@gmail.com>
+
+description:
+  The AWP1921 drives a piezoelectric micropump, such as the one of the
+  liquid cooling loop in the Nubia RedMagic 11 Pro. It is controlled over
+  I2C and serves as a cooling device with four levels, from off to high.
+
+properties:
+  compatible:
+    const: awinic,awp1921
+
+  reg:
+    maxItems: 1
+
+  enable-gpios:
+    maxItems: 1
+    description: GPIO connected to the enable input of the chip.
+
+  "#cooling-cells":
+    const: 2
+
+required:
+  - compatible
+  - reg
+  - enable-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        micropump@44 {
+            compatible = "awinic,awp1921";
+            reg = <0x44>;
+            enable-gpios = <&pmic_gpios 1 GPIO_ACTIVE_HIGH>;
+            #cooling-cells = <2>;
+        };
+    };
+...
