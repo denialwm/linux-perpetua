@@ -30,6 +30,7 @@ properties:
   compatible:
     enum:
       - mediatek,mt6363
+      - mediatek,mt6368
       - mediatek,mt6373
 
   reg:
@@ -48,6 +49,14 @@ properties:
 
   "#interrupt-cells":
     const: 3
+
+  keys:
+    type: object
+    $ref: /schemas/input/mediatek,pmic-keys.yaml#
+
+  regulators:
+    type: object
+    $ref: /schemas/regulator/mediatek,mt6368-regulator.yaml#
 
 patternProperties:
   "^adc@[0-9a-f]+$":
