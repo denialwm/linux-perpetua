@@ -9,6 +9,9 @@
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/phy/phy.h>
+#include <dt-bindings/power/mediatek,mt6897-power.h>
+
+#include "mt6897-pinfunc.h"
 
 / {
 	compatible = "mediatek,mt6897";
@@ -249,6 +252,59 @@
 			interrupt-controller;
 			interrupts = <GIC_SPI 309 IRQ_TYPE_LEVEL_HIGH 0>;
 			#interrupt-cells = <2>;
+
+			conn_pins: conn-pins {
+				pins-bus {
+					pinmux = <PINMUX_GPIO192__FUNC_CONN_TOP_CLK>,
+						 <PINMUX_GPIO195__FUNC_CONN_WF_CTRL0>,
+						 <PINMUX_GPIO196__FUNC_CONN_WF_CTRL1>,
+						 <PINMUX_GPIO197__FUNC_CONN_WF_CTRL2>,
+						 <PINMUX_GPIO198__FUNC_CONN_WF_CTRL3>,
+						 <PINMUX_GPIO199__FUNC_CONN_WF_CTRL4>,
+						 <PINMUX_GPIO200__FUNC_CONN_WB_PTA>,
+						 <PINMUX_GPIO201__FUNC_CONN_BT_CLK>;
+					drive-strength = <4>;
+					bias-pull-down = <MTK_PUPD_SET_R1R0_01>;
+				};
+
+				pins-data {
+					pinmux = <PINMUX_GPIO193__FUNC_CONN_TOP_DATA>,
+						 <PINMUX_GPIO202__FUNC_CONN_BT_DATA>;
+					drive-strength = <4>;
+					bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+				};
+
+				pins-reset {
+					pinmux = <PINMUX_GPIO194__FUNC_CONN_HRST_B>;
+					bias-pull-down;
+				};
+			};
+
+			conn_sleep_pins: conn-sleep-pins {
+				pins-reset {
+					pinmux = <PINMUX_GPIO194__FUNC_GPIO194>;
+					bias-pull-down;
+				};
+
+				pins {
+					pinmux = <PINMUX_GPIO192__FUNC_GPIO192>,
+						 <PINMUX_GPIO193__FUNC_GPIO193>,
+						 <PINMUX_GPIO195__FUNC_GPIO195>,
+						 <PINMUX_GPIO196__FUNC_GPIO196>,
+						 <PINMUX_GPIO197__FUNC_GPIO197>,
+						 <PINMUX_GPIO198__FUNC_GPIO198>,
+						 <PINMUX_GPIO199__FUNC_GPIO199>,
+						 <PINMUX_GPIO200__FUNC_GPIO200>,
+						 <PINMUX_GPIO201__FUNC_GPIO201>,
+						 <PINMUX_GPIO202__FUNC_GPIO202>;
+					bias-pull-down = <MTK_PUPD_SET_R1R0_01>;
+				};
+			};
+		};
+
+		ifrbus_ao: syscon@1002c000 {
+			compatible = "mediatek,mt6897-ifrbus-ao", "syscon";
+			reg = <0 0x1002c000 0 0x1000>;
 		};
 
 		spi2: spi@11012000 {
@@ -435,6 +491,45 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
+		};
+
+		/* The board describes the rails, the clock and the memory. */
+		consys: connectivity@18000000 {
+			compatible = "mediatek,mt6897-consys";
+			reg = <0 0x18000000 0 0x700000>;
+			ranges = <0 0 0x18000000 0x700000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			power-domains = <&spm MT6897_POWER_DOMAIN_CONN>;
+			pinctrl-names = "default", "sleep";
+			pinctrl-0 = <&conn_pins>;
+			pinctrl-1 = <&conn_sleep_pins>;
+			status = "disabled";
+
+			wifi: wifi@0 {
+				compatible = "mediatek,mt6897-wifi";
+				reg = <0 0x700000>;
+				interrupts = <GIC_SPI 889 IRQ_TYPE_LEVEL_HIGH 0>;
+				status = "disabled";
+			};
+		};
+
+		syscon@1c001000 {
+			compatible = "mediatek,mt6897-scpsys", "syscon", "simple-mfd";
+			reg = <0 0x1c001000 0 0x1000>;
+
+			spm: power-controller {
+				compatible = "mediatek,mt6897-power-controller";
+				access-controllers = <&ifrbus_ao>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+				#power-domain-cells = <1>;
+
+				power-domain@MT6897_POWER_DOMAIN_CONN {
+					reg = <MT6897_POWER_DOMAIN_CONN>;
+					#power-domain-cells = <0>;
+				};
+			};
 		};
 
 		watchdog: watchdog@1c00a000 {
