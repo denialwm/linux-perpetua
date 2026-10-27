@@ -949,9 +949,12 @@
 
 		vreg_l7m_2p8: ldo7 {
 			regulator-name = "vreg_l7m_2p8";
-			/* Downstream asks 3.3 V; this LDO steps 8 mV from 1.504 V */
-			regulator-min-microvolt = <3304000>;
-			regulator-max-microvolt = <3304000>;
+			/*
+			 * Stock asks exactly 3.3 V. This LDO steps 8 mV from 1.504 V;
+			 * enabling it at 3.304 V reset the phone.
+			 */
+			regulator-min-microvolt = <3296000>;
+			regulator-max-microvolt = <3296000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 	};
