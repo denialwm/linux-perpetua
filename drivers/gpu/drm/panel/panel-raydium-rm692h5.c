@@ -160,13 +160,12 @@ static void rm692h5_on(struct mipi_dsi_multi_context *dsi_ctx)
 	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0x72, 0x7e);
 	/*
 	 * Page 0xd2 holds the panel's DSC decoder config, which it appears to
-	 * use instead of the PPS we send.
-	 * RC range 0 is {min_qp 0, max_qp 8, offset 2} downstream, as in the
-	 * DSC model pre-SCR config; the kernel encoder uses the VESA DSC 1.1
-	 * value max_qp 4 (see drm_dsc_helper.c). Everything else matches, and
-	 * the mismatch corrupts the picture, so program {0, 4, 2} (0x0102).
+	 * use instead of the PPS we send. RC range 0 is {min_qp 0, max_qp 8,
+	 * offset 2} (0x0202), the DSC model's pre-SCR value that the msm DSI
+	 * host also programs at 10 bpc and 8 bpp; any other value corrupts
+	 * the picture.
 	 */
-	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0x73, 0x01);
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0x73, 0x02);
 	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0x74, 0x02);
 	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0x75, 0x22);
 	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0x76, 0x00);
