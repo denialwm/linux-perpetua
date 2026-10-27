@@ -743,7 +743,7 @@ static int32_t nvt_parse_dt(struct device *dev)
 	struct gpio_desc *gpiod;
 	int32_t ret = 0;
 
-	gpiod = devm_gpiod_get(dev, "irq", GPIOD_OUT_LOW);
+	gpiod = devm_gpiod_get(dev, "irq", GPIOD_IN);
 	if (IS_ERR(gpiod)) {
 		NVT_ERR("devm_gpiod_get failed %ld\n", PTR_ERR(gpiod));
 		return PTR_ERR(gpiod);
@@ -751,6 +751,13 @@ static int32_t nvt_parse_dt(struct device *dev)
 
 	ts->irq_gpio = desc_to_gpio(gpiod);
 	NVT_LOG("novatek,irq-gpio=%d\n", ts->irq_gpio);
+
+	/* A controller with its own reset line is held in reset until probe. */
+	ts->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(ts->reset_gpio)) {
+		NVT_ERR("devm_gpiod_get reset failed %ld\n", PTR_ERR(ts->reset_gpio));
+		return PTR_ERR(ts->reset_gpio);
+	}
 
 	ts->pen_support = of_property_read_bool(np, "novatek,pen-support");
 	NVT_LOG("novatek,pen-support=%d\n", ts->pen_support);
@@ -788,12 +795,6 @@ Description:
 return:
 	n.a.
 *******************************************************/
-static void nvt_gpio_deconfig(struct nvt_ts_data *ts)
-{
-	if (gpio_is_valid(ts->irq_gpio))
-		gpio_free(ts->irq_gpio);
-}
-
 static uint8_t nvt_fw_recovery(uint8_t *point_data)
 {
 	uint8_t i = 0;
@@ -953,13 +954,9 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 
 		if (((point_data[position] & 0x07) == 0x01) ||
 		    ((point_data[position] & 0x07) == 0x02)) {
-			//input_x = (uint32_t)(point_data[position + 1] << 8) + (uint32_t) (point_data[position + 2]);
-			//input_y = (uint32_t)(point_data[position + 3] << 8) + (uint32_t) (point_data[position + 4]);
-			input_x = (uint32_t)(point_data[position + 3] << 8) + (uint32_t) (point_data[position + 4]);
-			input_y = (uint32_t)(point_data[position + 1] << 8) + (uint32_t) (point_data[position + 2]);
-			input_y = (ts->abs_y_max - 1) - input_y;
-			//NVT_LOG("input_x=%5d input_y=%5d\n", input_x, input_y);
-			if ((input_x > ts->abs_x_max) || (input_y > ts->abs_y_max))
+			input_x = (uint32_t)(point_data[position + 1] << 8) + (uint32_t) (point_data[position + 2]);
+			input_y = (uint32_t)(point_data[position + 3] << 8) + (uint32_t) (point_data[position + 4]);
+			if ((input_x > ts->prop.max_x) || (input_y > ts->prop.max_y))
 				continue;
 			input_w = (uint32_t)(point_data[position + 5]);
 			if (input_w == 0)
@@ -970,8 +967,8 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 			input_mt_slot(ts->input_dev, input_id - 1);
 			input_mt_report_slot_state(ts->input_dev, MT_TOOL_FINGER, true);
 
-			input_report_abs(ts->input_dev, ABS_MT_POSITION_X, input_x);
-			input_report_abs(ts->input_dev, ABS_MT_POSITION_Y, input_y);
+			touchscreen_report_pos(ts->input_dev, &ts->prop,
+					       input_x, input_y, true);
 			input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR, input_w);
 			input_report_abs(ts->input_dev, ABS_MT_PRESSURE, input_p);
 
@@ -1277,6 +1274,7 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 
 	//---eng reset before TP_RESX high
 	nvt_eng_reset();
+	gpiod_set_value_cansleep(ts->reset_gpio, 0);
 
 	// need 10ms delay after POR(power on reset)
 	msleep(10);
@@ -1312,6 +1310,7 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		ret = -ENOMEM;
 		goto err_input_dev_alloc_failed;
 	}
+	ts->input_dev->dev.parent = &client->dev;
 
 	ts->max_touch_num = TOUCH_MAX_FINGER_NUM;
 
@@ -1329,9 +1328,15 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 
 #if TOUCH_MAX_FINGER_NUM > 1
 	input_set_abs_params(ts->input_dev, ABS_MT_TOUCH_MAJOR, 0, 255, 0, 0);    //area = 255
-	input_set_abs_params(ts->input_dev, ABS_MT_POSITION_X, 0, ts->abs_x_max - 1, 0, 0);
-	input_set_abs_params(ts->input_dev, ABS_MT_POSITION_Y, 0, ts->abs_y_max - 1, 0, 0);
 #endif //TOUCH_MAX_FINGER_NUM > 1
+	input_set_capability(ts->input_dev, EV_ABS, ABS_MT_POSITION_X);
+	input_set_capability(ts->input_dev, EV_ABS, ABS_MT_POSITION_Y);
+	touchscreen_parse_properties(ts->input_dev, true, &ts->prop);
+	if (!ts->prop.max_x || !ts->prop.max_y) {
+		NVT_ERR("touchscreen-size-x and touchscreen-size-y are required\n");
+		ret = -EINVAL;
+		goto err_input_register_device_failed;
+	}
 
 	sprintf(ts->phys, "input/ts");
 	ts->input_dev->name = NVT_TS_NAME;
@@ -1466,7 +1471,6 @@ err_panelwait_failed:
 err_chipvertrim_failed:
 	mutex_destroy(&ts->xbuf_lock);
 	mutex_destroy(&ts->lock);
-	nvt_gpio_deconfig(ts);
 err_spi_setup:
 err_ckeck_full_duplex:
 	if (ts->rbuf) {
@@ -1516,8 +1520,6 @@ static void nvt_ts_remove(struct spi_device *client)
 
 	mutex_destroy(&ts->xbuf_lock);
 	mutex_destroy(&ts->lock);
-
-	nvt_gpio_deconfig(ts);
 
 	if (ts->pen_support) {
 		if (ts->pen_input_dev) {

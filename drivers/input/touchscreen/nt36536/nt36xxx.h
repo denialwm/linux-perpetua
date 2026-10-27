@@ -20,6 +20,7 @@
 
 #include <linux/delay.h>
 #include <linux/input.h>
+#include <linux/input/touchscreen.h>
 #include <linux/of.h>
 #include <linux/spi/spi.h>
 #include <linux/uaccess.h>
@@ -112,6 +113,7 @@ struct ftouch {
 struct nvt_ts_data {
 	struct spi_device *client;
 	struct input_dev *input_dev;
+	struct touchscreen_properties prop;
 	struct delayed_work nvt_fwu_work;
 	struct mutex pen_switch_lock;
 	int ic_state;
@@ -132,8 +134,7 @@ struct nvt_ts_data {
 	uint32_t int_trigger_type;
 	int32_t irq_gpio;
 	uint32_t irq_flags;
-	int32_t reset_gpio;
-	uint32_t reset_flags;
+	struct gpio_desc *reset_gpio;
 	struct mutex lock;
 	const struct nvt_ts_mem_map *mmap;
 	uint8_t hw_crc;
