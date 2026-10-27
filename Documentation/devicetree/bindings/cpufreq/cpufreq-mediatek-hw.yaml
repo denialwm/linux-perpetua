@@ -16,11 +16,13 @@ description:
 
 properties:
   compatible:
-    const: mediatek,cpufreq-hw
+    enum:
+      - mediatek,cpufreq-hw
+      - mediatek,mt6897-cpufreq-hw
 
   reg:
     minItems: 1
-    maxItems: 2
+    maxItems: 3
     description:
       Addresses and sizes for the memory of the HW bases in
       each frequency domain. Each entry corresponds to
