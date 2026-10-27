@@ -43,6 +43,7 @@
 		/* The bootloader ramdisk carries the rescue and boot userspace. */
 		fdt-handoff {
 			stock-compatible = "qcom,canoe";
+			stock-model = "Qualcomm Technologies, Inc. Canoe MTP,iceland-O IN";
 			stock-bootargs = "oplusboot.prjname=25978";
 			keep-initrd;
 		};
