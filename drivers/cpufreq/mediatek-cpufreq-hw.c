@@ -69,6 +69,18 @@ static const struct mtk_cpufreq_variant cpufreq_mtk_base_variant = {
 	},
 };
 
+/* The base layout, with the latency where the MT8196 has it. */
+static const struct mtk_cpufreq_variant cpufreq_mtk_mt6897_variant = {
+	.reg_offsets = {
+		[REG_FREQ_LUT_TABLE]	= 0x0,
+		[REG_FREQ_ENABLE]	= 0x84,
+		[REG_FREQ_PERF_STATE]	= 0x88,
+		[REG_FREQ_HW_STATE]	= 0x8c,
+		[REG_EM_POWER_TBL]	= 0x90,
+		[REG_FREQ_LATENCY]	= 0x114,
+	},
+};
+
 static int mtk_cpufreq_hw_mt8196_init(struct mtk_cpufreq_priv *priv)
 {
 	priv->fdvfs = devm_of_iomap(priv->dev, priv->dev->of_node, 0, NULL);
@@ -422,6 +434,7 @@ static void mtk_cpufreq_hw_driver_remove(struct platform_device *pdev)
 
 static const struct of_device_id mtk_cpufreq_hw_match[] = {
 	{ .compatible = "mediatek,cpufreq-hw", .data = &cpufreq_mtk_base_variant },
+	{ .compatible = "mediatek,mt6897-cpufreq-hw", .data = &cpufreq_mtk_mt6897_variant },
 	{ .compatible = "mediatek,mt8196-cpufreq-hw", .data = &cpufreq_mtk_mt8196_variant },
 	{}
 };
