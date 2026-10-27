@@ -61,7 +61,6 @@ struct dpu_hw_dsc {
 	/* dsc */
 	enum dpu_dsc idx;
 	const struct dpu_dsc_cfg *caps;
-	const struct dpu_mdss_version *mdss_ver;
 
 	/* ops */
 	struct dpu_hw_dsc_ops ops;
@@ -74,8 +73,7 @@ struct dpu_hw_dsc *dpu_hw_dsc_init(struct drm_device *dev,
 
 struct dpu_hw_dsc *dpu_hw_dsc_init_1_2(struct drm_device *dev,
 				       const struct dpu_dsc_cfg *cfg,
-				       void __iomem *addr,
-				       const struct dpu_mdss_version *mdss_ver);
+				       void __iomem *addr);
 
 static inline struct dpu_hw_dsc *to_dpu_hw_dsc(struct dpu_hw_blk *hw)
 {
