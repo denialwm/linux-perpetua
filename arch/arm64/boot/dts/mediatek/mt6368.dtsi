@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * MediaTek MT6368 PMIC, on its SPMI bus at slave ID 5.
+ */
+
+#include <dt-bindings/spmi/spmi.h>
+
+&spmi {
+	mt6368: pmic@5 {
+		compatible = "mediatek,mt6368";
+		reg = <0x5 SPMI_USID>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		mt6368_regulators: regulators {
+			compatible = "mediatek,mt6368-regulator";
+		};
+	};
+};
