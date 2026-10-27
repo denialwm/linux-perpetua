@@ -25,6 +25,7 @@
 /delete-node/ &dsm_partition_2_mem;
 /delete-node/ &mpss_mem;
 /delete-node/ &q6_mpss_dtb_mem;
+/delete-node/ &remoteproc_mpss;
 /delete-node/ &rmtfs_mem;
 
 / {
