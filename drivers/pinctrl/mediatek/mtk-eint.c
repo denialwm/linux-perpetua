@@ -270,12 +270,14 @@ static int mtk_eint_irq_request_resources(struct irq_data *d)
 	unsigned int gpio_n;
 	int err;
 
+	/*
+	 * Some EINTs have no pin: other blocks of the SoC raise them, and
+	 * there is no GPIO to lock or to switch to its EINT function.
+	 */
 	err = eint->gpio_xlate->get_gpio_n(eint->pctl, d->hwirq,
 					   &gpio_n, &gpio_c);
-	if (err < 0) {
-		dev_err(eint->dev, "Can not find pin\n");
-		return err;
-	}
+	if (err < 0)
+		return 0;
 
 	err = gpiochip_lock_as_irq(gpio_c, gpio_n);
 	if (err < 0) {
@@ -299,8 +301,9 @@ static void mtk_eint_irq_release_resources(struct irq_data *d)
 	struct gpio_chip *gpio_c;
 	unsigned int gpio_n;
 
-	eint->gpio_xlate->get_gpio_n(eint->pctl, d->hwirq, &gpio_n,
-				     &gpio_c);
+	if (eint->gpio_xlate->get_gpio_n(eint->pctl, d->hwirq, &gpio_n,
+					 &gpio_c) < 0)
+		return;
 
 	gpiochip_unlock_as_irq(gpio_c, gpio_n);
 }
