@@ -16,6 +16,10 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 
+	aliases {
+		spmi0 = &spmi;
+	};
+
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -410,6 +414,29 @@
 			reg = <0 0x1c00a000 0 0x100>;
 			/* An external reset cuts the power to RAM and loses pstore. */
 			mediatek,disable-extrst;
+		};
+
+		spmi-arbiter@1cc00000 {
+			compatible = "mediatek,mt6897-spmi", "mediatek,mt8196-spmi";
+			ranges = <0 0 0x1cc00000 0x7000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			/* The bus of the main PMICs. */
+			spmi: spmi@4000 {
+				reg = <0x4000 0x900>, <0x1000 0x100>;
+				reg-names = "pmif", "spmimst";
+				interrupts-extended = <&pio 248 IRQ_TYPE_LEVEL_HIGH>;
+				interrupt-names = "rcs";
+				interrupt-controller;
+				#interrupt-cells = <3>;
+				/* The bootloader keeps them running. */
+				clocks = <&clk26m>, <&clk26m>, <&clk26m>;
+				clock-names = "pmif_sys_ck", "pmif_tmr_ck",
+					      "spmimst_clk_mux";
+				#address-cells = <2>;
+				#size-cells = <0>;
+			};
 		};
 	};
 };
