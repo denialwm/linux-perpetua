@@ -394,6 +394,11 @@ static const struct mtk_spmi_pmic_variant mt6373_variant = {
 	.chip_id_reg = MTK_SPMI_PMIC_REG_CHIP_ID,
 };
 
+/* The MT6368's interrupts are not used yet: it only supplies regulators. */
+static const struct mtk_spmi_pmic_variant mt6368_variant = {
+	.chip_id_reg = MTK_SPMI_PMIC_REG_CHIP_ID,
+};
+
 static const struct regmap_config mtk_spmi_regmap_config = {
 	.reg_bits	= 16,
 	.val_bits	= MTK_SPMI_PMIC_VAL_BITS,
@@ -424,6 +429,7 @@ static int mtk_spmi_pmic_probe(struct spmi_device *sdev)
 
 static const struct of_device_id mtk_pmic_spmi_id_table[] = {
 	{ .compatible = "mediatek,mt6363", .data = &mt6363_variant },
+	{ .compatible = "mediatek,mt6368", .data = &mt6368_variant },
 	{ .compatible = "mediatek,mt6373", .data = &mt6373_variant },
 	{ /* sentinel */ }
 };
