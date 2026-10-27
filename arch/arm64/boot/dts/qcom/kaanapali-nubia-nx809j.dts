@@ -76,7 +76,19 @@
 		#size-cells = <2>;
 		ranges;
 
+		bootargs = "rdinit=/init console=tty0 panic=0 loglevel=7 log_buf_len=2M bootconfig";
 		stdout-path = "serial0:115200n8";
+
+		/*
+		 * The ABL boots vendor_boot's Canoe tree with the MTP overlay for
+		 * board-id 8, whose root model names this board. The bootloader
+		 * ramdisk carries the rescue and boot userspace.
+		 */
+		fdt-handoff {
+			stock-compatible = "qcom,canoe";
+			stock-model = "Qualcomm Technologies, Inc. Canoe MTP + ST54L + Kundu";
+			keep-initrd;
+		};
 
 		/* Bootloader splash, left running by ABL (BF375 RM692H5, DSC cmd mode) */
 		framebuffer: framebuffer@fc800000 {
