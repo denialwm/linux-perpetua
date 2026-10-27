@@ -159,6 +159,22 @@
 		clock-output-names = "peri_faxi_ck";
 	};
 
+	univpll_d6_d2: clock-univpll-d6-d2 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <208000000>;
+		clock-output-names = "univpll_d6_d2";
+	};
+
+	spi2_ck: clock-spi2 {
+		compatible = "fixed-factor-clock";
+		#clock-cells = <0>;
+		clocks = <&univpll_d6_d2>;
+		clock-div = <1>;
+		clock-mult = <1>;
+		clock-output-names = "spi2_ck";
+	};
+
 	psci {
 		compatible = "arm,psci-1.0";
 		method = "smc";
@@ -233,6 +249,18 @@
 			interrupt-controller;
 			interrupts = <GIC_SPI 309 IRQ_TYPE_LEVEL_HIGH 0>;
 			#interrupt-cells = <2>;
+		};
+
+		spi2: spi@11012000 {
+			compatible = "mediatek,mt6897-spi", "mediatek,mt6991-spi";
+			reg = <0 0x11012000 0 0x100>;
+			interrupts = <GIC_SPI 244 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&univpll_d6_d2>, <&spi2_ck>, <&spi2_ck>;
+			clock-names = "parent-clk", "sel-clk", "spi-clk";
+			mediatek,pad-select = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
 		};
 
 		ssusb: usb@11201000 {
