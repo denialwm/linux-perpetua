@@ -1,0 +1,5 @@
+# Nubia RedMagic 11 Pro (NX809J)
+name='Nubia RedMagic 11 Pro'
+vendor=qcom
+soc=kaanapali
+boot=android-gki
