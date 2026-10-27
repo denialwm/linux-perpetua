@@ -984,6 +984,14 @@ config REGULATOR_MT6363
 	  This driver supports the control of different power rails of device
 	  through regulator interface.
 
+config REGULATOR_MT6368
+	tristate "MT6368 SPMI PMIC regulator driver"
+	depends on MFD_MTK_SPMI_PMIC
+	help
+	  Say Y here to enable support for the LDO regulators of the
+	  MediaTek MT6368 SPMI PMIC, which feeds the connectivity, audio
+	  and card rails of MT6897 boards.
+
 config REGULATOR_MT6370
 	tristate "MT6370 SubPMIC Regulator"
 	depends on MFD_MT6370
