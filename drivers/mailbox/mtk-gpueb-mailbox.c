@@ -116,8 +116,13 @@ static irqreturn_t mtk_gpueb_mbox_thread(int irq, void *data)
 
 		mtk_gpueb_mbox_read_rx(buf, ch);
 		writel(BIT(ch->num), ch->ebm->mbox_ctl + GPUEB_MBOX_CTL_IRQ_CLR);
-		mbox_chan_received_data(&ch->ebm->mbox.chans[ch->num], buf);
+		/*
+		 * Free the channel before the client sees the reply: a client
+		 * woken by it may send its next message at once, and a send
+		 * refused here stays queued in the mailbox core for good.
+		 */
 		atomic_set(&ch->rx_status, 0);
+		mbox_chan_received_data(&ch->ebm->mbox.chans[ch->num], buf);
 		return IRQ_HANDLED;
 	}
 
