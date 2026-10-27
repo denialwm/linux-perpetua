@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/*
+ * MediaTek MT6363 PMIC, on its SPMI bus at slave ID 4.
+ */
+
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/spmi/spmi.h>
+
+&spmi {
+	mt6363: pmic@4 {
+		compatible = "mediatek,mt6363";
+		reg = <0x4 SPMI_USID>;
+		interrupts = <4 64 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-controller;
+		#interrupt-cells = <3>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		mt6363_keys: keys {
+			compatible = "mediatek,mt6363-keys";
+
+			power {
+				interrupts = <4 48 IRQ_TYPE_LEVEL_HIGH>,
+					     <4 51 IRQ_TYPE_LEVEL_HIGH>;
+				interrupt-names = "powerkey", "powerkey_r";
+				linux,keycodes = <KEY_POWER>;
+				wakeup-source;
+			};
+
+			mt6363_home_key: home {
+				interrupts = <4 49 IRQ_TYPE_LEVEL_HIGH>,
+					     <4 52 IRQ_TYPE_LEVEL_HIGH>;
+				interrupt-names = "homekey", "homekey_r";
+				linux,keycodes = <KEY_HOME>;
+			};
+		};
+
+		mt6363_regulators: regulators@30 {
+			compatible = "mediatek,mt6363-regulator";
+			reg = <0x30>;
+		};
+	};
+};
