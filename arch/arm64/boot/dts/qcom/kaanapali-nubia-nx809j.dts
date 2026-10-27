@@ -1286,6 +1286,9 @@
 
 		vdd-supply = <&vreg_l4b_1p8>;
 		avdd-supply = <&vreg_l14b_3p2>;
+
+		pinctrl-0 = <&ts_default>;
+		pinctrl-names = "default";
 	};
 };
 
@@ -1435,6 +1438,13 @@
 		pins = "gpio18";
 		function = "gpio";
 		bias-pull-down;
+	};
+
+	ts_default: ts-default-state {
+		pins = "gpio66", "gpio158";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-up;
 	};
 
 	usb_dp_qmpphy_portselect: usb-dp-qmpphy-portselect-state {
