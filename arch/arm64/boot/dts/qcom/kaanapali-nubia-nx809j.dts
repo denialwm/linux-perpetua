@@ -37,6 +37,16 @@
 		serial1 = &uart18;
 	};
 
+	fingerprint {
+		compatible = "goodix,gum5228";
+		reset-gpios = <&tlmm 215 GPIO_ACTIVE_LOW>;
+		interrupt-gpios = <&tlmm 99 GPIO_ACTIVE_HIGH>;
+		vdd-supply = <&vreg_l7m_2p8>;
+
+		pinctrl-0 = <&fingerprint_reset_default>;
+		pinctrl-names = "default";
+	};
+
 	wcd939x: audio-codec {
 		compatible = "qcom,wcd9395-codec", "qcom,wcd9390-codec";
 
@@ -1352,6 +1362,13 @@
 			       <74 1>, /* eSE */
 			       <119 2>, /* SoCCP */
 			       <144 4>; /* CXM UART */
+
+	fingerprint_reset_default: fingerprint-reset-default-state {
+		pins = "gpio215";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-disable;
+	};
 
 	disp_reset_active: disp-reset-active-state {
 		pins = "gpio98";

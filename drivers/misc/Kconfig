@@ -593,4 +593,12 @@ config OPLUS_UFF_FP
 	  Power, reset and interrupt control for Aston's secure optical sensor.
 	  Biometric commands use QTEE; this is not a complete fingerprint HAL.
 
+config GOODIX_TEE_FP
+	tristate "Goodix ultrasonic fingerprint platform control"
+	depends on OF && GPIOLIB && REGULATOR
+	help
+	  Power, reset and interrupt control for Goodix ultrasonic sensors
+	  whose SPI bus belongs to QTEE. Biometric commands use the signed
+	  trusted application; this is not a complete fingerprint HAL.
+
 endmenu
