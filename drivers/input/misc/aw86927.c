@@ -14,6 +14,7 @@
 #include <linux/i2c.h>
 #include <linux/input.h>
 #include <linux/module.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/types.h>
@@ -48,6 +49,10 @@
 #define AW86938_PLAYCFG1_BST_MODE_BYPASS	0
 #define AW86938_PLAYCFG1_BST_VOUT_VREFSET_MASK	GENMASK(4, 0)
 #define AW86938_PLAYCFG1_BST_7000MV		0x11
+#define AW86938_BST_MIN_UV			6000000
+#define AW86938_BST_MAX_UV			11000000
+#define AW86938_BST_STEP_UV			250000
+#define AW86938_BST_MIN_CODE			5
 
 #define AW86927_PLAYCFG2_REG			0x07
 
@@ -194,6 +199,7 @@ struct aw86927_data {
 	struct regmap *regmap;
 	struct gpio_desc *reset_gpio;
 	u16 level;
+	u8 boost;
 };
 
 static const struct regmap_config aw86927_regmap_config = {
@@ -593,7 +599,7 @@ static int aw86927_haptic_init(struct aw86927_data *haptics)
 					 AW86938_PLAYCFG1_REG,
 					 AW86938_PLAYCFG1_BST_VOUT_VREFSET_MASK,
 					 FIELD_PREP(AW86938_PLAYCFG1_BST_VOUT_VREFSET_MASK,
-						    AW86938_PLAYCFG1_BST_7000MV));
+						    haptics->boost));
 		if (err)
 			return err;
 		break;
@@ -761,6 +767,34 @@ static int aw86927_detect(struct aw86927_data *haptics)
 	return 0;
 }
 
+/*
+ * The boost voltage drives the LRA. A board names its own in
+ * "awinic,boost-microvolt"; the AW86938 step size is Awinic's.
+ */
+static int aw86927_read_boost(struct aw86927_data *haptics)
+{
+	u32 uv;
+
+	haptics->boost = AW86938_PLAYCFG1_BST_7000MV;
+
+	if (device_property_read_u32(haptics->dev, "awinic,boost-microvolt", &uv))
+		return 0;
+
+	if (haptics->model != AW86938)
+		return dev_err_probe(haptics->dev, -EINVAL,
+				     "awinic,boost-microvolt is only known for the AW86938\n");
+
+	if (uv < AW86938_BST_MIN_UV || uv > AW86938_BST_MAX_UV ||
+	    (uv - AW86938_BST_MIN_UV) % AW86938_BST_STEP_UV)
+		return dev_err_probe(haptics->dev, -EINVAL,
+				     "Unsupported boost voltage %u uV\n", uv);
+
+	haptics->boost = (uv - AW86938_BST_MIN_UV) / AW86938_BST_STEP_UV +
+			 AW86938_BST_MIN_CODE;
+
+	return 0;
+}
+
 static int aw86927_probe(struct i2c_client *client)
 {
 	struct aw86927_data *haptics;
@@ -803,6 +837,10 @@ static int aw86927_probe(struct i2c_client *client)
 	err = aw86927_detect(haptics);
 	if (err)
 		return dev_err_probe(haptics->dev, err, "Failed to find chip\n");
+
+	err = aw86927_read_boost(haptics);
+	if (err)
+		return err;
 
 	/* IRQ config */
 	err = regmap_write(haptics->regmap, AW86927_SYSCTRL4_REG,

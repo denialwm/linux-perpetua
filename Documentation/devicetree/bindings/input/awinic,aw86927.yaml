@@ -27,6 +27,14 @@ properties:
   interrupts:
     maxItems: 1
 
+  awinic,boost-microvolt:
+    description:
+      Boost output voltage that drives the LRA, as set by the board's stock
+      configuration.
+    minimum: 6000000
+    maximum: 11000000
+    multipleOf: 250000
+
 required:
   - compatible
   - reg
