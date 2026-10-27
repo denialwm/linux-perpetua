@@ -35,6 +35,7 @@ struct ipa_smp2p;
  * @table_virt:		Virtual address of filter/route table content
  * @route_count:	Total number of entries in a routing table
  * @modem_route_count:	Number of modem entries in a routing table
+ * @modem_fnr_start:	Index of the modem's first filter/route statistics counter
  * @modem_fnr_count:	Number of modem filter/route statistics counters
  * @modem_halt_channels: Modem GSI channels to halt after the modem stops
  * @filter_count:	Maximum number of entries in a filter table
@@ -89,6 +90,7 @@ struct ipa {
 	__le64 *table_virt;
 	u32 route_count;
 	u32 modem_route_count;
+	u32 modem_fnr_start;
 	u32 modem_fnr_count;
 	u32 modem_halt_channels;
 	u32 filter_count;

@@ -226,6 +226,7 @@ struct ipa_power_data {
  * @qsb_count:		number of entries in the qsb_data array
  * @qsb_data:		Qualcomm System Bus configuration data
  * @modem_route_count:	number of modem entries in a routing table
+ * @modem_fnr_start:	index of the modem's first filter/route statistics counter
  * @modem_fnr_count:	number of modem filter/route statistics counters
  * @modem_halt_channels: modem GSI channels to halt after the modem stops
  * @endpoint_count:	number of entries in the endpoint_data array
@@ -240,6 +241,7 @@ struct ipa_data {
 	u32 qsb_count;		/* number of entries in qsb_data[] */
 	const struct ipa_qsb_data *qsb_data;
 	u32 modem_route_count;
+	u32 modem_fnr_start;
 	u32 modem_fnr_count;
 	u32 modem_halt_channels;
 	u32 endpoint_count;	/* number of entries in endpoint_data[] */
