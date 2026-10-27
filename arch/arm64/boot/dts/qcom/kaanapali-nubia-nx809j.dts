@@ -1080,6 +1080,27 @@
 	};
 };
 
+&i2c_hub_4 {
+	clock-frequency = <400000>;
+
+	status = "okay";
+
+	/* Downstream "aw8693x" (awinic,haptic_hv); same family as roadstr's 0x9380. */
+	haptics@5a {
+		compatible = "awinic,aw86938", "awinic,aw86927";
+		reg = <0x5a>;
+
+		interrupts-extended = <&tlmm 88 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&tlmm 94 GPIO_ACTIVE_LOW>;
+
+		/* Stock aw8693x_bst_vol_default 0x0f */
+		awinic,boost-microvolt = <8500000>;
+
+		pinctrl-0 = <&vib_int_default>, <&vib_rst_default>;
+		pinctrl-names = "default";
+	};
+};
+
 &i2c_master_hub {
 	status = "okay";
 };
@@ -1452,6 +1473,20 @@
 		function = "usb_phy";
 		drive-strength = <2>;
 		bias-pull-down;
+	};
+
+	vib_int_default: vib-int-default-state {
+		pins = "gpio88";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	vib_rst_default: vib-rst-default-state {
+		pins = "gpio94";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
 	};
 
 	wcd_default: wcd-reset-n-active-state {
