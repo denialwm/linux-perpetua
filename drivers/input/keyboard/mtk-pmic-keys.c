@@ -18,12 +18,16 @@
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/of.h>
+#include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 
 #define MTK_PMIC_RST_DU_MASK	GENMASK(9, 8)
 #define MTK_PMIC_PWRKEY_RST	BIT(6)
 #define MTK_PMIC_HOMEKEY_RST	BIT(5)
+
+#define MTK_PMIC_MT6363_TOPSTATUS	0x1e
+#define MTK_PMIC_MT6363_PSC_TOP_INT_CON0	0x90f
 
 #define MTK_PMIC_MT6331_RST_DU_MASK	GENMASK(13, 12)
 #define MTK_PMIC_MT6331_PWRKEY_RST	BIT(9)
@@ -134,6 +138,20 @@ static const struct mtk_pmic_regs mt6359_regs = {
 	.key_release_irq = true,
 };
 
+/*
+ * The bootloader sets up the long-press reset, which on this PMIC is
+ * spread over two registers; it is left as it is.
+ */
+static const struct mtk_pmic_regs mt6363_regs = {
+	.keys_regs[MTK_PMIC_PWRKEY_INDEX] =
+		MTK_PMIC_KEYS_REGS(MTK_PMIC_MT6363_TOPSTATUS,
+				   0x2, MTK_PMIC_MT6363_PSC_TOP_INT_CON0, 0x9, 0),
+	.keys_regs[MTK_PMIC_HOMEKEY_INDEX] =
+		MTK_PMIC_KEYS_REGS(MTK_PMIC_MT6363_TOPSTATUS,
+				   0x8, MTK_PMIC_MT6363_PSC_TOP_INT_CON0, 0x12, 0),
+	.key_release_irq = true,
+};
+
 struct mtk_pmic_keys_info {
 	struct mtk_pmic_keys *keys;
 	const struct mtk_pmic_keys_regs *regs;
@@ -199,7 +217,8 @@ static void mtk_pmic_keys_lp_reset_setup(struct mtk_pmic_keys *keys,
 		break;
 	}
 
-	regmap_update_bits(keys->regmap, regs->pmic_rst_reg, mask, value);
+	if (regs->pmic_rst_reg)
+		regmap_update_bits(keys->regmap, regs->pmic_rst_reg, mask, value);
 }
 
 static irqreturn_t mtk_pmic_keys_irq_handler_thread(int irq, void *data)
@@ -317,10 +336,41 @@ static const struct of_device_id of_mtk_pmic_keys_match_tbl[] = {
 		.compatible = "mediatek,mt6359-keys",
 		.data = &mt6359_regs,
 	}, {
+		.compatible = "mediatek,mt6363-keys",
+		.data = &mt6363_regs,
+	}, {
 		/* sentinel */
 	}
 };
 MODULE_DEVICE_TABLE(of, of_mtk_pmic_keys_match_tbl);
+
+/*
+ * A key's interrupts are its node's when it has them, and otherwise the
+ * resources the PMIC gave the keys device.
+ */
+static int mtk_pmic_keys_get_irqs(struct platform_device *pdev,
+				  struct device_node *child,
+				  struct mtk_pmic_keys_info *info,
+				  const char *name, const char *name_r,
+				  bool release_irq)
+{
+	bool own = of_property_present(child, "interrupts");
+
+	info->irq = own ? of_irq_get_byname(child, name) :
+			  platform_get_irq_byname(pdev, name);
+	if (info->irq <= 0)
+		return info->irq ?: -ENXIO;
+
+	if (!release_irq)
+		return 0;
+
+	info->irq_r = own ? of_irq_get_byname(child, name_r) :
+			    platform_get_irq_byname(pdev, name_r);
+	if (info->irq_r <= 0)
+		return info->irq_r ?: -ENXIO;
+
+	return 0;
+}
 
 static int mtk_pmic_keys_probe(struct platform_device *pdev)
 {
@@ -341,7 +391,10 @@ static int mtk_pmic_keys_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	keys->dev = &pdev->dev;
-	keys->regmap = pmic_chip->regmap;
+	/* SPMI PMICs keep their regmap on the PMIC device itself. */
+	keys->regmap = dev_get_regmap(pdev->dev.parent, NULL);
+	if (!keys->regmap)
+		keys->regmap = pmic_chip->regmap;
 	mtk_pmic_regs = of_id->data;
 
 	keys->input_dev = input_dev = devm_input_allocate_device(keys->dev);
@@ -366,18 +419,11 @@ static int mtk_pmic_keys_probe(struct platform_device *pdev)
 	for_each_child_of_node_scoped(node, child) {
 		keys->keys[index].regs = &mtk_pmic_regs->keys_regs[index];
 
-		keys->keys[index].irq =
-			platform_get_irq_byname(pdev, irqnames[index]);
-		if (keys->keys[index].irq < 0)
-			return keys->keys[index].irq;
-
-		if (mtk_pmic_regs->key_release_irq) {
-			keys->keys[index].irq_r = platform_get_irq_byname(pdev,
-									  irqnames_r[index]);
-
-			if (keys->keys[index].irq_r < 0)
-				return keys->keys[index].irq_r;
-		}
+		error = mtk_pmic_keys_get_irqs(pdev, child, &keys->keys[index],
+					       irqnames[index], irqnames_r[index],
+					       mtk_pmic_regs->key_release_irq);
+		if (error)
+			return error;
 
 		error = of_property_read_u32(child,
 			"linux,keycodes", &keys->keys[index].keycode);
