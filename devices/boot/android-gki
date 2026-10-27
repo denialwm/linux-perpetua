@@ -5,7 +5,9 @@
 The device's own stock image of the partition is the template: its version 4
 header, partition size, AVB salt and properties are kept, and only the
 payload changes, the kernel for boot or the ramdisk for init_boot. The
-image keeps an unsigned AVB hash footer, as the stock GKI images have.
+image gets an unsigned AVB hash footer, as the stock GKI images have. A
+template that the vendor signed (Nubia signs boot with its own key) loses
+that signature, which an unlocked bootloader accepts.
 Needs avbtool and unpack_bootimg.
 
 Usage: devices/boot/android-gki boot|init_boot TEMPLATE PAYLOAD OUTPUT [EVIDENCE]
@@ -54,7 +56,7 @@ def main():
     struct.pack_into('<I', header, field, len(content))
 
     info = run('avbtool', 'info_image', '--image', template).decode()
-    assert re.search(r'^Algorithm:\s+NONE$', info, re.M), 'template footer is signed'
+    algorithm = re.search(r'^Algorithm:\s+(\S+)$', info, re.M).group(1)
     salt = re.search(r'^\s*Salt:\s*([0-9a-f]+)\s*$', info, re.M).group(1)
     props = re.findall(r"^\s*Prop: (\S+) -> '(.*)'$", info, re.M)
 
@@ -79,7 +81,7 @@ def main():
         (evidence / f'{partition}-verification.txt').write_bytes(verification)
         (evidence / f'{partition}-header.txt').write_bytes(described)
     print(json.dumps({'bytes': len(image), 'sha256': sha256(image),
-                      'template_sha256': sha256(stock)}))
+                      'template_sha256': sha256(stock), 'template_algorithm': algorithm}))
 
 
 if __name__ == '__main__':
