@@ -21,7 +21,8 @@ description: |
   instead, after:
 
   - replacing its memory with the bootloader's usable memory, without the
-    no-map regions of the bootloader's reserved-memory;
+    no-map regions of the bootloader's reserved-memory, except those that
+    the built-in tree reserves itself without no-map;
   - adding the other fixed reservations of the bootloader's tree to the
     memory reservation map, instead of importing its reserved-memory nodes,
     which belong to vendor drivers;
