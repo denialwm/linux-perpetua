@@ -25,6 +25,7 @@ properties:
           - mediatek,mt8196-spmi
       - items:
           - enum:
+              - mediatek,mt6897-spmi
               - mediatek,mt6991-spmi
           - const: mediatek,mt8196-spmi
 
