@@ -92,15 +92,20 @@ static void mtk_spmi_pmic_irq_set_unmasking(struct irq_data *d, bool unmask)
 
 	for (i = 0; i < variant->num_groups; i++) {
 		const struct mtk_spmi_pmic_irq_grp *irq_grp = &variant->pmic_irq[i];
-		u32 con_reg;
-		u8 irq_en_bit;
+		unsigned int offset, con_reg;
 
 		if (hwirq < irq_grp->hwirq_base)
 			continue;
 
-		con_reg = irq_grp->con_reg + (variant->con_reg_len * i);
-		irq_en_bit = hwirq - irq_grp->hwirq_base;
-		regmap_assign_bits(regmap, con_reg, BIT(irq_en_bit), unmask);
+		offset = hwirq - irq_grp->hwirq_base;
+		if (offset >= irq_grp->num_int_regs * MTK_SPMI_PMIC_VAL_BITS)
+			continue;
+
+		/* Each register of the group has its own Control registers */
+		con_reg = irq_grp->con_reg +
+			  variant->con_reg_len * (offset / MTK_SPMI_PMIC_VAL_BITS);
+		regmap_assign_bits(regmap, con_reg,
+				   BIT(offset % MTK_SPMI_PMIC_VAL_BITS), unmask);
 
 		break;
 	}
@@ -186,15 +191,14 @@ static int mtk_spmi_pmic_irq_alloc(struct irq_domain *d, unsigned int virq,
 		return ret;
 
 	for (i = 0; i < nr_irqs; i++) {
-		irq_set_lockdep_class(virq, &mtk_spmi_pmic_irq_lock_class,
+		irq_set_lockdep_class(virq + i, &mtk_spmi_pmic_irq_lock_class,
 				      &mtk_spmi_pmic_irq_request_class);
-		irq_domain_set_info(d, virq, hwirq, &mtk_spmi_pmic_irq_chip,
+		irq_domain_set_info(d, virq + i, hwirq + i, &mtk_spmi_pmic_irq_chip,
 				    pmic, handle_level_irq, NULL, NULL);
 	}
 
 	return 0;
 }
-
 
 static const struct irq_domain_ops mtk_spmi_pmic_irq_domain_ops = {
 	.alloc = mtk_spmi_pmic_irq_alloc,
@@ -210,7 +214,7 @@ static int mtk_spmi_pmic_handle_group_irq(struct mtk_spmi_pmic *pmic, int group)
 	int i, ret;
 
 	for (i = 0; i < irq_grp->num_int_regs; i++) {
-		u32 status, saved_status;
+		u32 status;
 
 		ret = regmap_read(regmap, irq_grp->sta_reg + i, &status);
 		if (ret) {
@@ -221,7 +225,12 @@ static int mtk_spmi_pmic_handle_group_irq(struct mtk_spmi_pmic *pmic, int group)
 		if (status == 0)
 			continue;
 
-		saved_status = status;
+		/*
+		 * Clear what was read before handling it, so that an interrupt
+		 * raised meanwhile stays pending instead of being cleared.
+		 */
+		regmap_write(regmap, irq_grp->sta_reg + i, status);
+
 		do {
 			irq_hw_number_t hwirq;
 			u8 bit = __ffs(status);
@@ -239,9 +248,6 @@ static int mtk_spmi_pmic_handle_group_irq(struct mtk_spmi_pmic *pmic, int group)
 
 			generic_handle_domain_irq_safe(pmic->dom, hwirq);
 		} while (status);
-
-		/* Clear the interrupts by writing the previous status */
-		regmap_write(regmap, irq_grp->sta_reg + i, saved_status);
 	}
 
 	return 0;
@@ -262,8 +268,11 @@ static void mtk_spmi_pmic_handle_chained_irq(struct irq_desc *desc)
 	/* If irq_grp_reg is present there are multiple IRQ groups */
 	if (variant->irq_grp_reg > 0) {
 		ret = regmap_read(regmap, variant->irq_grp_reg, &val);
-		if (ret)
+		if (ret) {
 			handle_bad_irq(desc);
+			chained_irq_exit(chip, desc);
+			return;
+		}
 
 		/* This is very unlikely to happen */
 		if (val == 0) {
@@ -276,7 +285,7 @@ static void mtk_spmi_pmic_handle_chained_irq(struct irq_desc *desc)
 
 	for (i = 0; i < variant->num_groups; i++) {
 		const struct mtk_spmi_pmic_irq_grp *irq_grp = &variant->pmic_irq[i];
-		u8 group_bit = BIT(irq_grp[i].group_num);
+		u8 group_bit = BIT(irq_grp->group_num);
 
 		if (val & group_bit) {
 			ret = mtk_spmi_pmic_handle_group_irq(pmic, i);
@@ -298,7 +307,7 @@ static void mtk_spmi_pmic_handle_chained_irq(struct irq_desc *desc)
 
 static void mtk_spmi_pmic_irq_remove(void *data)
 {
-	struct mtk_spmi_pmic *pmic = (struct mtk_spmi_pmic *)data;
+	struct mtk_spmi_pmic *pmic = data;
 
 	irq_set_chained_handler_and_data(pmic->irq, NULL, NULL);
 	irq_domain_remove(pmic->dom);
@@ -316,8 +325,8 @@ static int mtk_spmi_pmic_irq_init(struct device *dev, struct regmap *regmap,
 		return -ENOMEM;
 
 	pmic->irq = of_irq_get(dev->of_node, 0);
-	if (pmic->irq < 0)
-		return dev_err_probe(dev, pmic->irq, "Cannot get IRQ\n");
+	if (pmic->irq <= 0)
+		return dev_err_probe(dev, pmic->irq ?: -ENXIO, "Cannot get IRQ\n");
 
 	pmic->dev = dev;
 	pmic->regmap = regmap;
@@ -328,12 +337,19 @@ static int mtk_spmi_pmic_irq_init(struct device *dev, struct regmap *regmap,
 		return dev_err_probe(dev, -ENOMEM, "Cannot create IRQ domain\n");
 
 	ret = devm_add_action_or_reset(dev, mtk_spmi_pmic_irq_remove, pmic);
-	if (ret) {
-		irq_domain_remove(pmic->dom);
+	if (ret)
 		return ret;
-	}
 
 	irq_set_chained_handler_and_data(pmic->irq, mtk_spmi_pmic_handle_chained_irq, pmic);
+
+	/*
+	 * The PMIC raises no new RCS until the last one is acknowledged, and
+	 * keeps waiting across a reset of the SoC: acknowledge whatever an
+	 * earlier kernel left, so that pending interrupts come in again.
+	 */
+	ret = regmap_write(regmap, MTK_SPMI_PMIC_RCS_IRQ_DONE, 1);
+	if (ret)
+		return dev_err_probe(dev, ret, "Cannot acknowledge RCS\n");
 
 	return 0;
 }
@@ -396,7 +412,7 @@ static int mtk_spmi_pmic_probe(struct spmi_device *sdev)
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
-	variant = (const struct mtk_spmi_pmic_variant *)device_get_match_data(dev);
+	variant = device_get_match_data(dev);
 	if (variant && variant->num_groups) {
 		ret = mtk_spmi_pmic_irq_init(dev, regmap, variant);
 		if (ret)
