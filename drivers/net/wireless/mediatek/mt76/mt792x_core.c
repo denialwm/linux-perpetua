@@ -251,6 +251,20 @@ void mt792x_stop(struct ieee80211_hw *hw, bool suspend)
 }
 EXPORT_SYMBOL_GPL(mt792x_stop);
 
+int mt792x_mcu_add_dev(struct mt792x_dev *dev,
+		       struct ieee80211_bss_conf *bss_conf,
+		       struct mt76_vif_link *mvif, struct mt76_wcid *wcid,
+		       bool enable)
+{
+	if (dev->fw_legacy_cmd)
+		return mt76_connac_mcu_bss_activate(&dev->mphy, bss_conf, mvif,
+						    wcid, enable);
+
+	return mt76_connac_mcu_uni_add_dev(&dev->mphy, bss_conf, mvif, wcid,
+					   enable);
+}
+EXPORT_SYMBOL_GPL(mt792x_mcu_add_dev);
+
 void mt792x_mac_link_bss_remove(struct mt792x_dev *dev,
 				struct mt792x_bss_conf *mconf,
 				struct mt792x_link_sta *mlink)
@@ -263,8 +277,7 @@ void mt792x_mac_link_bss_remove(struct mt792x_dev *dev,
 	link_conf = mt792x_vif_to_bss_conf(vif, mconf->link_id);
 
 	mt76_connac_free_pending_tx_skbs(&dev->pm, &mlink->wcid);
-	mt76_connac_mcu_uni_add_dev(&dev->mphy, link_conf, &mconf->mt76,
-				    &mlink->wcid, false);
+	mt792x_mcu_add_dev(dev, link_conf, &mconf->mt76, &mlink->wcid, false);
 
 	rcu_assign_pointer(dev->mt76.wcid[idx], NULL);
 
@@ -866,6 +879,10 @@ mt792x_get_offload_capability(struct device *dev, const char *fw_wm)
 	int ret, i, offset = 0;
 	const u8 *data, *end;
 	u8 offload_caps = 0;
+
+	/* Firmware that is already in memory has no file to read them from */
+	if (!fw_wm)
+		return 0;
 
 	ret = request_firmware(&fw, fw_wm, dev);
 	if (ret)

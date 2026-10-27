@@ -917,6 +917,10 @@ enum {
 #define CONNECTION_INFRA_BC		(STA_TYPE_BC | NETWORK_INFRA)
 #define CONNECTION_NAN			(NETWORK_NAN)
 
+/* Network types of the per-feature commands */
+#define MT_CONNAC_NETWORK_TYPE_STA	0
+#define MT_CONNAC_NETWORK_TYPE_P2P	1
+
 #define CONN_STATE_DISCONNECT		0
 #define CONN_STATE_CONNECT		1
 #define CONN_STATE_PORT_SECURE		2
@@ -1369,10 +1373,12 @@ enum {
 	MCU_CMD_NIC_POWER_CTRL = 0x4,
 	MCU_CMD_PATCH_START_REQ = 0x05,
 	MCU_CMD_PATCH_FINISH_REQ = 0x07,
+	MCU_CMD_PHY_ACTION = 0x08,
 	MCU_CMD_PATCH_SEM_CONTROL = 0x10,
 	MCU_CMD_CB_PATCH_SEM_CONTROL = 0x30,
 	MCU_CMD_CB_PATCH_START_REQ = 0x31,
 	MCU_CMD_CB_PATCH_FINISH_REQ = 0x32,
+	MCU_CMD_FW_IMAGE_START = 0x42,
 	MCU_CMD_WA_PARAM = 0xc4,
 	MCU_CMD_EXT_CID = 0xed,
 	MCU_CMD_FW_SCATTER = 0xee,
@@ -1384,14 +1390,20 @@ enum {
 	MCU_CE_CMD_TEST_CTRL = 0x01,
 	MCU_CE_CMD_START_HW_SCAN = 0x03,
 	MCU_CE_CMD_SET_PS_PROFILE = 0x05,
+	MCU_CE_CMD_ADD_REMOVE_KEY = 0x07,
 	MCU_CE_CMD_SET_RX_FILTER = 0x0a,
 	MCU_CE_CMD_SET_CHAN_DOMAIN = 0x0f,
+	MCU_CE_CMD_BSS_ACTIVATE_CTRL = 0x11,
+	MCU_CE_CMD_SET_BSS_INFO = 0x12,
+	MCU_CE_CMD_UPDATE_STA_RECORD = 0x13,
+	MCU_CE_CMD_REMOVE_STA_RECORD = 0x14,
 	MCU_CE_CMD_SET_BSS_CONNECTED = 0x16,
 	MCU_CE_CMD_SET_BSS_ABORT = 0x17,
 	MCU_CE_CMD_CANCEL_HW_SCAN = 0x1b,
 	MCU_CE_CMD_SET_ROC = 0x1c,
 	MCU_CE_CMD_SET_EDCA_PARMS = 0x1d,
 	MCU_CE_CMD_SET_P2P_OPPPS = 0x33,
+	MCU_CE_CMD_SET_NVRAM_SETTINGS = 0x48,
 	MCU_CE_CMD_SET_CLC = 0x5c,
 	MCU_CE_CMD_SET_RATE_TX_POWER = 0x5d,
 	MCU_CE_CMD_SCHED_SCAN_ENABLE = 0x61,
@@ -2039,6 +2051,12 @@ int mt76_connac_mcu_uni_add_dev(struct mt76_phy *phy,
 				struct mt76_vif_link *mvif,
 				struct mt76_wcid *wcid,
 				bool enable);
+int mt76_connac_mcu_set_channel_domain_subbands(struct mt76_phy *phy);
+int mt76_connac_mcu_bss_activate(struct mt76_phy *phy,
+				 struct ieee80211_bss_conf *bss_conf,
+				 struct mt76_vif_link *mvif,
+				 struct mt76_wcid *wcid,
+				 bool enable);
 int mt76_connac_mcu_sta_ba(struct mt76_dev *dev, struct mt76_vif_link *mvif,
 			   struct ieee80211_ampdu_params *params,
 			   int cmd, bool enable, bool tx);

@@ -3,6 +3,7 @@
 
 #include <linux/fs.h>
 #include <linux/firmware.h>
+#include <linux/unaligned.h>
 #include "mt7921.h"
 #include "regd.h"
 #include "mcu.h"
@@ -28,11 +29,15 @@ int mt7921_mcu_parse_response(struct mt76_dev *mdev, int cmd,
 	}
 
 	rxd = (struct mt76_connac2_mcu_rxd *)skb->data;
-	if (seq != rxd->seq)
+	if (seq != rxd->seq) {
+		dev_info(mdev->dev, "EXPERIMENT cmd %08x seq %d got eid %02x ext %02x seq %u\n",
+			 cmd, seq, rxd->eid, rxd->ext_eid, rxd->seq);
 		return -EAGAIN;
+	}
 
 	if (cmd == MCU_CMD(PATCH_SEM_CONTROL) ||
-	    cmd == MCU_CMD(PATCH_FINISH_REQ)) {
+	    cmd == MCU_CMD(PATCH_FINISH_REQ) ||
+	    cmd == MCU_CMD(FW_IMAGE_START)) {
 		skb_pull(skb, sizeof(*rxd) - 4);
 		ret = *skb->data;
 	} else if (cmd == MCU_EXT_CMD(THERMAL_CTRL)) {
@@ -137,11 +142,22 @@ void mt7921_mcu_set_suspend_iter(void *priv, u8 *mac, struct ieee80211_vif *vif)
 #endif /* CONFIG_PM */
 
 static void
+mt7921_mcu_roc_granted(struct mt792x_dev *dev, u8 reqtype, int duration)
+{
+	if (reqtype == MT7921_ROC_REQ_ROC)
+		ieee80211_ready_on_channel(dev->mt76.phy.hw);
+
+	dev->phy.roc_grant = true;
+	wake_up(&dev->phy.roc_wait);
+	mod_timer(&dev->phy.roc_timer,
+		  jiffies + msecs_to_jiffies(duration));
+}
+
+static void
 mt7921_mcu_uni_roc_event(struct mt792x_dev *dev, struct sk_buff *skb)
 {
 	struct mt7921_roc_grant_tlv *grant;
 	struct mt76_connac2_mcu_rxd *rxd;
-	int duration;
 
 	rxd = (struct mt76_connac2_mcu_rxd *)skb->data;
 	grant = (struct mt7921_roc_grant_tlv *)(rxd->tlv + 4);
@@ -149,14 +165,20 @@ mt7921_mcu_uni_roc_event(struct mt792x_dev *dev, struct sk_buff *skb)
 	/* should never happen */
 	WARN_ON_ONCE((le16_to_cpu(grant->tag) != UNI_EVENT_ROC_GRANT));
 
-	if (grant->reqtype == MT7921_ROC_REQ_ROC)
-		ieee80211_ready_on_channel(dev->mt76.phy.hw);
+	mt7921_mcu_roc_granted(dev, grant->reqtype,
+			       le32_to_cpu(grant->max_interval));
+}
 
-	dev->phy.roc_grant = true;
-	wake_up(&dev->phy.roc_wait);
-	duration = le32_to_cpu(grant->max_interval);
-	mod_timer(&dev->phy.roc_timer,
-		  jiffies + msecs_to_jiffies(duration));
+static void
+mt7921_mcu_roc_event(struct mt792x_dev *dev, struct sk_buff *skb)
+{
+	struct mt7921_legacy_roc *grant;
+
+	skb_pull(skb, sizeof(struct mt76_connac2_mcu_rxd));
+	grant = (struct mt7921_legacy_roc *)skb->data;
+
+	mt7921_mcu_roc_granted(dev, grant->req_type,
+			       le32_to_cpu(grant->max_interval));
 }
 
 static void
@@ -243,6 +265,7 @@ mt7921_mcu_low_power_event(struct mt792x_dev *dev, struct sk_buff *skb)
 	event = (struct mt7921_mcu_lp_event *)skb->data;
 
 	trace_lp_event(dev, event->state);
+	WRITE_ONCE(dev->fw_sleepy, event->state);
 }
 
 static void
@@ -298,9 +321,15 @@ mt7921_mcu_rx_unsolicited_event(struct mt792x_dev *dev, struct sk_buff *skb)
 	struct mt76_connac2_mcu_rxd *rxd;
 
 	rxd = (struct mt76_connac2_mcu_rxd *)skb->data;
+	dev_info(dev->mt76.dev, "EXPERIMENT event %02x ext %02x seq %u len %u data %*ph\n",
+		 rxd->eid, rxd->ext_eid, rxd->seq, skb->len,
+		 min_t(int, skb->len - (int)sizeof(*rxd), 8), skb->data + sizeof(*rxd));
 	switch (rxd->eid) {
 	case MCU_EVENT_BSS_BEACON_LOSS:
 		mt7921_mcu_connection_loss_event(dev, skb);
+		break;
+	case MCU_EVENT_ROC:
+		mt7921_mcu_roc_event(dev, skb);
 		break;
 	case MCU_EVENT_SCHED_SCAN_DONE:
 	case MCU_EVENT_SCAN_DONE:
@@ -357,6 +386,11 @@ void mt7921_mcu_rx_event(struct mt792x_dev *dev, struct sk_buff *skb)
 	}
 
 	rxd = (struct mt76_connac2_mcu_rxd *)skb->data;
+	dev_info(dev->mt76.dev, "EXPERIMENT rxev eid %02x ext %02x seq %u opt %02x len %u\n",
+		 rxd->eid, rxd->ext_eid, rxd->seq, rxd->option, skb->len);
+	if (rxd->eid == 0x0d)
+		dev_info(dev->mt76.dev, "EXPERIMENT scan done %*ph\n", 24,
+			 skb->data + sizeof(*rxd));
 
 	if (rxd->option & MCU_UNI_CMD_UNSOLICITED_EVENT) {
 		mt7921_mcu_uni_rx_unsolicited_event(dev, skb);
@@ -370,6 +404,7 @@ void mt7921_mcu_rx_event(struct mt792x_dev *dev, struct sk_buff *skb)
 
 	if (rxd->ext_eid == MCU_EXT_EVENT_RATE_REPORT ||
 	    rxd->eid == MCU_EVENT_BSS_BEACON_LOSS ||
+	    rxd->eid == MCU_EVENT_ROC ||
 	    rxd->eid == MCU_EVENT_SCHED_SCAN_DONE ||
 	    rxd->eid == MCU_EVENT_RSSI_NOTIFY ||
 	    rxd->eid == MCU_EVENT_SCAN_DONE ||
@@ -614,6 +649,8 @@ static int mt7921_mcu_get_nic_capability(struct mt792x_phy *mphy)
 		skb_pull(skb, sizeof(*tlv));
 
 		len = le32_to_cpu(tlv->len);
+		dev_info(phy->dev->dev, "EXPERIMENT nic cap tag %u len %d %*ph\n",
+			 le32_to_cpu(tlv->type), len, min(len, 16), skb->data);
 		if (skb->len < len)
 			break;
 
@@ -663,13 +700,22 @@ int mt7921_run_firmware(struct mt792x_dev *dev)
 {
 	int err;
 
-	err = mt792x_load_firmware(dev);
+	if (dev->hif_ops->start_firmware)
+		err = dev->hif_ops->start_firmware(dev);
+	else
+		err = mt792x_load_firmware(dev);
 	if (err)
 		return err;
 
 	err = mt7921_mcu_get_nic_capability(&dev->phy);
 	if (err)
 		return err;
+
+	if (dev->hif_ops->load_calibration) {
+		err = dev->hif_ops->load_calibration(dev);
+		if (err)
+			return err;
+	}
 
 	err = mt7921_load_clc(dev, mt792x_ram_name(dev));
 	if (err)
@@ -693,6 +739,14 @@ int mt7921_mcu_radio_led_ctrl(struct mt792x_dev *dev, u8 value)
 				&req, sizeof(req), false);
 }
 EXPORT_SYMBOL_GPL(mt7921_mcu_radio_led_ctrl);
+
+int mt7921_mcu_set_channel_domain(struct mt792x_dev *dev)
+{
+	if (dev->fw_legacy_cmd)
+		return mt76_connac_mcu_set_channel_domain_subbands(&dev->mt76.phy);
+
+	return mt76_connac_mcu_set_channel_domain(&dev->mt76.phy);
+}
 
 int mt7921_mcu_set_tx(struct mt792x_dev *dev, struct ieee80211_vif *vif)
 {
@@ -851,6 +905,24 @@ int mt7921_mcu_set_roc(struct mt792x_phy *phy, struct mt792x_vif *vif,
 		break;
 	}
 
+	if (dev->fw_legacy_cmd) {
+		struct mt7921_legacy_roc legacy = {
+			.bss_idx = req.roc.bss_idx,
+			.token = token_id,
+			.action = MT7921_LEGACY_ROC_ACQUIRE,
+			.primary_chan = chan->hw_value,
+			.sco = req.roc.sco,
+			.band = req.roc.band,
+			.center_chan = center_ch,
+			.req_type = type,
+			.dbdc_band = MT7921_LEGACY_DBDC_AUTO,
+			.max_interval = cpu_to_le32(duration),
+		};
+
+		return mt76_mcu_send_msg(&dev->mt76, MCU_CE_CMD(SET_ROC),
+					 &legacy, sizeof(legacy), false);
+	}
+
 	return mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(ROC),
 				 &req, sizeof(req), false);
 }
@@ -880,6 +952,18 @@ int mt7921_mcu_abort_roc(struct mt792x_phy *phy, struct mt792x_vif *vif,
 			.dbdcband = 0xff, /* auto*/
 		},
 	};
+
+	if (dev->fw_legacy_cmd) {
+		struct mt7921_legacy_roc legacy = {
+			.bss_idx = vif->bss_conf.mt76.idx,
+			.token = token_id,
+			.action = MT7921_LEGACY_ROC_ABORT,
+			.dbdc_band = MT7921_LEGACY_DBDC_AUTO,
+		};
+
+		return mt76_mcu_send_msg(&dev->mt76, MCU_CE_CMD(SET_ROC),
+					 &legacy, sizeof(legacy), false);
+	}
 
 	return mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(ROC),
 				 &req, sizeof(req), false);
@@ -954,6 +1038,10 @@ int mt7921_mcu_set_eeprom(struct mt792x_dev *dev)
 		.buffer_mode = EE_MODE_EFUSE,
 		.format = EE_FORMAT_WHOLE,
 	};
+
+	/* Loading the host's calibration already chose its source */
+	if (dev->hif_ops->load_calibration)
+		return 0;
 
 	return mt76_mcu_send_msg(&dev->mt76, MCU_EXT_CMD(EFUSE_BUFFER_MODE),
 				 &req, sizeof(req), true);
@@ -1071,6 +1159,354 @@ mt7921_mcu_set_bss_pm(struct mt792x_dev *dev, struct ieee80211_vif *vif,
 				 &req, sizeof(req), false);
 }
 
+static struct cfg80211_chan_def *
+mt7921_mcu_vif_chandef(struct mt792x_dev *dev, struct ieee80211_vif *vif)
+{
+	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+	struct ieee80211_chanctx_conf *ctx = mvif->bss_conf.mt76.ctx;
+
+	return ctx ? &ctx->def : &dev->mphy.chandef;
+}
+
+static u8 mt7921_mcu_legacy_band(enum nl80211_band band)
+{
+	switch (band) {
+	case NL80211_BAND_6GHZ:
+		return 3;
+	case NL80211_BAND_5GHZ:
+		return 2;
+	default:
+		return 1;
+	}
+}
+
+/* The firmware's rate set: 1, 2, 5.5, 11, 22, 33, 6, 9, ..., 54 Mbps */
+static u16 mt7921_mcu_legacy_rates(struct ieee80211_supported_band *sband,
+				   unsigned long mask)
+{
+	static const u16 bitrates[] = {
+		10, 20, 55, 110, 220, 330, 60, 90, 120, 180, 240, 360, 480, 540
+	};
+	u16 rates = 0;
+	int i, j;
+
+	for_each_set_bit(i, &mask, sband->n_bitrates)
+		for (j = 0; j < ARRAY_SIZE(bitrates); j++)
+			if (sband->bitrates[i].bitrate == bitrates[j])
+				rates |= BIT(j);
+
+	return rates;
+}
+
+static u8 mt7921_mcu_legacy_phy_types(struct ieee80211_sta *sta,
+				      enum nl80211_band band, u16 rates)
+{
+	u8 types = 0;
+
+	if (rates & GENMASK(5, 0))
+		types |= MT7921_LEGACY_PHY_HR_DSSS;
+	if (rates & GENMASK(13, 6))
+		types |= band == NL80211_BAND_2GHZ ? MT7921_LEGACY_PHY_ERP :
+						     MT7921_LEGACY_PHY_OFDM;
+	if (sta->deflink.ht_cap.ht_supported)
+		types |= MT7921_LEGACY_PHY_HT;
+	if (sta->deflink.vht_cap.vht_supported)
+		types |= MT7921_LEGACY_PHY_VHT;
+	if (sta->deflink.he_cap.has_he)
+		types |= MT7921_LEGACY_PHY_HE;
+
+	return types;
+}
+
+static int
+mt7921_mcu_legacy_set_bss_info(struct mt792x_dev *dev,
+			       struct ieee80211_vif *vif,
+			       struct ieee80211_sta *sta, bool connected)
+{
+	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+	struct cfg80211_chan_def *chandef = mt7921_mcu_vif_chandef(dev, vif);
+	struct ieee80211_bss_conf *conf = &vif->bss_conf;
+	struct ieee80211_channel *chan = chandef->chan;
+	struct ieee80211_supported_band *sband;
+	u8 nss = hweight8(dev->mphy.antenna_mask);
+	struct mt7921_legacy_bss_info req = {
+		.bss_idx = mvif->bss_conf.mt76.idx,
+		.conn_state = connected ? MT7921_LEGACY_CONNECTED :
+					  MT7921_LEGACY_DISCONNECTED,
+		.ssid_len = vif->cfg.ssid_len,
+		.qos = conf->qos,
+		.ap_sta_idx = MT7921_LEGACY_STA_REC_NONE,
+		.bmc_wlan_idx = mvif->sta.deflink.wcid.idx,
+		.dbdc_band = MT7921_LEGACY_DBDC_AUTO,
+		.wmm_idx = mvif->bss_conf.mt76.wmm_idx,
+		.nss = nss,
+		.rlm = {
+			.bss_idx = mvif->bss_conf.mt76.idx,
+			.band = mt7921_mcu_legacy_band(chan->band),
+			.primary_chan = chan->hw_value,
+			.erp_protect = conf->use_cts_prot,
+			.ht_protect = conf->ht_operation_mode &
+				      IEEE80211_HT_OP_MODE_PROTECTION,
+			.short_preamble = conf->use_short_preamble,
+			.short_slot = conf->use_short_slot,
+			.tx_nss = nss,
+			.rx_nss = nss,
+		},
+	};
+	int err;
+
+	sband = dev->mphy.hw->wiphy->bands[chan->band];
+	memcpy(req.ssid, vif->cfg.ssid, vif->cfg.ssid_len);
+	if (conf->bssid)
+		ether_addr_copy(req.bssid, conf->bssid);
+	req.basic_rates = cpu_to_le16(mt7921_mcu_legacy_rates(sband,
+							      conf->basic_rates));
+
+	if (sta) {
+		struct mt792x_sta *msta = (struct mt792x_sta *)sta->drv_priv;
+		u16 rates;
+
+		rates = mt7921_mcu_legacy_rates(sband,
+						sta->deflink.supp_rates[chan->band]);
+		req.op_rates = cpu_to_le16(rates);
+		req.phy_types = mt7921_mcu_legacy_phy_types(sta, chan->band,
+							    rates);
+		if (connected)
+			req.ap_sta_idx = msta->deflink.wcid.idx;
+	}
+
+	if (chan->band == NL80211_BAND_2GHZ) {
+		req.fixed_rate = cpu_to_le16(MT7921_LEGACY_RATE_CCK_1M);
+		req.nonht_basic_phy = ilog2(MT7921_LEGACY_PHY_ERP);
+	} else {
+		req.fixed_rate = cpu_to_le16(MT7921_LEGACY_RATE_OFDM_6M);
+		req.nonht_basic_phy = ilog2(MT7921_LEGACY_PHY_OFDM);
+	}
+
+	if (chandef->width != NL80211_CHAN_WIDTH_20_NOHT &&
+	    chandef->width != NL80211_CHAN_WIDTH_20) {
+		int center = cfg80211_chandef_primary(chandef,
+						      NL80211_CHAN_WIDTH_40,
+						      NULL);
+
+		/* 1: secondary above, 3: secondary below */
+		req.rlm.sco = chan->center_freq < center ? 1 : 3;
+	}
+
+	switch (chandef->width) {
+	case NL80211_CHAN_WIDTH_80P80:
+		req.rlm.vht_center2 =
+			ieee80211_frequency_to_channel(chandef->center_freq2);
+		req.rlm.vht_width = 3;
+		break;
+	case NL80211_CHAN_WIDTH_160:
+		req.rlm.vht_width = 2;
+		break;
+	case NL80211_CHAN_WIDTH_80:
+		req.rlm.vht_width = 1;
+		break;
+	default:
+		break;
+	}
+	if (req.rlm.vht_width)
+		req.rlm.vht_center1 =
+			ieee80211_frequency_to_channel(chandef->center_freq1);
+
+	if (conf->he_support) {
+		put_unaligned_le24(conf->he_oper.params, req.he_op);
+		req.bss_color = conf->he_bss_color.color |
+				(conf->he_bss_color.enabled ? 0 : BIT(7));
+	}
+
+	/* power save follows the connection */
+	err = mt7921_mcu_set_bss_pm(dev, vif, false);
+	if (err)
+		return err;
+
+	err = mt76_mcu_send_msg(&dev->mt76, MCU_CE_CMD(SET_BSS_INFO), &req,
+				sizeof(req), false);
+	if (err || !connected)
+		return err;
+
+	return mt7921_mcu_set_bss_pm(dev, vif, true);
+}
+
+static_assert(sizeof(struct mt7921_legacy_bss_info) == 116);
+static_assert(sizeof(struct mt7921_legacy_sta_rec) == 204);
+static_assert(sizeof(struct mt7921_legacy_key) == 64);
+static_assert(sizeof(struct mt7921_legacy_roc) == 24);
+
+static int
+mt7921_mcu_legacy_sta_update(struct mt792x_dev *dev, struct ieee80211_sta *sta,
+			     struct ieee80211_vif *vif, bool enable,
+			     enum mt76_sta_info_state state)
+{
+	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+	enum nl80211_band band = mt7921_mcu_vif_chandef(dev, vif)->chan->band;
+	struct ieee80211_sta_vht_cap *vht = &sta->deflink.vht_cap;
+	struct ieee80211_sta_ht_cap *ht = &sta->deflink.ht_cap;
+	struct ieee80211_sta_he_cap *he = &sta->deflink.he_cap;
+	struct mt7921_legacy_sta_rec req = {};
+	struct ieee80211_supported_band *sband;
+	struct mt76_wcid *wcid;
+	u16 rates;
+	int err;
+
+	wcid = &((struct mt792x_sta *)sta->drv_priv)->deflink.wcid;
+	if (!enable) {
+		struct mt7921_legacy_sta_remove rm = {
+			.sta_idx = wcid->idx,
+			.bss_idx = mvif->bss_conf.mt76.idx,
+		};
+
+		return mt76_mcu_send_msg(&dev->mt76,
+					 MCU_CE_CMD(REMOVE_STA_RECORD),
+					 &rm, sizeof(rm), false);
+	}
+
+	/* the AP of a new connection comes with its BSS */
+	if (state == MT76_STA_INFO_STATE_NONE &&
+	    vif->type == NL80211_IFTYPE_STATION) {
+		err = mt7921_mcu_legacy_set_bss_info(dev, vif, sta, false);
+		if (err)
+			return err;
+	}
+
+	sband = dev->mphy.hw->wiphy->bands[band];
+	rates = mt7921_mcu_legacy_rates(sband, sta->deflink.supp_rates[band]);
+
+	req.sta_idx = wcid->idx;
+	req.sta_type = MT7921_LEGACY_STA_TYPE_AP;
+	ether_addr_copy(req.addr, sta->addr);
+	req.aid = cpu_to_le16(vif->cfg.aid);
+	req.listen_interval = cpu_to_le16(dev->mphy.hw->conf.listen_interval);
+	req.bss_idx = mvif->bss_conf.mt76.idx;
+	req.phy_types = mt7921_mcu_legacy_phy_types(sta, band, rates);
+	req.rates = cpu_to_le16(rates);
+	req.basic_rates =
+		cpu_to_le16(mt7921_mcu_legacy_rates(sband,
+						    vif->bss_conf.basic_rates));
+	req.qos = sta->wme;
+	req.uapsd = !!sta->uapsd_queues;
+	req.state = state == MT76_STA_INFO_STATE_NONE ?
+		    MT7921_LEGACY_STA_STATE_1 : MT7921_LEGACY_STA_STATE_3;
+	req.version = 1;
+	req.rcpi = to_rcpi(-ewma_rssi_read(&mvif->bss_conf.rssi));
+	req.wlan_idx = wcid->idx;
+	req.bmc_wlan_idx = MT7921_LEGACY_WTBL_NONE;
+	req.fixed_rate = cpu_to_le16(band == NL80211_BAND_2GHZ ?
+				     MT7921_LEGACY_RATE_CCK_1M :
+				     MT7921_LEGACY_RATE_OFDM_6M);
+	req.pfmu_id = cpu_to_le16(0xffff);
+
+	if (ht->ht_supported) {
+		req.mcs = ht->mcs.rx_mask[0];
+		req.mcs32 = ht->mcs.rx_mask[4] & BIT(0);
+		memcpy(req.rx_mcs_mask, ht->mcs.rx_mask,
+		       sizeof(req.rx_mcs_mask));
+		req.rx_highest = ht->mcs.rx_highest;
+		req.ht_cap = cpu_to_le16(ht->cap);
+		req.ampdu_param = ht->ampdu_factor | ht->ampdu_density << 2;
+	}
+
+	if (vht->vht_supported) {
+		req.vht_cap = cpu_to_le32(vht->cap);
+		req.vht_rx_mcs = vht->vht_mcs.rx_mcs_map;
+		req.vht_rx_highest = vht->vht_mcs.rx_highest;
+		req.vht_tx_mcs = vht->vht_mcs.tx_mcs_map;
+		req.vht_tx_highest = vht->vht_mcs.tx_highest;
+	}
+
+	if (he->has_he) {
+		memcpy(req.he_mac_cap, he->he_cap_elem.mac_cap_info,
+		       sizeof(req.he_mac_cap));
+		memcpy(req.he_phy_cap, he->he_cap_elem.phy_cap_info,
+		       sizeof(req.he_phy_cap));
+		req.he_mcs[0] = he->he_mcs_nss_supp.rx_mcs_80;
+		req.he_mcs[1] = he->he_mcs_nss_supp.tx_mcs_80;
+		req.he_mcs[2] = he->he_mcs_nss_supp.rx_mcs_160;
+		req.he_mcs[3] = he->he_mcs_nss_supp.tx_mcs_160;
+		req.he_mcs[4] = he->he_mcs_nss_supp.rx_mcs_80p80;
+		req.he_mcs[5] = he->he_mcs_nss_supp.tx_mcs_80p80;
+	}
+
+	return mt76_mcu_send_msg(&dev->mt76, MCU_CE_CMD(UPDATE_STA_RECORD),
+				 &req, sizeof(req), false);
+}
+
+static int
+mt7921_mcu_legacy_add_key(struct mt792x_dev *dev, struct ieee80211_vif *vif,
+			  struct mt76_wcid *wcid, const u8 *peer,
+			  struct ieee80211_key_conf *key, enum set_key_cmd cmd)
+{
+	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+	bool pairwise = key->flags & IEEE80211_KEY_FLAG_PAIRWISE;
+	struct mt7921_legacy_key req = {
+		.add = cmd == SET_KEY,
+		.tx_key = pairwise,
+		.pairwise = pairwise,
+		.bss_idx = mvif->bss_conf.mt76.idx,
+		.key_idx = key->keyidx,
+		.key_len = key->keylen,
+		.wlan_idx = wcid->idx,
+	};
+
+	switch (key->cipher) {
+	case WLAN_CIPHER_SUITE_TKIP:
+		req.cipher = MT7921_LEGACY_CIPHER_TKIP;
+		break;
+	case WLAN_CIPHER_SUITE_CCMP:
+		req.cipher = MT7921_LEGACY_CIPHER_CCMP;
+		break;
+	case WLAN_CIPHER_SUITE_CCMP_256:
+		req.cipher = MT7921_LEGACY_CIPHER_CCMP_256;
+		break;
+	case WLAN_CIPHER_SUITE_GCMP:
+		req.cipher = MT7921_LEGACY_CIPHER_GCMP;
+		break;
+	case WLAN_CIPHER_SUITE_GCMP_256:
+		req.cipher = MT7921_LEGACY_CIPHER_GCMP_256;
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+
+	if (key->keylen > sizeof(req.key))
+		return -EINVAL;
+
+	ether_addr_copy(req.peer, peer);
+	memcpy(req.key, key->key, key->keylen);
+
+	return mt76_mcu_send_msg(&dev->mt76, MCU_CE_CMD(ADD_REMOVE_KEY), &req,
+				 sizeof(req), false);
+}
+
+int mt7921_mcu_add_key(struct mt792x_dev *dev, struct ieee80211_vif *vif,
+		       struct mt792x_sta *msta, const u8 *peer,
+		       struct ieee80211_key_conf *key, enum set_key_cmd cmd)
+{
+	if (dev->fw_legacy_cmd)
+		return mt7921_mcu_legacy_add_key(dev, vif, &msta->deflink.wcid,
+						 peer, key, cmd);
+
+	return mt76_connac_mcu_add_key(&dev->mt76, vif, &msta->deflink.bip,
+				       key, MCU_UNI_CMD(STA_REC_UPDATE),
+				       &msta->deflink.wcid, cmd);
+}
+
+int mt7921_mcu_add_bss(struct mt792x_dev *dev, struct ieee80211_vif *vif,
+		       struct ieee80211_sta *sta, bool enable)
+{
+	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+
+	if (dev->fw_legacy_cmd)
+		return mt7921_mcu_legacy_set_bss_info(dev, vif, sta, enable);
+
+	return mt76_connac_mcu_uni_add_bss(&dev->mphy, vif,
+					   &mvif->sta.deflink.wcid, enable,
+					   mvif->bss_conf.mt76.ctx);
+}
+
 int mt7921_mcu_sta_update(struct mt792x_dev *dev, struct ieee80211_sta *sta,
 			  struct ieee80211_vif *vif, bool enable,
 			  enum mt76_sta_info_state state)
@@ -1087,6 +1523,11 @@ int mt7921_mcu_sta_update(struct mt792x_dev *dev, struct ieee80211_sta *sta,
 		.rcpi = to_rcpi(rssi),
 	};
 	struct mt792x_sta *msta;
+
+	/* The legacy firmware keeps no record for the BSS itself */
+	if (dev->fw_legacy_cmd)
+		return sta ? mt7921_mcu_legacy_sta_update(dev, sta, vif, enable,
+							  state) : 0;
 
 	msta = sta ? (struct mt792x_sta *)sta->drv_priv : NULL;
 	info.wcid = msta ? &msta->deflink.wcid : &mvif->sta.deflink.wcid;

@@ -235,7 +235,9 @@ static void mt7928_wfdma_setup(struct mt792x_dev *dev)
 
 static void mt792x_dma_prefetch(struct mt792x_dev *dev)
 {
-	if (is_mt7928(&dev->mt76)) {
+	if (dev->hif_ops->dma_prefetch) {
+		dev->hif_ops->dma_prefetch(dev);
+	} else if (is_mt7928(&dev->mt76)) {
 		mt7928_dma_prefetch_setup(dev);
 	} else if (is_mt7927(&dev->mt76)) {
 		mt7927_dma_prefetch_setup(dev);
@@ -617,6 +619,9 @@ static int mt792x_wfsys_reset_default(struct mt792x_dev *dev)
 
 int mt792x_wfsys_reset(struct mt792x_dev *dev)
 {
+	if (dev->hif_ops->wfsys_reset)
+		return dev->hif_ops->wfsys_reset(dev);
+
 	if (is_mt7927(&dev->mt76))
 		return mt7927_wfsys_reset(dev);
 

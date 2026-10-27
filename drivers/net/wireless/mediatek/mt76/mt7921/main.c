@@ -233,7 +233,7 @@ int __mt7921_start(struct mt792x_phy *phy)
 	if (err)
 		return err;
 
-	err = mt76_connac_mcu_set_channel_domain(mphy);
+	err = mt7921_mcu_set_channel_domain(phy->dev);
 	if (err)
 		return err;
 
@@ -320,9 +320,10 @@ mt7921_add_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
 	mvif->bss_conf.mt76.band_idx = 0;
 	mvif->bss_conf.mt76.wmm_idx = mvif->bss_conf.mt76.idx % MT76_CONNAC_MAX_WMM_SETS;
 
-	ret = mt76_connac_mcu_uni_add_dev(&dev->mphy, &vif->bss_conf,
-					  &mvif->bss_conf.mt76,
-					  &mvif->sta.deflink.wcid, true);
+	mvif->sta.deflink.wcid.idx = MT792x_WTBL_RESERVED -
+				     mvif->bss_conf.mt76.idx;
+	ret = mt792x_mcu_add_dev(dev, &vif->bss_conf, &mvif->bss_conf.mt76,
+				 &mvif->sta.deflink.wcid, true);
 	if (ret)
 		goto out;
 
@@ -524,6 +525,8 @@ static int mt7921_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
 	/* fall back to sw encryption for unsupported ciphers */
 	switch (key->cipher) {
 	case WLAN_CIPHER_SUITE_AES_CMAC:
+		if (dev->fw_legacy_cmd)
+			return -EOPNOTSUPP;
 		key->flags |= IEEE80211_KEY_FLAG_GENERATE_MMIE;
 		wcid_keyidx = &wcid->hw_key_idx2;
 		break;
@@ -560,18 +563,16 @@ static int mt7921_set_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
 	}
 
 	mt76_wcid_key_setup(&dev->mt76, wcid, key);
-	err = mt76_connac_mcu_add_key(&dev->mt76, vif, &msta->deflink.bip,
-				      key, MCU_UNI_CMD(STA_REC_UPDATE),
-				      &msta->deflink.wcid, cmd);
+	err = mt7921_mcu_add_key(dev, vif, msta,
+				 sta ? sta->addr : vif->bss_conf.bssid,
+				 key, cmd);
 	if (err)
 		goto out;
 
 	if (key->cipher == WLAN_CIPHER_SUITE_WEP104 ||
 	    key->cipher == WLAN_CIPHER_SUITE_WEP40)
-		err = mt76_connac_mcu_add_key(&dev->mt76, vif,
-					      &mvif->wep_sta->deflink.bip,
-					      key, MCU_UNI_CMD(STA_REC_UPDATE),
-					      &mvif->wep_sta->deflink.wcid, cmd);
+		err = mt7921_mcu_add_key(dev, vif, mvif->wep_sta,
+					 vif->bss_conf.bssid, key, cmd);
 out:
 	mt792x_mutex_release(dev);
 
@@ -860,7 +861,6 @@ int mt7921_mac_sta_event(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 {
 	struct mt792x_dev *dev = container_of(mdev, struct mt792x_dev, mt76);
 	struct mt792x_sta *msta = (struct mt792x_sta *)sta->drv_priv;
-	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
 
 	if (sta->aid > MT7921_MAX_AID)
 		return -ENOENT;
@@ -871,8 +871,7 @@ int mt7921_mac_sta_event(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 	mt792x_mutex_acquire(dev);
 
 	if (vif->type == NL80211_IFTYPE_STATION && !sta->tdls)
-		mt76_connac_mcu_uni_add_bss(&dev->mphy, vif, &mvif->sta.deflink.wcid,
-					    true, mvif->bss_conf.mt76.ctx);
+		mt7921_mcu_add_bss(dev, vif, sta, true);
 
 	ewma_avg_signal_init(&msta->deflink.avg_ack_signal);
 
@@ -908,9 +907,7 @@ void mt7921_mac_sta_remove(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 		mvif->wep_sta = NULL;
 		ewma_rssi_init(&mvif->bss_conf.rssi);
 		if (!sta->tdls)
-			mt76_connac_mcu_uni_add_bss(&dev->mphy, vif,
-						    &mvif->sta.deflink.wcid, false,
-						    mvif->bss_conf.mt76.ctx);
+			mt7921_mcu_add_bss(dev, vif, NULL, false);
 	}
 
 	spin_lock_bh(&dev->mt76.sta_poll_lock);
@@ -952,6 +949,9 @@ mt7921_ampdu_action(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 
 	if (!txq)
 		return -EINVAL;
+
+	if (dev->fw_legacy_cmd) /* EXPERIMENT: no Block Ack yet */
+		return -EOPNOTSUPP;
 
 	mtxq = (struct mt76_txq *)txq->drv_priv;
 

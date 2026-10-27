@@ -387,7 +387,12 @@ mt7921_mac_fill_rx(struct mt792x_dev *dev, struct sk_buff *skb)
 	}
 
 	hdr_gap = (u8 *)rxd - skb->data + 2 * remove_pad;
-	if (hdr_trans && ieee80211_has_morefrags(fc)) {
+	/* Some firmware translates every frame: mac80211 takes 802.3 frames
+	 * only from stations it enabled decapsulation for.
+	 */
+	if (hdr_trans && (ieee80211_has_morefrags(fc) || !msta ||
+			  !test_bit(MT_WCID_FLAG_HDR_TRANS,
+				    &msta->deflink.wcid.flags))) {
 		struct ieee80211_vif *vif;
 		int err;
 
@@ -641,9 +646,8 @@ mt7921_vif_connect_iter(void *priv, u8 *mac,
 	if (vif->type == NL80211_IFTYPE_STATION)
 		ieee80211_disconnect(vif, true);
 
-	mt76_connac_mcu_uni_add_dev(&dev->mphy, &vif->bss_conf,
-				    &mvif->bss_conf.mt76,
-				    &mvif->sta.deflink.wcid, true);
+	mt792x_mcu_add_dev(dev, &vif->bss_conf, &mvif->bss_conf.mt76,
+			   &mvif->sta.deflink.wcid, true);
 	mt7921_mcu_set_tx(dev, vif);
 
 	if (vif->type == NL80211_IFTYPE_AP) {

@@ -208,11 +208,17 @@ int mt7921_run_firmware(struct mt792x_dev *dev);
 int mt7921_set_channel(struct mt76_phy *mphy);
 int mt7921_mcu_set_bss_pm(struct mt792x_dev *dev, struct ieee80211_vif *vif,
 			  bool enable);
+int mt7921_mcu_add_bss(struct mt792x_dev *dev, struct ieee80211_vif *vif,
+		       struct ieee80211_sta *sta, bool enable);
+int mt7921_mcu_add_key(struct mt792x_dev *dev, struct ieee80211_vif *vif,
+		       struct mt792x_sta *msta, const u8 *peer,
+		       struct ieee80211_key_conf *key, enum set_key_cmd cmd);
 int mt7921_mcu_sta_update(struct mt792x_dev *dev, struct ieee80211_sta *sta,
 			  struct ieee80211_vif *vif, bool enable,
 			  enum mt76_sta_info_state state);
 int mt7921_mcu_set_chan_info(struct mt792x_phy *phy, int cmd);
 int mt7921_mcu_set_tx(struct mt792x_dev *dev, struct ieee80211_vif *vif);
+int mt7921_mcu_set_channel_domain(struct mt792x_dev *dev);
 int mt7921_mcu_set_eeprom(struct mt792x_dev *dev);
 int mt7921_mcu_get_rx_rate(struct mt792x_phy *phy, struct ieee80211_vif *vif,
 			   struct ieee80211_sta *sta, struct rate_info *rate);
@@ -306,6 +312,9 @@ int mt7921_mcu_parse_response(struct mt76_dev *mdev, int cmd,
 int mt7921e_driver_own(struct mt792x_dev *dev);
 int mt7921e_mac_reset(struct mt792x_dev *dev);
 int mt7921e_mcu_init(struct mt792x_dev *dev);
+int mt7921e_mcu_send_message(struct mt76_dev *mdev, struct sk_buff *skb,
+			     int cmd, int *seq);
+extern struct platform_driver mt7921_soc_driver;
 int mt7921s_wfsys_reset(struct mt792x_dev *dev);
 int mt7921s_mac_reset(struct mt792x_dev *dev);
 int mt7921s_init_reset(struct mt792x_dev *dev);

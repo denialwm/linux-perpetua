@@ -283,6 +283,14 @@ struct mt792x_hif_ops {
 	int (*mcu_init)(struct mt792x_dev *dev);
 	int (*drv_own)(struct mt792x_dev *dev);
 	int (*fw_own)(struct mt792x_dev *dev);
+	/* Optional, for a WFSYS that is not reset through its RGU register */
+	int (*wfsys_reset)(struct mt792x_dev *dev);
+	/* Optional, for firmware that is already in memory instead of a file */
+	int (*start_firmware)(struct mt792x_dev *dev);
+	/* Optional, for a WFDMA ring layout other than the chip's default */
+	void (*dma_prefetch)(struct mt792x_dev *dev);
+	/* Optional, for calibration the host gives instead of the efuse */
+	int (*load_calibration)(struct mt792x_dev *dev);
 };
 
 struct mt792x_pcie_reg {
@@ -313,6 +321,10 @@ struct mt792x_dev {
 	bool hif_resumed:1;
 	bool regd_change:1;
 	bool skip_wpdma_reinit:1;
+	/* The firmware reported itself sleepy and waits for the host */
+	bool fw_sleepy;
+	/* The firmware takes the per-feature commands, not the unified ones */
+	bool fw_legacy_cmd;
 	wait_queue_head_t wait;
 
 	struct work_struct init_work;
@@ -527,6 +539,10 @@ mt792x_get_mac80211_ops(struct device *dev,
 int mt792x_init_wcid(struct mt792x_dev *dev);
 int mt792x_mcu_drv_pmctrl(struct mt792x_dev *dev);
 int mt792x_mcu_fw_pmctrl(struct mt792x_dev *dev);
+int mt792x_mcu_add_dev(struct mt792x_dev *dev,
+		       struct ieee80211_bss_conf *bss_conf,
+		       struct mt76_vif_link *mvif, struct mt76_wcid *wcid,
+		       bool enable);
 void mt792x_mac_link_bss_remove(struct mt792x_dev *dev,
 				struct mt792x_bss_conf *mconf,
 				struct mt792x_link_sta *mlink);

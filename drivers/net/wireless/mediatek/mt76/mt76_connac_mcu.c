@@ -213,6 +213,93 @@ int mt76_connac_mcu_set_channel_domain(struct mt76_phy *phy)
 }
 EXPORT_SYMBOL_GPL(mt76_connac_mcu_set_channel_domain);
 
+static u8 mt76_connac_subband_class(enum nl80211_band band, u16 ch)
+{
+	switch (band) {
+	case NL80211_BAND_2GHZ:
+		return 81;
+	case NL80211_BAND_5GHZ:
+		if (ch <= 48)
+			return 115;
+		if (ch <= 64)
+			return 118;
+		if (ch <= 144)
+			return 121;
+		return 125;
+	default:
+		return 131;
+	}
+}
+
+/*
+ * Firmware without the single-SKU capability takes the domain as runs of
+ * evenly spaced channels, each named by its operating class.
+ */
+int mt76_connac_mcu_set_channel_domain_subbands(struct mt76_phy *phy)
+{
+	struct ieee80211_supported_band *sbands[] = {
+		&phy->sband_2g.sband,
+		&phy->sband_5g.sband,
+		&phy->sband_6g.sband,
+	};
+	struct {
+		__le16 country;
+		__le16 passive;
+		struct {
+			u8 reg_class;
+			u8 band;
+			u8 span;
+			u8 first;
+			u8 n_channels;
+			u8 rsv[3];
+		} __packed subband[7];
+		u8 bw_2g;
+		u8 bw_5g;
+		u8 rsv[2];
+	} __packed req = {
+		.country = cpu_to_le16(phy->dev->alpha2[0] << 8 |
+				       phy->dev->alpha2[1]),
+		.bw_2g = 0, /* 20/40 MHz */
+		.bw_5g = 2, /* 20/40/80 MHz */
+	};
+	int b, i, n = -1;
+
+	for (b = 0; b < ARRAY_SIZE(sbands); b++) {
+		struct ieee80211_supported_band *sband = sbands[b];
+		enum nl80211_band band = sband->band;
+		/* The firmware numbers the bands from 1, in this order */
+		u8 fw_band = b + 1;
+		u8 span = band == NL80211_BAND_2GHZ ? 1 : 4;
+
+		for (i = 0; i < sband->n_channels; i++) {
+			struct ieee80211_channel *chan = &sband->channels[i];
+			u8 class = mt76_connac_subband_class(band,
+							     chan->hw_value);
+
+			if (chan->flags & IEEE80211_CHAN_DISABLED)
+				continue;
+
+			if (n < 0 || req.subband[n].band != fw_band ||
+			    req.subband[n].reg_class != class ||
+			    chan->hw_value != req.subband[n].first +
+					      req.subband[n].n_channels * span) {
+				if (++n == ARRAY_SIZE(req.subband))
+					goto send;
+
+				req.subband[n].reg_class = class;
+				req.subband[n].band = fw_band;
+				req.subband[n].span = span;
+				req.subband[n].first = chan->hw_value;
+			}
+			req.subband[n].n_channels++;
+		}
+	}
+send:
+	return mt76_mcu_send_msg(phy->dev, MCU_CE_CMD(SET_CHAN_DOMAIN),
+				 &req, sizeof(req), false);
+}
+EXPORT_SYMBOL_GPL(mt76_connac_mcu_set_channel_domain_subbands);
+
 int mt76_connac_mcu_set_mac_enable(struct mt76_dev *dev, int band, bool enable,
 				   bool hdr_trans)
 {
@@ -1302,6 +1389,45 @@ int mt76_connac_mcu_uni_add_dev(struct mt76_phy *phy,
 }
 EXPORT_SYMBOL_GPL(mt76_connac_mcu_uni_add_dev);
 
+/* The same for firmware without the unified commands, in one command */
+int mt76_connac_mcu_bss_activate(struct mt76_phy *phy,
+				 struct ieee80211_bss_conf *bss_conf,
+				 struct mt76_vif_link *mvif,
+				 struct mt76_wcid *wcid,
+				 bool enable)
+{
+	struct {
+		u8 bss_idx;
+		u8 active;
+		u8 network_type;
+		u8 omac_idx;
+		u8 omac_addr[ETH_ALEN];
+		u8 bmc_wlan_idx;
+		u8 link_idx;
+	} __packed req = {
+		.bss_idx = mvif->idx,
+		.active = enable,
+		.omac_idx = mvif->omac_idx,
+		.bmc_wlan_idx = wcid->idx,
+	};
+
+	switch (bss_conf->vif->type) {
+	case NL80211_IFTYPE_AP:
+	case NL80211_IFTYPE_P2P_GO:
+	case NL80211_IFTYPE_P2P_CLIENT:
+		req.network_type = MT_CONNAC_NETWORK_TYPE_P2P;
+		break;
+	default:
+		req.network_type = MT_CONNAC_NETWORK_TYPE_STA;
+		break;
+	}
+	memcpy(req.omac_addr, bss_conf->addr, ETH_ALEN);
+
+	return mt76_mcu_send_msg(phy->dev, MCU_CE_CMD(BSS_ACTIVATE_CTRL),
+				 &req, sizeof(req), false);
+}
+EXPORT_SYMBOL_GPL(mt76_connac_mcu_bss_activate);
+
 void mt76_connac_mcu_sta_ba_tlv(struct sk_buff *skb,
 				struct ieee80211_ampdu_params *params,
 				bool enable, bool tx)
@@ -2320,6 +2446,7 @@ mt76_connac_mcu_rate_txpower_band(struct mt76_phy *phy,
 			goto out;
 
 		/* read a CR to avoid PSE buffer underflow */
+		if (0) /* EXPERIMENT */
 		mt76_connac_mcu_reg_rr(dev, MT_PSE_BASE);
 	}
 

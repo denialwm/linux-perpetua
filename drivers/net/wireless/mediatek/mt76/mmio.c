@@ -101,7 +101,8 @@ void mt76_set_irq_mask(struct mt76_dev *dev, u32 addr,
 			mtk_wed_device_irq_set_mask(&dev->mmio.wed,
 						    dev->mmio.irqmask);
 		else
-			mt76_mmio_wr(dev, addr, dev->mmio.irqmask);
+			/* through the bus, which may translate the address */
+			dev->bus->wr(dev, addr, dev->mmio.irqmask);
 	}
 	spin_unlock_irqrestore(&dev->mmio.irq_lock, flags);
 }

@@ -7,6 +7,7 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/of.h>
+#include <linux/platform_device.h>
 
 #include "mt7921.h"
 #include "../mt76_connac2_mac.h"
@@ -726,7 +727,33 @@ static struct pci_driver mt7921_pci_driver = {
 	.err_handler    = &mt7921_err_handler,
 };
 
-module_pci_driver(mt7921_pci_driver);
+static int __init mt7921e_init(void)
+{
+	int ret;
+
+	ret = pci_register_driver(&mt7921_pci_driver);
+	if (ret)
+		return ret;
+
+	if (IS_ENABLED(CONFIG_MT7921_SOC)) {
+		ret = platform_driver_register(&mt7921_soc_driver);
+		if (ret)
+			pci_unregister_driver(&mt7921_pci_driver);
+	}
+
+	return ret;
+}
+
+static void __exit mt7921e_exit(void)
+{
+	if (IS_ENABLED(CONFIG_MT7921_SOC))
+		platform_driver_unregister(&mt7921_soc_driver);
+
+	pci_unregister_driver(&mt7921_pci_driver);
+}
+
+module_init(mt7921e_init);
+module_exit(mt7921e_exit);
 
 MODULE_DEVICE_TABLE(pci, mt7921_pci_device_table);
 MODULE_FIRMWARE(MT7920_FIRMWARE_WM);

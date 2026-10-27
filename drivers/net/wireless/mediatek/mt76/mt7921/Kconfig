@@ -14,6 +14,16 @@ config MT7921E
 
 	  To compile this driver as a module, choose M here.
 
+config MT7921_SOC
+	bool "MediaTek MT7921 Wi-Fi core of SoCs"
+	depends on MT7921E
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on MTK_CONSYS=y || MTK_CONSYS=MT7921E
+	help
+	  This adds support for the MT7921 Wi-Fi core that the connectivity
+	  subsystem of MediaTek SoCs such as the MT6897 holds, with firmware
+	  that the bootloader loads.
+
 config MT7921S
 	tristate "MediaTek MT7921S (SDIO) support"
 	select MT76_SDIO

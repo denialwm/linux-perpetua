@@ -77,6 +77,8 @@ int mt7921_mac_init(struct mt792x_dev *dev)
 	for (i = 0; i < 2; i++)
 		mt792x_mac_init_band(dev, i);
 
+	if (dev->mt76.dev->of_node) /* EXPERIMENT */
+		return 0;
 	return mt76_connac_mcu_set_rts_thresh(&dev->mt76, 0x92b, 0);
 }
 EXPORT_SYMBOL_GPL(mt7921_mac_init);
@@ -208,6 +210,7 @@ int mt7921_register_device(struct mt792x_dev *dev)
 	dev->pm.stats.last_doze_event = jiffies;
 
 	if (!mt76_is_usb(&dev->mt76) &&
+	    !dev->mt76.dev->of_node && /* EXPERIMENT */
 	    !is_mt7902(&dev->mt76)) {
 		dev->pm.enable_user = true;
 		dev->pm.enable = true;

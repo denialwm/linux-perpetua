@@ -21,8 +21,10 @@ static struct ieee80211_regdomain mt7921_regd_ww = {
 
 bool mt7921_regd_clc_supported(struct mt792x_dev *dev)
 {
+	/* Firmware that is already in memory has no file to carry the CLC */
 	if (mt7921_disable_clc ||
-	    mt76_is_usb(&dev->mt76))
+	    mt76_is_usb(&dev->mt76) ||
+	    dev->hif_ops->start_firmware)
 		return false;
 
 	return true;
@@ -102,7 +104,7 @@ int __mt7921_mcu_regd_update(struct mt792x_dev *dev, u8 *alpha2,
 
 	mt7921_regd_channel_update(wiphy, dev);
 
-	ret = mt76_connac_mcu_set_channel_domain(hw->priv);
+	ret = mt7921_mcu_set_channel_domain(dev);
 	if (ret < 0)
 		return ret;
 
