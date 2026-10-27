@@ -8,6 +8,7 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/leds/common.h>
+#include <dt-bindings/pinctrl/mt65xx.h>
 #include "mt6897.dtsi"
 #include "mt6363.dtsi"
 
@@ -107,7 +108,7 @@
 &dpu {
 	status = "okay";
 
-	panel@0 {
+	panel: panel@0 {
 		compatible = "lenovo,tb373fu-tianma-nt36532", "novatek,nt36532";
 		reg = <0>;
 		reset-gpios = <&pio 41 GPIO_ACTIVE_LOW>;
@@ -216,6 +217,42 @@
 /* The PMIC's home key input is the volume-down key. */
 &mt6363_home_key {
 	linux,keycodes = <KEY_VOLUMEDOWN>;
+};
+
+&pio {
+	spi2_pins: spi2-pins {
+		pins-bus {
+			pinmux = <(MTK_PIN_NO(11) | 1)>, /* SPI2_CLK */
+				 <(MTK_PIN_NO(12) | 1)>, /* SPI2_CSB */
+				 <(MTK_PIN_NO(13) | 1)>, /* SPI2_MI */
+				 <(MTK_PIN_NO(14) | 1)>; /* SPI2_MO */
+			drive-strength = <6>;
+		};
+	};
+};
+
+&spi2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&spi2_pins>;
+	status = "okay";
+
+	/* The touch side of the panel's NT36532; it runs while the panel does. */
+	touchscreen@0 {
+		compatible = "novatek,NVT-ts-spi";
+		reg = <0>;
+		spi-max-frequency = <9600000>;
+		/* It misses a command whose clock starts right after the select. */
+		spi-cs-setup-delay-ns = <100>;
+		irq-gpios = <&pio 9 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&pio 60 GPIO_ACTIVE_LOW>;
+		novatek,pen-support;
+		panel = <&panel>;
+		firmware-name = "novatek_ts_fw_tm.bin";
+		touchscreen-size-x = <18400>;
+		touchscreen-size-y = <29440>;
+		touchscreen-inverted-x;
+		touchscreen-swapped-x-y;
+	};
 };
 
 &ssusb {
