@@ -1288,6 +1288,10 @@
 		panel = <&display_panel>;
 
 		firmware-name = "novatek/novatek_nt36536_fw.bin";
+		touchscreen-size-x = <24000>;
+		touchscreen-size-y = <33920>;
+		touchscreen-inverted-x;
+		touchscreen-swapped-x-y;
 	};
 };
 
