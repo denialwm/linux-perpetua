@@ -17,6 +17,17 @@ config MTK_CMDQ
 	  time limitation, such as updating display configuration during the
 	  vblank.
 
+config MTK_CONSYS
+	tristate "MediaTek connectivity subsystem power control"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on HAVE_ARM_SMCCC && OF && PM && REGULATOR
+	help
+	  Say yes here to add support for powering the connectivity
+	  subsystem of MediaTek SoCs such as the MT6897, which holds their
+	  Wi-Fi, Bluetooth and GNSS cores. The secure world performs the
+	  low-level power-on; this driver provides the rails, the pins and
+	  the power domain, and powers the subsystem for the radio drivers.
+
 config MTK_DEVAPC
 	tristate "Mediatek Device APC Support"
 	help
