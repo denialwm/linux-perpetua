@@ -62,8 +62,6 @@ struct pmif_bus {
 	int irq;
 	struct clk_bulk_data clks[PMIF_MAX_CLKS];
 	size_t nclks;
-	u8 irq_min_sid;
-	u8 irq_max_sid;
 	u16 irq_en;
 	raw_spinlock_t	lock;
 };
@@ -476,31 +474,32 @@ static void mtk_spmi_handle_chained_irq(struct irq_desc *desc)
 	struct pmif_bus *pbus = irq_desc_get_handler_data(desc);
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	struct pmif *arb = to_mtk_pmif(pbus->ctrl);
-	u8 regidx_min, regidx_max;
 	bool irq_handled = false;
 	unsigned int i;
 
-	regidx_min = pbus->irq_min_sid / 4;
-	regidx_min += SPMI_SLV_3_0_EINT;
-
-	regidx_max = pbus->irq_max_sid / 4;
-	regidx_max += SPMI_SLV_3_0_EINT;
-
 	chained_irq_enter(chip, desc);
 
-	for (i = regidx_min; i <= regidx_max; i++) {
+	/* Any SID can raise the interrupt, mapped or not */
+	for (i = SPMI_SLV_3_0_EINT; i <= SPMI_SLV_F_C_EINT; i++) {
 		u32 val = mtk_spmi_readl(arb, pbus, i);
 
 		while (val) {
-			u8 bit = __ffs(val);
-			u8 bank = bit / 7;
+			/* Each SID has a byte of the register */
+			u8 bank = __ffs(val) / 8;
 			u8 sid = ((i - SPMI_SLV_3_0_EINT) * 4) + bank;
+			u32 mask = PMIF_RCS_IRQ_MASK << (8 * bank);
 
-			val &= ~(PMIF_RCS_IRQ_MASK << (8 * bank));
+			val &= ~mask;
 
-			/* Check if IRQs for this SID are enabled */
-			if (!(pbus->irq_en & BIT(sid)))
+			/*
+			 * Nothing handles this SID: clear its flags here, or
+			 * they keep the RCS interrupt raised.
+			 */
+			if (!(pbus->irq_en & BIT(sid))) {
+				mtk_spmi_writel(arb, pbus, mask, i);
+				irq_handled = true;
 				continue;
+			}
 
 			generic_handle_domain_irq_safe(pbus->dom, sid);
 			irq_handled = true;
@@ -577,12 +576,6 @@ static int mtk_spmi_rcs_irq_translate(struct irq_domain *d, struct irq_fwspec *f
 	 */
 	*out_hwirq = intspec[0];
 	*out_type = intspec[2] & IRQ_TYPE_SENSE_MASK;
-
-	if (pbus->irq_min_sid > intspec[0])
-		pbus->irq_min_sid = intspec[0];
-
-	if (pbus->irq_max_sid < intspec[0])
-		pbus->irq_max_sid = intspec[0];
 
 	dev_dbg(dev, "Found SPMI IRQ %u (map: 0x%lx)\n", intspec[0], *out_hwirq);
 
