@@ -37,7 +37,8 @@ struct fdt_handoff_work {
 	struct fdt_handoff_range ram[FDT_HANDOFF_MAX_RANGES];
 	struct fdt_handoff_range reserved[FDT_HANDOFF_MAX_RANGES];
 	struct fdt_handoff_range nomap[FDT_HANDOFF_MAX_RANGES];
-	int nr_ram, nr_reserved, nr_nomap;
+	struct fdt_handoff_range own[FDT_HANDOFF_MAX_RANGES];
+	int nr_ram, nr_reserved, nr_nomap, nr_own;
 	fdt64_t memory_reg[FDT_HANDOFF_MAX_RANGES * 2];
 };
 
@@ -353,8 +354,36 @@ static int __init fdt_handoff_import(void *output, const void *stock,
 	return fdt_setprop(output, node, property, address, sizeof(address));
 }
 
-/* Collects usable memory and the fixed reservations of the stock tree. */
+/*
+ * Collects the fixed regions that the built-in tree reserves itself and wants
+ * mapped. Its no-map regions are left out: the kernel cannot mark a region
+ * no-map once the reservation map holds it, so they stay holes.
+ */
+static int __init fdt_handoff_read_own(const void *mainline,
+				       struct fdt_handoff_work *work)
+{
+	int ret, child, node = fdt_path_offset(mainline, "/reserved-memory");
+
+	if (node < 0)
+		return node == -FDT_ERR_NOTFOUND ? 0 : node;
+	fdt_for_each_subnode(child, mainline, node) {
+		if (!fdt_handoff_enabled(mainline, child) ||
+		    fdt_getprop(mainline, child, "no-map", NULL))
+			continue;
+		ret = fdt_handoff_ranges(mainline, child, work->own,
+					 &work->nr_own);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+/*
+ * Collects usable memory and the fixed reservations of the stock tree. The
+ * built-in tree MAINLINE has the last word on the regions it reserves itself.
+ */
 static int __init fdt_handoff_read_memory(const void *stock,
+					  const void *mainline,
 					  struct fdt_handoff_work *work)
 {
 	int ret, node, child;
@@ -389,9 +418,17 @@ static int __init fdt_handoff_read_memory(const void *stock,
 	 * Keep the firmware's no-map holes out of memory without importing the
 	 * vendor reserved-memory nodes, which belong to vendor drivers and may
 	 * conflict with mainline's. Other fixed reservations go to the
-	 * reservation map: never allocated, but still mappable.
+	 * reservation map: never allocated, but still mappable. A hole that the
+	 * built-in tree reserves itself as mapped memory, such as a restricted
+	 * DMA pool, stays memory.
 	 */
+	ret = fdt_handoff_read_own(mainline, work);
+	if (ret)
+		return ret;
 	for (int i = 0; i < work->nr_nomap; i++) {
+		if (fdt_handoff_contains(work->own, work->nr_own,
+					 work->nomap[i].start, work->nomap[i].end))
+			continue;
 		ret = fdt_handoff_subtract(work->ram, &work->nr_ram,
 					   work->nomap[i]);
 		if (ret)
@@ -548,8 +585,8 @@ static int __init fdt_handoff_prepare(const void *stock, const char *builtin,
 		if (ret)
 			return ret;
 	}
-	work->nr_ram = work->nr_reserved = work->nr_nomap = 0;
-	ret = fdt_handoff_read_memory(stock, work);
+	work->nr_ram = work->nr_reserved = work->nr_nomap = work->nr_own = 0;
+	ret = fdt_handoff_read_memory(stock, builtin, work);
 	if (ret)
 		return ret;
 	if ((keep_initrd &&
