@@ -11,6 +11,7 @@
 #include <dt-bindings/pinctrl/mt65xx.h>
 #include "mt6897.dtsi"
 #include "mt6363.dtsi"
+#include "mt6368.dtsi"
 
 / {
 	model = "Lenovo Idea Tab Pro";
@@ -47,6 +48,13 @@
 			stride = <(2944 * 4)>;
 			format = "a8r8g8b8";
 		};
+	};
+
+	/* The radio die's reference clock, from the MT6685's clock buffer. */
+	conn_clk: clock-conn {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <52000000>;
 	};
 
 	panel_vddi: regulator-panel-vddi {
@@ -95,6 +103,21 @@
 			no-map;
 		};
 
+		/* The bootloader loads the connectivity firmware here. */
+		consys_firmware: memory@8cc00000 {
+			reg = <0 0x8cc00000 0 0xd00000>;
+			no-map;
+		};
+
+		/*
+		 * The only memory the bootloader opens to the Wi-Fi core's DMA;
+		 * every Wi-Fi buffer bounces through it.
+		 */
+		wifi_dma: memory@8d900000 {
+			compatible = "restricted-dma-pool";
+			reg = <0 0x8d900000 0 0x1400000>;
+		};
+
 		/* Scanout buffers: the display reads physical memory. */
 		linux,cma {
 			compatible = "shared-dma-pool";
@@ -103,6 +126,17 @@
 			linux,cma-default;
 		};
 	};
+};
+
+&consys {
+	clocks = <&conn_clk>;
+	memory-region = <&consys_firmware>;
+	vcn13-supply = <&vcn13>;
+	vrf-io18-supply = <&vrf_io18>;
+	vant18-supply = <&vant18>;
+	vcn33-1-supply = <&vcn33_1>;
+	vcn33-2-supply = <&vcn33_2>;
+	status = "okay";
 };
 
 &dpu {
@@ -219,6 +253,35 @@
 	linux,keycodes = <KEY_VOLUMEDOWN>;
 };
 
+/* The connectivity rails, for the MT6637 radio die of this board. */
+&mt6363_regulators {
+	vcn13: vcn13 {
+		regulator-name = "vcn13";
+		regulator-min-microvolt = <1350000>;
+		regulator-max-microvolt = <1350000>;
+	};
+
+	vrf_io18: vrf-io18 {
+		regulator-name = "vrf-io18";
+		regulator-min-microvolt = <1700000>;
+		regulator-max-microvolt = <1700000>;
+	};
+};
+
+&mt6368_regulators {
+	vant18: vant18 {
+		regulator-name = "vant18";
+	};
+
+	vcn33_1: vcn33-1 {
+		regulator-name = "vcn33-1";
+	};
+
+	vcn33_2: vcn33-2 {
+		regulator-name = "vcn33-2";
+	};
+};
+
 &pio {
 	spi2_pins: spi2-pins {
 		pins-bus {
@@ -263,6 +326,13 @@
 };
 
 &ufshci {
+	status = "okay";
+};
+
+&wifi {
+	memory-region = <&wifi_dma>;
+	/* Copied from the nvdata partition at boot */
+	firmware-name = "mediatek/tb373fu-wifi-nvram.bin";
 	status = "okay";
 };
 
