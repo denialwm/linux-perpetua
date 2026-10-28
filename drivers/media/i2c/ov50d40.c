@@ -2072,7 +2072,7 @@ static int ov50d40_disable_streams(struct v4l2_subdev *sd,
 static void ov50d40_update_pad_format(const struct ov50d40_mode *mode,
 				      struct v4l2_mbus_framefmt *fmt)
 {
-	fmt->code = MEDIA_BUS_FMT_SBGGR10_1X10;
+	fmt->code = MEDIA_BUS_FMT_SRGGB10_1X10;
 	fmt->width = mode->width;
 	fmt->height = mode->height;
 	fmt->field = V4L2_FIELD_NONE;
@@ -2132,7 +2132,7 @@ static int ov50d40_enum_mbus_code(struct v4l2_subdev *sd,
 	if (code->index > 0)
 		return -EINVAL;
 
-	code->code = MEDIA_BUS_FMT_SBGGR10_1X10;
+	code->code = MEDIA_BUS_FMT_SRGGB10_1X10;
 
 	return 0;
 }
@@ -2144,7 +2144,7 @@ static int ov50d40_enum_frame_size(struct v4l2_subdev *sd,
 	if (fse->index >= ARRAY_SIZE(ov50d40_supported_modes))
 		return -EINVAL;
 
-	if (fse->code != MEDIA_BUS_FMT_SBGGR10_1X10)
+	if (fse->code != MEDIA_BUS_FMT_SRGGB10_1X10)
 		return -EINVAL;
 
 	fse->min_width = ov50d40_supported_modes[fse->index].width;
