@@ -284,6 +284,16 @@
 		pinctrl-names = "default";
 	};
 
+	vreg_cam_front_vdig: regulator-cam-front-vdig {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_front_vdig";
+		gpio = <&pmh0101_gpios 15 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&cam_front_vdig_en_default>;
+		pinctrl-names = "default";
+	};
+
 	sound {
 		compatible = "qcom,kaanapali-sndcard", "qcom,sm8450-sndcard";
 		model = "Nubia-NX809J";
@@ -955,10 +965,19 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
-		vreg_l4m_2p2: ldo4 {
-			regulator-name = "vreg_l4m_2p2";
-			regulator-min-microvolt = <2200000>;
+		/* Front camera AVDD, the only user in stock */
+		vreg_l4m_2p8: ldo4 {
+			regulator-name = "vreg_l4m_2p8";
+			regulator-min-microvolt = <2800000>;
 			regulator-max-microvolt = <2800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* Front and auxiliary camera I/O */
+		vreg_l5m_1p8: ldo5 {
+			regulator-name = "vreg_l5m_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
@@ -1051,10 +1070,24 @@
 	status = "okay";
 };
 
+&camss_csiphy0_in_port {
+	camss_csiphy0_inep: endpoint {
+		data-lanes = <1>;
+		remote-endpoint = <&csiphy0_out_ep>;
+	};
+};
+
 &camss_csiphy1_in_port {
 	camss_csiphy1_inep: endpoint {
 		data-lanes = <1 2 3 4>;
 		remote-endpoint = <&csiphy1_out_ep>;
+	};
+};
+
+&camss_csiphy3_in_port {
+	camss_csiphy3_inep: endpoint {
+		data-lanes = <1 2 3 4>;
+		remote-endpoint = <&csiphy3_out_ep>;
 	};
 };
 
@@ -1119,6 +1152,116 @@
 	};
 };
 
+&cci1 {
+	status = "okay";
+};
+
+&cci1_i2c0 {
+	/* Front */
+	camera@10 {
+		compatible = "ovti,ov16a1q";
+		reg = <0x10>;
+
+		/* 19.2 MHz, out of PMK8850 GPIO 2 */
+		clocks = <&rpmhcc RPMH_DIV_CLK1>;
+
+		reset-gpios = <&tlmm 7 GPIO_ACTIVE_LOW>;
+
+		avdd-supply = <&vreg_l4m_2p8>;
+		dvdd-supply = <&vreg_cam_front_vdig>;
+		dovdd-supply = <&vreg_l5m_1p8>;
+
+		orientation = <0>;
+		rotation = <90>;
+
+		pinctrl-0 = <&cam_front_mclk_default>, <&cam_front_reset_default>;
+		pinctrl-names = "default";
+
+		port {
+			ov16a1q_ep: endpoint {
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <726400000>;
+				remote-endpoint = <&csiphy3_in_ep>;
+			};
+		};
+	};
+
+	/* Auxiliary */
+	camera@3d {
+		compatible = "ovti,ov02f10";
+		reg = <0x3d>;
+
+		/* 19.2 MHz, out of PMK8850 GPIO 8 */
+		clocks = <&rpmhcc RPMH_DIV_CLK1>;
+
+		reset-gpios = <&tlmm 105 GPIO_ACTIVE_LOW>;
+
+		avdd-supply = <&vreg_l6m_2p8>;
+		dovdd-supply = <&vreg_l5m_1p8>;
+
+		orientation = <1>;
+		rotation = <270>;
+
+		pinctrl-0 = <&cam_aux_mclk_default>, <&cam_aux_reset_default>;
+		pinctrl-names = "default";
+
+		port {
+			ov02f10_ep: endpoint {
+				data-lanes = <1>;
+				link-frequencies = /bits/ 64 <330000000>;
+				remote-endpoint = <&csiphy0_in_ep>;
+			};
+		};
+	};
+};
+
+/* Stock pulls the CCI1 lines up too */
+&cci1_i2c0_default {
+	scl-pins {
+		/delete-property/ bias-disable;
+		bias-pull-up;
+	};
+
+	sda-pins {
+		/delete-property/ bias-disable;
+		bias-pull-up;
+	};
+};
+
+&cci1_i2c1_default {
+	scl-pins {
+		/delete-property/ bias-disable;
+		bias-pull-up;
+	};
+
+	sda-pins {
+		/delete-property/ bias-disable;
+		bias-pull-up;
+	};
+};
+
+&csiphy0 {
+	vdda-0p9-supply = <&vreg_l3i_0p8>;
+	vdda-1p2-supply = <&vreg_l1d_1p2>;
+
+	status = "okay";
+};
+
+&csiphy0_in_port {
+	csiphy0_in_ep: endpoint {
+		bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+		clock-lanes = <0>;
+		data-lanes = <1>;
+		remote-endpoint = <&ov02f10_ep>;
+	};
+};
+
+&csiphy0_out_port {
+	csiphy0_out_ep: endpoint {
+		remote-endpoint = <&camss_csiphy0_inep>;
+	};
+};
+
 &csiphy1 {
 	vdda-0p9-supply = <&vreg_l3i_0p8>;
 	vdda-1p2-supply = <&vreg_l1d_1p2>;
@@ -1138,6 +1281,28 @@
 &csiphy1_out_port {
 	csiphy1_out_ep: endpoint {
 		remote-endpoint = <&camss_csiphy1_inep>;
+	};
+};
+
+&csiphy3 {
+	vdda-0p9-supply = <&vreg_l3i_0p8>;
+	vdda-1p2-supply = <&vreg_l1d_1p2>;
+
+	status = "okay";
+};
+
+&csiphy3_in_port {
+	csiphy3_in_ep: endpoint {
+		bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+		clock-lanes = <0>;
+		data-lanes = <1 2 3 4>;
+		remote-endpoint = <&ov16a1q_ep>;
+	};
+};
+
+&csiphy3_out_port {
+	csiphy3_out_ep: endpoint {
+		remote-endpoint = <&camss_csiphy3_inep>;
 	};
 };
 
@@ -1333,6 +1498,13 @@
 		qcom,drive-strength = <PMIC_GPIO_STRENGTH_MED>;
 	};
 
+	cam_front_vdig_en_default: cam-front-vdig-en-default-state {
+		pins = "gpio15";
+		function = "normal";
+		power-source = <0>;
+		qcom,drive-strength = <PMIC_GPIO_STRENGTH_MED>;
+	};
+
 	cam_uw_vana_en_default: cam-uw-vana-en-default-state {
 		pins = "gpio18";
 		function = "normal";
@@ -1381,6 +1553,22 @@
  * 0x9f and 0xa2; mainline exposes the first 128 bytes. 0x7c-0x7f is free
  * and was zero: a 4-byte offset fits there.
  */
+&pmk8850_gpios {
+	cam_front_mclk_default: cam-front-mclk-default-state {
+		pins = "gpio2";
+		function = "func2";
+		output-enable;
+		power-source = <0>;
+	};
+
+	cam_aux_mclk_default: cam-aux-mclk-default-state {
+		pins = "gpio8";
+		function = "func2";
+		output-enable;
+		power-source = <0>;
+	};
+};
+
 &pmk8850_rtc {
 	nvmem-cells = <&rtc_offset>;
 	nvmem-cell-names = "offset";
@@ -1500,6 +1688,20 @@
 		pins = "gpio215";
 		function = "gpio";
 		drive-strength = <8>;
+		bias-disable;
+	};
+
+	cam_aux_reset_default: cam-aux-reset-default-state {
+		pins = "gpio105";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cam_front_reset_default: cam-front-reset-default-state {
+		pins = "gpio7";
+		function = "gpio";
+		drive-strength = <2>;
 		bias-disable;
 	};
 
