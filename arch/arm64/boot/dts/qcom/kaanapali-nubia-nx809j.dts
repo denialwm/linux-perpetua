@@ -1079,6 +1079,7 @@
 		dovdd-supply = <&vreg_cam_vio>;
 
 		orientation = <1>;
+		rotation = <270>;
 
 		pinctrl-0 = <&cam_mclk1_default>, <&cam_uw_reset_default>;
 		pinctrl-names = "default";
