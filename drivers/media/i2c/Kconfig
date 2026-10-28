@@ -602,6 +602,17 @@ config VIDEO_OV50D40
 	  To compile this driver as a module, choose M here: the
 	  module will be called ov50d40.
 
+config VIDEO_OV50E40
+	tristate "OmniVision OV50E40 sensor support"
+	depends on GPIOLIB
+	select V4L2_CCI_I2C
+	help
+	  This is a Video4Linux2 sensor driver for the OmniVision
+	  OV50E40 camera.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ov50e40.
+
 config VIDEO_OV5640
 	tristate "OmniVision OV5640 sensor support"
 	depends on OF
