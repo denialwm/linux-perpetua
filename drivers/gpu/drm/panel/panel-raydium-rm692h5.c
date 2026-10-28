@@ -27,6 +27,17 @@
 
 #define RM692H5_MAX_BRIGHTNESS	8190
 
+/*
+ * Blanking keeps the panel powered, initialized and out of sleep with only
+ * its display off, so waking is a display-on instead of the power cycle and
+ * initialization (about 250 ms). Off restores the full power cycle.
+ */
+static bool retain = true;
+module_param(retain, bool, 0644);
+MODULE_PARM_DESC(retain, "Keep the panel powered while blanked for a fast wake");
+
+struct rm692h5_rate;
+
 /* Power-on order and delays as in the downstream panel power sequence */
 static const char * const rm692h5_supply_names[] = { "vddio", "vdd", "vci" };
 
@@ -37,6 +48,10 @@ struct rm692h5 {
 	struct drm_dsc_config dsc;
 	struct gpio_desc *reset_gpio;
 	struct regulator_bulk_data supplies[ARRAY_SIZE(rm692h5_supply_names)];
+	/* The refresh rate the panel runs; it outlives a retained blank. */
+	const struct rm692h5_rate *rate;
+	bool retained, shutting_down;
+	ktime_t wake;
 };
 
 static inline struct rm692h5 *to_rm692h5(struct drm_panel *panel)
@@ -479,9 +494,9 @@ static int rm692h5_off(struct rm692h5 *ctx)
 	return dsi_ctx.accum_err;
 }
 
-static int rm692h5_prepare(struct drm_panel *panel)
+/* Power the panel up from off and initialize it, display on. */
+static int rm692h5_cold(struct rm692h5 *ctx, const struct rm692h5_rate *rate)
 {
-	struct rm692h5 *ctx = to_rm692h5(panel);
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
 	struct drm_dsc_picture_parameter_set pps;
 	int ret;
@@ -491,7 +506,7 @@ static int rm692h5_prepare(struct drm_panel *panel)
 		return ret;
 
 	rm692h5_reset(ctx);
-	rm692h5_on(&dsi_ctx, rm692h5_get_rate(ctx));
+	rm692h5_on(&dsi_ctx, rate);
 
 	drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
 	mipi_dsi_picture_parameter_set_multi(&dsi_ctx, &pps);
@@ -502,6 +517,7 @@ static int rm692h5_prepare(struct drm_panel *panel)
 	}
 
 	msleep(28);
+	ctx->rate = rate;
 
 	return 0;
 
@@ -512,10 +528,85 @@ err:
 	return ret;
 }
 
+static int rm692h5_prepare(struct drm_panel *panel)
+{
+	struct rm692h5 *ctx = to_rm692h5(panel);
+	const struct rm692h5_rate *rate = rm692h5_get_rate(ctx);
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
+
+	ctx->wake = ktime_get();
+	if (!ctx->retained)
+		return rm692h5_cold(ctx, rate);
+
+	/* Still initialized: only a new refresh rate goes out. */
+	if (rate != ctx->rate) {
+		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+		rm692h5_send_rate(&dsi_ctx, rate);
+		if (dsi_ctx.accum_err) {
+			ctx->retained = false;
+			gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+			rm692h5_power_off(ctx);
+			return rm692h5_cold(ctx, rate);
+		}
+		ctx->rate = rate;
+	}
+
+	return 0;
+}
+
+static int rm692h5_enable(struct drm_panel *panel)
+{
+	struct rm692h5 *ctx = to_rm692h5(panel);
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
+	const u8 on = MIPI_DSI_DCS_POWER_MODE_SLEEP | MIPI_DSI_DCS_POWER_MODE_DISPLAY;
+	bool retained = ctx->retained;
+	u8 mode = 0;
+	int ret = 0;
+
+	if (retained) {
+		ctx->retained = false;
+		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+		mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
+		ret = dsi_ctx.accum_err ?: mipi_dsi_dcs_get_power_mode(ctx->dsi, &mode);
+		if (!ret && (mode & on) != on)
+			ret = -EIO;
+		if (ret) {
+			/* Never leave a blank panel behind: start it over. */
+			dev_warn(&ctx->dsi->dev, "retained panel did not wake (%d, mode %02x); restarting it\n",
+				 ret, mode);
+			gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+			rm692h5_power_off(ctx);
+			ret = rm692h5_cold(ctx, ctx->rate);
+		}
+	}
+
+	dev_info(&ctx->dsi->dev, "wake retained=%d mode=%02x took %lld us result=%d\n",
+		 retained, mode, ktime_us_delta(ktime_get(), ctx->wake), ret);
+	return ret;
+}
+
+static int rm692h5_disable(struct drm_panel *panel)
+{
+	struct rm692h5 *ctx = to_rm692h5(panel);
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
+
+	if (!retain || ctx->shutting_down)
+		return 0;
+
+	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
+	ctx->retained = !dsi_ctx.accum_err;
+
+	return 0;
+}
+
 static int rm692h5_unprepare(struct drm_panel *panel)
 {
 	struct rm692h5 *ctx = to_rm692h5(panel);
 	int ret;
+
+	if (ctx->retained)
+		return 0;
 
 	ret = rm692h5_off(ctx);
 	if (ret < 0)
@@ -555,6 +646,8 @@ static int rm692h5_get_modes(struct drm_panel *panel,
 
 static const struct drm_panel_funcs rm692h5_panel_funcs = {
 	.prepare = rm692h5_prepare,
+	.enable = rm692h5_enable,
+	.disable = rm692h5_disable,
 	.unprepare = rm692h5_unprepare,
 	.get_modes = rm692h5_get_modes,
 };
@@ -664,6 +757,14 @@ static void rm692h5_remove(struct mipi_dsi_device *dsi)
 	drm_panel_remove(&ctx->panel);
 }
 
+/* Shutdown blanks with the full power cycle. */
+static void rm692h5_shutdown(struct mipi_dsi_device *dsi)
+{
+	struct rm692h5 *ctx = mipi_dsi_get_drvdata(dsi);
+
+	ctx->shutting_down = true;
+}
+
 static const struct of_device_id rm692h5_of_match[] = {
 	{ .compatible = "nubia,nx809j-rm692h5" },
 	{ /* sentinel */ }
@@ -673,6 +774,7 @@ MODULE_DEVICE_TABLE(of, rm692h5_of_match);
 static struct mipi_dsi_driver rm692h5_driver = {
 	.probe = rm692h5_probe,
 	.remove = rm692h5_remove,
+	.shutdown = rm692h5_shutdown,
 	.driver = {
 		.name = "panel-raydium-rm692h5",
 		.of_match_table = rm692h5_of_match,
