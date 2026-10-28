@@ -492,6 +492,16 @@ phy_qcom_mipi_csi2_lanes_disable(struct mipi_csi2phy_device *csi2phy,
 
 	writel(0, csi2phy->base +
 	       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 6));
+
+	/*
+	 * Stay in reset until the next stream, as the vendor driver does. On
+	 * Kaanapali a CSIPHY left running after a D-PHY stream stops the next
+	 * C-PHY stream on another CSIPHY from reaching the CSID about half the
+	 * time, until TITAN_TOP powers off.
+	 */
+	writel(CSIPHY_3PH_CMN_CSI_COMMON_CTRL0_PHY_SW_RESET,
+	       csi2phy->base + CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->common_regs_offset, 0));
+	fsleep(20);
 }
 
 static const struct mipi_csi2phy_hw_ops phy_qcom_mipi_csi2_ops_3ph_1_0 = {
