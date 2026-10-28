@@ -20,11 +20,11 @@
 #include <media/v4l2-fwnode.h>
 
 /*
- * Stock output pixel clock 581.12 MHz: 10 bits over four lanes is
- * 1452.8 Mbit/s per lane, a 726.4 MHz DDR link clock
+ * The binned mode sends 800 Mbit/s per lane (MIPI period register 0x4837
+ * = 20), a 400 MHz DDR link clock: 320 Mpixel/s of 10 bits over four lanes
  */
-#define OV16A1Q_PIXEL_RATE		581120000ULL
-#define OV16A1Q_LINK_FREQ_726MHZ	(726400ULL * HZ_PER_KHZ)
+#define OV16A1Q_PIXEL_RATE		320000000ULL
+#define OV16A1Q_LINK_FREQ_400MHZ	(400 * HZ_PER_MHZ)
 #define OV16A1Q_MCLK_FREQ_19_2MHZ	(19200 * HZ_PER_KHZ)
 #define OV16A1Q_DATA_LANES		4
 
@@ -54,7 +54,7 @@
 #define to_ov16a1q(_sd)			container_of(_sd, struct ov16a1q, sd)
 
 static const s64 ov16a1q_link_freq_menu[] = {
-	OV16A1Q_LINK_FREQ_726MHZ,
+	OV16A1Q_LINK_FREQ_400MHZ,
 };
 
 struct ov16a1q_reg_list {
@@ -660,15 +660,15 @@ static const struct cci_reg_sequence ov16a1q_init[] = {
 	{ CCI_REG8(0x4800), 0x64 },
 };
 
-static const struct cci_reg_sequence ov16a1q_4608x3456_mode[] = {
-	{ CCI_REG8(0x0305), 0xc6 },
-	{ CCI_REG8(0x0307), 0x00 },
-	{ CCI_REG8(0x4837), 0x0b },
+static const struct cci_reg_sequence ov16a1q_2304x1728_mode[] = {
+	{ CCI_REG8(0x0305), 0xe1 },
+	{ CCI_REG8(0x0307), 0x01 },
+	{ CCI_REG8(0x4837), 0x14 },
 	{ CCI_REG8(0x0329), 0x01 },
 	{ CCI_REG8(0x0344), 0x01 },
 	{ CCI_REG8(0x0345), 0x77 },
 	{ CCI_REG8(0x034a), 0x07 },
-	{ CCI_REG8(0x3608), 0x9b },
+	{ CCI_REG8(0x3608), 0x75 },
 	{ CCI_REG8(0x360a), 0x69 },
 	{ CCI_REG8(0x361a), 0x8b },
 	{ CCI_REG8(0x361e), 0x30 },
@@ -678,79 +678,79 @@ static const struct cci_reg_sequence ov16a1q_4608x3456_mode[] = {
 	{ CCI_REG8(0x3654), 0x8a },
 	{ CCI_REG8(0x3656), 0x0c },
 	{ CCI_REG8(0x3663), 0x00 },
-	{ CCI_REG8(0x370e), 0x05 },
-	{ CCI_REG8(0x3712), 0x09 },
+	{ CCI_REG8(0x370e), 0xa5 },
+	{ CCI_REG8(0x3712), 0x59 },
 	{ CCI_REG8(0x3713), 0x40 },
 	{ CCI_REG8(0x3714), 0xe4 },
 	{ CCI_REG8(0x37d0), 0x02 },
 	{ CCI_REG8(0x37d1), 0x10 },
-	{ CCI_REG8(0x37db), 0x08 },
-	{ CCI_REG8(0x3808), 0x12 },
+	{ CCI_REG8(0x37db), 0x04 },
+	{ CCI_REG8(0x3808), 0x09 },
 	{ CCI_REG8(0x3809), 0x00 },
-	{ CCI_REG8(0x380a), 0x0d },
-	{ CCI_REG8(0x380b), 0x80 },
+	{ CCI_REG8(0x380a), 0x06 },
+	{ CCI_REG8(0x380b), 0xc0 },
 	{ CCI_REG8(0x380c), 0x03 },
 	{ CCI_REG8(0x380d), 0x52 },
 	{ CCI_REG8(0x380e), 0x0f },
 	{ CCI_REG8(0x380f), 0x50 },
 	{ CCI_REG8(0x3814), 0x11 },
-	{ CCI_REG8(0x3815), 0x11 },
-	{ CCI_REG8(0x3820), 0x04 },
+	{ CCI_REG8(0x3815), 0x22 },
+	{ CCI_REG8(0x3820), 0x05 },
 	{ CCI_REG8(0x3821), 0x02 },
-	{ CCI_REG8(0x3822), 0x00 },
-	{ CCI_REG8(0x383c), 0x34 },
-	{ CCI_REG8(0x383f), 0x22 },
-	{ CCI_REG8(0x4015), 0x04 },
-	{ CCI_REG8(0x4016), 0x1b },
-	{ CCI_REG8(0x4017), 0x04 },
-	{ CCI_REG8(0x4018), 0x0b },
+	{ CCI_REG8(0x3822), 0x01 },
+	{ CCI_REG8(0x383c), 0x22 },
+	{ CCI_REG8(0x383f), 0x33 },
+	{ CCI_REG8(0x4015), 0x02 },
+	{ CCI_REG8(0x4016), 0x0d },
+	{ CCI_REG8(0x4017), 0x00 },
+	{ CCI_REG8(0x4018), 0x07 },
 	{ CCI_REG8(0x401b), 0x1f },
 	{ CCI_REG8(0x401f), 0x38 },
 	{ CCI_REG8(0x4500), 0x20 },
-	{ CCI_REG8(0x4501), 0x6a },
-	{ CCI_REG8(0x4502), 0xb4 },
+	{ CCI_REG8(0x4501), 0x6f },
+	{ CCI_REG8(0x4502), 0xe4 },
 	{ CCI_REG8(0x4e05), 0x04 },
 	{ CCI_REG8(0x4e11), 0x06 },
 	{ CCI_REG8(0x4e1d), 0x30 },
 	{ CCI_REG8(0x4e26), 0x39 },
 	{ CCI_REG8(0x4e29), 0x6d },
-	{ CCI_REG8(0x5000), 0x01 },
-	{ CCI_REG8(0x5001), 0x40 },
-	{ CCI_REG8(0x5003), 0x42 },
-	{ CCI_REG8(0x5820), 0xc5 },
-	{ CCI_REG8(0x5854), 0x00 },
-	{ CCI_REG8(0x5bd0), 0x15 },
+	{ CCI_REG8(0x5000), 0x29 },
+	{ CCI_REG8(0x5001), 0xc2 },
+	{ CCI_REG8(0x5003), 0xc2 },
+	{ CCI_REG8(0x5820), 0xc0 },
+	{ CCI_REG8(0x5854), 0x01 },
+	{ CCI_REG8(0x5bd0), 0x19 },
 	{ CCI_REG8(0x5c0e), 0x11 },
-	{ CCI_REG8(0x5c11), 0x00 },
+	{ CCI_REG8(0x5c11), 0x01 },
 	{ CCI_REG8(0x5c16), 0x02 },
-	{ CCI_REG8(0x5c17), 0x01 },
-	{ CCI_REG8(0x5c1a), 0x04 },
-	{ CCI_REG8(0x5c1b), 0x03 },
+	{ CCI_REG8(0x5c17), 0x00 },
+	{ CCI_REG8(0x5c1a), 0x00 },
+	{ CCI_REG8(0x5c1b), 0x00 },
 	{ CCI_REG8(0x5c21), 0x10 },
-	{ CCI_REG8(0x5c22), 0x10 },
+	{ CCI_REG8(0x5c22), 0x08 },
 	{ CCI_REG8(0x5c23), 0x04 },
 	{ CCI_REG8(0x5c24), 0x0c },
 	{ CCI_REG8(0x5c25), 0x04 },
 	{ CCI_REG8(0x5c26), 0x0c },
-	{ CCI_REG8(0x5c27), 0x04 },
-	{ CCI_REG8(0x5c28), 0x0c },
-	{ CCI_REG8(0x5c29), 0x04 },
-	{ CCI_REG8(0x5c2a), 0x0c },
+	{ CCI_REG8(0x5c27), 0x02 },
+	{ CCI_REG8(0x5c28), 0x06 },
+	{ CCI_REG8(0x5c29), 0x02 },
+	{ CCI_REG8(0x5c2a), 0x06 },
 	{ CCI_REG8(0x5c2b), 0x01 },
-	{ CCI_REG8(0x5c2c), 0x01 },
-	{ CCI_REG8(0x5d01), 0x0f },
-	{ CCI_REG8(0x5d08), 0x10 },
-	{ CCI_REG8(0x5d09), 0x10 },
-	{ CCI_REG8(0x5d0a), 0x04 },
-	{ CCI_REG8(0x5d0b), 0x0c },
-	{ CCI_REG8(0x5d0c), 0x04 },
-	{ CCI_REG8(0x5d0d), 0x0c },
-	{ CCI_REG8(0x5d0e), 0x04 },
-	{ CCI_REG8(0x5d0f), 0x0c },
-	{ CCI_REG8(0x5d10), 0x04 },
-	{ CCI_REG8(0x5d11), 0x0c },
-	{ CCI_REG8(0x5d12), 0x01 },
-	{ CCI_REG8(0x5d13), 0x01 },
+	{ CCI_REG8(0x5c2c), 0x00 },
+	{ CCI_REG8(0x5d01), 0x07 },
+	{ CCI_REG8(0x5d08), 0x08 },
+	{ CCI_REG8(0x5d09), 0x08 },
+	{ CCI_REG8(0x5d0a), 0x02 },
+	{ CCI_REG8(0x5d0b), 0x06 },
+	{ CCI_REG8(0x5d0c), 0x02 },
+	{ CCI_REG8(0x5d0d), 0x06 },
+	{ CCI_REG8(0x5d0e), 0x02 },
+	{ CCI_REG8(0x5d0f), 0x06 },
+	{ CCI_REG8(0x5d10), 0x02 },
+	{ CCI_REG8(0x5d11), 0x06 },
+	{ CCI_REG8(0x5d12), 0x00 },
+	{ CCI_REG8(0x5d13), 0x00 },
 	{ CCI_REG8(0x3500), 0x00 },
 	{ CCI_REG8(0x3501), 0x0f },
 	{ CCI_REG8(0x3502), 0x48 },
@@ -760,15 +760,15 @@ static const struct cci_reg_sequence ov16a1q_4608x3456_mode[] = {
 
 static const struct ov16a1q_mode ov16a1q_supported_modes[] = {
 	{
-		/* Full resolution, 30 fps */
-		.width = 4608,
-		.height = 3456,
-		.hts = 4942,
+		/* 2x2 binned full field of view, 30 fps */
+		.width = 2304,
+		.height = 1728,
+		.hts = 2721,
 		.vts = 3920,
 		.exposure = 3912,
 		.reg_list = {
-			.regs = ov16a1q_4608x3456_mode,
-			.num_regs = ARRAY_SIZE(ov16a1q_4608x3456_mode),
+			.regs = ov16a1q_2304x1728_mode,
+			.num_regs = ARRAY_SIZE(ov16a1q_2304x1728_mode),
 		},
 	},
 };
@@ -952,7 +952,7 @@ static int ov16a1q_disable_streams(struct v4l2_subdev *sd,
 static void ov16a1q_update_pad_format(const struct ov16a1q_mode *mode,
 				      struct v4l2_mbus_framefmt *fmt)
 {
-	fmt->code = MEDIA_BUS_FMT_SGRBG10_1X10;
+	fmt->code = MEDIA_BUS_FMT_SBGGR10_1X10;
 	fmt->width = mode->width;
 	fmt->height = mode->height;
 	fmt->field = V4L2_FIELD_NONE;
@@ -1012,7 +1012,7 @@ static int ov16a1q_enum_mbus_code(struct v4l2_subdev *sd,
 	if (code->index > 0)
 		return -EINVAL;
 
-	code->code = MEDIA_BUS_FMT_SGRBG10_1X10;
+	code->code = MEDIA_BUS_FMT_SBGGR10_1X10;
 
 	return 0;
 }
@@ -1024,7 +1024,7 @@ static int ov16a1q_enum_frame_size(struct v4l2_subdev *sd,
 	if (fse->index >= ARRAY_SIZE(ov16a1q_supported_modes))
 		return -EINVAL;
 
-	if (fse->code != MEDIA_BUS_FMT_SGRBG10_1X10)
+	if (fse->code != MEDIA_BUS_FMT_SBGGR10_1X10)
 		return -EINVAL;
 
 	fse->min_width = ov16a1q_supported_modes[fse->index].width;
@@ -1044,6 +1044,7 @@ static int ov16a1q_get_selection(struct v4l2_subdev *sd,
 	case V4L2_SEL_TGT_CROP_DEFAULT:
 	case V4L2_SEL_TGT_CROP_BOUNDS:
 	case V4L2_SEL_TGT_NATIVE_SIZE:
+		/* The binned mode reads the full 4608x3456 array */
 		sel->r.left = 0;
 		sel->r.top = 0;
 		sel->r.width = 4608;
