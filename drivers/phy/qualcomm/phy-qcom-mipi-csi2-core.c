@@ -26,10 +26,10 @@
 
 static int
 phy_qcom_mipi_csi2_set_clock_rates(struct mipi_csi2phy_device *csi2phy,
-				   s64 link_freq)
+				   unsigned long rate)
 {
 	struct device *dev = csi2phy->dev;
-	unsigned long opp_rate = link_freq / 4;
+	unsigned long opp_rate = rate;
 	struct dev_pm_opp *opp;
 	long timer_rate;
 	int i, pstate;
@@ -37,8 +37,8 @@ phy_qcom_mipi_csi2_set_clock_rates(struct mipi_csi2phy_device *csi2phy,
 
 	opp = dev_pm_opp_find_freq_ceil(dev, &opp_rate);
 	if (IS_ERR(opp)) {
-		dev_err(csi2phy->dev, "Couldn't find ceiling for %lld Hz\n",
-			link_freq);
+		dev_err(csi2phy->dev, "Couldn't find ceiling for %lu Hz\n",
+			rate);
 		return PTR_ERR(opp);
 	}
 
@@ -68,7 +68,7 @@ phy_qcom_mipi_csi2_set_clock_rates(struct mipi_csi2phy_device *csi2phy,
 		goto unset_opp_rate;
 	}
 
-	timer_rate = clk_round_rate(csi2phy->timer_clk, link_freq / 4);
+	timer_rate = clk_round_rate(csi2phy->timer_clk, rate);
 	if (timer_rate <= 0) {
 		ret = -ENODEV;
 		goto unset_opp_rate;
@@ -104,6 +104,18 @@ static int phy_qcom_mipi_csi2_configure(struct phy *phy,
 	struct mipi_csi2phy_stream_cfg *stream_cfg = &csi2phy->stream_cfg;
 	int ret;
 
+	if (csi2phy->phy_mode == PHY_MODE_MIPI_CPHY) {
+		struct phy_configure_opts_mipi_cphy *cphy_cfg = &opts->mipi_cphy;
+
+		if (!cphy_cfg->symbol_rate ||
+		    cphy_cfg->trios != stream_cfg->num_data_lanes)
+			return -EINVAL;
+
+		stream_cfg->symbol_rate = cphy_cfg->symbol_rate;
+
+		return 0;
+	}
+
 	ret = phy_mipi_dphy_config_validate(dphy_cfg);
 	if (ret)
 		return ret;
@@ -124,10 +136,10 @@ static int phy_qcom_mipi_csi2_set_mode(struct phy *phy,
 {
 	struct mipi_csi2phy_device *csi2phy = phy_get_drvdata(phy);
 
-	if (mode != PHY_MODE_MIPI_DPHY)
+	/* The bus type of the endpoint sets the mode */
+	if (mode != csi2phy->phy_mode)
 		return -EOPNOTSUPP;
 
-	csi2phy->phy_mode = mode;
 	return 0;
 }
 
@@ -135,7 +147,15 @@ static int phy_qcom_mipi_csi2_power_on(struct phy *phy)
 {
 	struct mipi_csi2phy_device *csi2phy = phy_get_drvdata(phy);
 	const struct mipi_csi2phy_hw_ops *ops = csi2phy->soc_cfg->ops;
+	struct mipi_csi2phy_stream_cfg *stream_cfg = &csi2phy->stream_cfg;
+	unsigned long rate;
 	int i, ret;
+
+	/* The core clock takes a byte per D-PHY lane or two per C-PHY trio */
+	if (csi2phy->phy_mode == PHY_MODE_MIPI_CPHY)
+		rate = div_u64(stream_cfg->symbol_rate, 7);
+	else
+		rate = stream_cfg->link_freq / 4;
 
 	ret = regulator_bulk_enable(csi2phy->soc_cfg->num_supplies,
 				    csi2phy->supplies);
@@ -146,7 +166,7 @@ static int phy_qcom_mipi_csi2_power_on(struct phy *phy)
 	if (ret < 0)
 		goto disable_regulators;
 
-	ret = phy_qcom_mipi_csi2_set_clock_rates(csi2phy, csi2phy->stream_cfg.link_freq);
+	ret = phy_qcom_mipi_csi2_set_clock_rates(csi2phy, rate);
 	if (ret)
 		goto poweroff_phy;
 
@@ -258,6 +278,7 @@ static int phy_qcom_mipi_csi2_parse_routing(struct mipi_csi2phy_device *csi2phy)
 	struct fwnode_handle *ep;
 	int num_polarities;
 	int num_data_lanes;
+	int max_data_lanes;
 	u32 bus_type;
 	int i, ret;
 
@@ -278,14 +299,23 @@ static int phy_qcom_mipi_csi2_parse_routing(struct mipi_csi2phy_device *csi2phy)
 	bus_type = MEDIA_BUS_TYPE_CSI2_DPHY;
 	fwnode_property_read_u32(ep, "bus-type", &bus_type);
 
-	if (bus_type != MEDIA_BUS_TYPE_CSI2_DPHY) {
+	switch (bus_type) {
+	case MEDIA_BUS_TYPE_CSI2_DPHY:
+		csi2phy->phy_mode = PHY_MODE_MIPI_DPHY;
+		max_data_lanes = CSI2_MAX_DATA_LANES;
+		break;
+	case MEDIA_BUS_TYPE_CSI2_CPHY:
+		csi2phy->phy_mode = PHY_MODE_MIPI_CPHY;
+		max_data_lanes = CSI2_MAX_TRIOS;
+		break;
+	default:
 		ret = -EOPNOTSUPP;
 		dev_err(dev, "Unsupported bus-type %u\n", bus_type);
 		goto out_put;
 	}
 
 	num_data_lanes = fwnode_property_count_u32(ep, "data-lanes");
-	if (num_data_lanes < 1 || num_data_lanes > CSI2_MAX_DATA_LANES) {
+	if (num_data_lanes < 1 || num_data_lanes > max_data_lanes) {
 		ret = -EINVAL;
 		dev_err(dev, "Invalid data-lanes count: %d\n", num_data_lanes);
 		goto out_put;
@@ -322,7 +352,7 @@ static int phy_qcom_mipi_csi2_parse_routing(struct mipi_csi2phy_device *csi2phy)
 	csi2phy->stream_cfg.lane_cfg.clk.pol = lane_polarities[0];
 
 	for (i = 0; i < csi2phy->stream_cfg.num_data_lanes; i++) {
-		if (data_lanes[i] < 1 || data_lanes[i] > CSI2_MAX_DATA_LANES) {
+		if (data_lanes[i] < 1 || data_lanes[i] > max_data_lanes) {
 			dev_err(dev, "Invalid lane %d\n", data_lanes[i]);
 			ret = -EINVAL;
 			goto out_put;
