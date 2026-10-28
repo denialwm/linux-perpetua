@@ -329,16 +329,14 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 	u8 bpp = csiphy_get_bpp(csiphy->res->formats->formats, csiphy->res->formats->nformats,
 				csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
 	struct csiphy_lanes_cfg *lncfg = &csiphy->cfg.csi2->lane_cfg;
-	struct phy_configure_opts_mipi_dphy *dphy_cfg;
-	union phy_configure_opts dphy_opts = { 0 };
+	const bool cphy = lncfg->phy_cfg == V4L2_MBUS_CSI2_CPHY;
+	union phy_configure_opts opts = { 0 };
 	struct device *dev = csiphy->camss->dev;
 	u8 num_lanes = lncfg->num_data;
 	s64 link_freq;
 	int ret;
 
-	dphy_cfg = &dphy_opts.mipi_dphy;
-
-	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes, false);
+	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes, cphy);
 
 	if (link_freq <= 0) {
 		dev_err(dev,
@@ -346,23 +344,29 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 		return -EINVAL;
 	}
 
-	ret = phy_mipi_dphy_get_default_config_for_hsclk(link_freq, num_lanes,
-							 dphy_cfg);
-	if (ret < 0) {
-		dev_err(dev, "Invalid config for link frequency %lld\n",
-			link_freq);
-		return ret;
+	if (cphy) {
+		/* The C-PHY link frequency is half the symbol rate */
+		opts.mipi_cphy.symbol_rate = link_freq * 2;
+		opts.mipi_cphy.trios = num_lanes;
+	} else {
+		ret = phy_mipi_dphy_get_default_config_for_hsclk(link_freq, num_lanes,
+								 &opts.mipi_dphy);
+		if (ret < 0) {
+			dev_err(dev, "Invalid config for link frequency %lld\n",
+				link_freq);
+			return ret;
+		}
 	}
 
-	ret = phy_set_mode(csiphy->phy, PHY_MODE_MIPI_DPHY);
+	ret = phy_set_mode(csiphy->phy, cphy ? PHY_MODE_MIPI_CPHY : PHY_MODE_MIPI_DPHY);
 	if (ret) {
 		dev_err(dev, "Failed to set phy mode\n");
 		return ret;
 	}
 
-	ret = phy_configure(csiphy->phy, &dphy_opts);
+	ret = phy_configure(csiphy->phy, &opts);
 	if (ret) {
-		dev_err(dev, "failed to configure MIPI D-PHY\n");
+		dev_err(dev, "failed to configure MIPI %s\n", cphy ? "C-PHY" : "D-PHY");
 		goto error;
 	}
 
