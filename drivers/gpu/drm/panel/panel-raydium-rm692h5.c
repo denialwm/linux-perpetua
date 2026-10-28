@@ -558,30 +558,29 @@ static int rm692h5_enable(struct drm_panel *panel)
 {
 	struct rm692h5 *ctx = to_rm692h5(panel);
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
-	const u8 on = MIPI_DSI_DCS_POWER_MODE_SLEEP | MIPI_DSI_DCS_POWER_MODE_DISPLAY;
 	bool retained = ctx->retained;
-	u8 mode = 0;
 	int ret = 0;
 
+	/*
+	 * No power-mode read here: the controller flags a FIFO error after
+	 * this panel's answer, and the next command can then time out.
+	 */
 	if (retained) {
 		ctx->retained = false;
 		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 		mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
-		ret = dsi_ctx.accum_err ?: mipi_dsi_dcs_get_power_mode(ctx->dsi, &mode);
-		if (!ret && (mode & on) != on)
-			ret = -EIO;
+		ret = dsi_ctx.accum_err;
 		if (ret) {
 			/* Never leave a blank panel behind: start it over. */
-			dev_warn(&ctx->dsi->dev, "retained panel did not wake (%d, mode %02x); restarting it\n",
-				 ret, mode);
+			dev_warn(&ctx->dsi->dev, "retained panel did not wake (%d); restarting it\n", ret);
 			gpiod_set_value_cansleep(ctx->reset_gpio, 1);
 			rm692h5_power_off(ctx);
 			ret = rm692h5_cold(ctx, ctx->rate);
 		}
 	}
 
-	dev_info(&ctx->dsi->dev, "wake retained=%d mode=%02x took %lld us result=%d\n",
-		 retained, mode, ktime_us_delta(ktime_get(), ctx->wake), ret);
+	dev_info(&ctx->dsi->dev, "wake retained=%d took %lld us result=%d\n",
+		 retained, ktime_us_delta(ktime_get(), ctx->wake), ret);
 	return ret;
 }
 
