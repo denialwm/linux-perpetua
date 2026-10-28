@@ -40,11 +40,16 @@ static void goodix_fp_free(struct kref *ref)
 static void goodix_fp_reset(struct goodix_fp *fp)
 {
 	/* Stock gf_hw_reset: physical low for 10 ms, then high for 5 ms. */
+	dev_info(fp->misc.parent, "reset: asserting GPIO\n");
 	gpiod_set_value_cansleep(fp->reset, 1);
+	dev_info(fp->misc.parent, "reset: GPIO asserted\n");
 	usleep_range(10000, 10100);
+	dev_info(fp->misc.parent, "reset: deasserting GPIO\n");
 	gpiod_set_value_cansleep(fp->reset, 0);
+	dev_info(fp->misc.parent, "reset: GPIO deasserted\n");
 	usleep_range(5000, 6000);
 	fp->reset_sequence++;
+	dev_info(fp->misc.parent, "reset: complete\n");
 }
 
 static int goodix_fp_power_on(struct goodix_fp *fp)
@@ -53,12 +58,16 @@ static int goodix_fp_power_on(struct goodix_fp *fp)
 
 	if (fp->powered)
 		return 0;
+	dev_info(fp->misc.parent, "power-on: enabling vdd\n");
 	ret = regulator_enable(fp->vdd);
+	dev_info(fp->misc.parent, "power-on: vdd result %d\n", ret);
 	if (ret)
 		return ret;
 	goodix_fp_reset(fp);
 	fp->powered = true;
+	dev_info(fp->misc.parent, "power-on: enabling IRQ\n");
 	enable_irq(fp->irq);
+	dev_info(fp->misc.parent, "power-on: complete\n");
 	return 0;
 }
 
