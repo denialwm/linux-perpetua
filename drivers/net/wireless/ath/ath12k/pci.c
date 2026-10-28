@@ -1834,6 +1834,7 @@ int ath12k_pci_register_driver(const enum ath12k_device_family device_id,
 	pci_driver->remove = ath12k_pci_remove;
 	pci_driver->shutdown = ath12k_pci_shutdown;
 	pci_driver->driver.pm = &ath12k_pci_pm_ops;
+	pci_driver->dev_groups = ath12k_mac_groups;
 
 	return pci_register_driver(pci_driver);
 }

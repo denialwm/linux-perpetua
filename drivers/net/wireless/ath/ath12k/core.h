@@ -954,6 +954,8 @@ enum ath12k_device_family {
 /* Master structure to hold the hw data which may be used in core module */
 struct ath12k_base {
 	enum ath12k_hw_rev hw_rev;
+	/* Userspace keeps station power save off, see power_save_allowed. */
+	bool power_save_blocked;
 	struct platform_device *pdev;
 	struct device *dev;
 	struct ath12k_qmi qmi;

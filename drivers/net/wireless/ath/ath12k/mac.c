@@ -4050,11 +4050,19 @@ static void ath12k_bss_assoc(struct ath12k *ar,
 	if (ar->ab->hw_params->supports_sta_ps &&
 	    ahvif->vdev_type == WMI_VDEV_TYPE_STA &&
 	    ahvif->vdev_subtype == WMI_VDEV_SUBTYPE_NONE) {
+		/* In power save, wake for every beacon. The firmware's own
+		 * schedule held the first unicast frame after an idle gap for
+		 * up to 2 s, and waking each beacon cost no measurable power
+		 * on WCN7850.
+		 */
 		ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
 						    WMI_VDEV_PARAM_DTIM_POLICY,
-						    WMI_DTIM_POLICY_STICK);
+						    WMI_DTIM_POLICY_NORMAL);
+		if (!ret)
+			ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
+							    WMI_VDEV_PARAM_LISTEN_INTERVAL, 1);
 		if (ret)
-			ath12k_warn(ar->ab, "failed to set vdev %d stick DTIM policy: %d\n",
+			ath12k_warn(ar->ab, "failed to set vdev %d beacon wake policy: %d\n",
 				    arvif->vdev_id, ret);
 	}
 
@@ -4434,6 +4442,126 @@ static int ath12k_mac_fils_discovery(struct ath12k_link_vif *arvif,
 	return ret;
 }
 
+static void ath12k_mac_vif_setup_ps(struct ath12k_link_vif *arvif)
+{
+	struct ath12k *ar = arvif->ar;
+	struct ieee80211_vif *vif = arvif->ahvif->vif;
+	struct ieee80211_conf *conf = &ath12k_ar_to_hw(ar)->conf;
+	enum wmi_sta_powersave_param param;
+	struct ieee80211_bss_conf *info;
+	enum wmi_sta_ps_mode psmode;
+	int ret;
+	int timeout;
+	bool enable_ps;
+
+	lockdep_assert_wiphy(ath12k_ar_to_hw(ar)->wiphy);
+
+	if (vif->type != NL80211_IFTYPE_STATION)
+		return;
+
+	enable_ps = arvif->ahvif->ps && !READ_ONCE(ar->ab->power_save_blocked);
+	if (enable_ps) {
+		psmode = WMI_STA_PS_MODE_ENABLED;
+		param = WMI_STA_PS_PARAM_INACTIVITY_TIME;
+
+		timeout = conf->dynamic_ps_timeout;
+		if (timeout == 0) {
+			info = ath12k_mac_get_link_bss_conf(arvif);
+			if (!info) {
+				ath12k_warn(ar->ab, "unable to access bss link conf in setup ps for vif %pM link %u\n",
+					    vif->addr, arvif->link_id);
+				return;
+			}
+
+			/* firmware doesn't like 0 */
+			timeout = ieee80211_tu_to_usec(info->beacon_int) / 1000;
+		}
+
+		ret = ath12k_wmi_set_sta_ps_param(ar, arvif->vdev_id, param,
+						  timeout);
+		if (ret) {
+			ath12k_warn(ar->ab, "failed to set inactivity time for vdev %d: %i\n",
+				    arvif->vdev_id, ret);
+			return;
+		}
+	} else {
+		psmode = WMI_STA_PS_MODE_DISABLED;
+	}
+
+	ath12k_dbg(ar->ab, ATH12K_DBG_MAC, "mac vdev %d psmode %s\n",
+		   arvif->vdev_id, psmode ? "enable" : "disable");
+
+	ret = ath12k_wmi_pdev_set_ps_mode(ar, arvif->vdev_id, psmode);
+	if (ret)
+		ath12k_warn(ar->ab, "failed to set sta power save mode %d for vdev %d: %d\n",
+			    psmode, arvif->vdev_id, ret);
+}
+
+/*
+ * power_save_allowed lets userspace keep station power save off while low
+ * latency matters, such as while a screen is lit. Power save then follows
+ * mac80211 again once it is allowed.
+ */
+static ssize_t power_save_allowed_show(struct device *dev,
+				       struct device_attribute *attr, char *buf)
+{
+	struct ath12k_base *ab = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", !READ_ONCE(ab->power_save_blocked));
+}
+
+static ssize_t power_save_allowed_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct ath12k_base *ab = dev_get_drvdata(dev);
+	struct ath12k_link_vif *arvif;
+	struct wiphy *wiphy;
+	struct ath12k *ar;
+	bool allowed;
+	int i, ret;
+
+	ret = kstrtobool(buf, &allowed);
+	if (ret)
+		return ret;
+
+	WRITE_ONCE(ab->power_save_blocked, !allowed);
+	if (!ab->hw_params->supports_sta_ps)
+		return count;
+
+	for (i = 0; i < ab->num_radios; i++) {
+		ar = ab->pdevs[i].ar;
+		if (!ar)
+			continue;
+
+		wiphy = ath12k_ar_to_hw(ar)->wiphy;
+		wiphy_lock(wiphy);
+		if (ar->ah->state == ATH12K_HW_STATE_ON) {
+			list_for_each_entry(arvif, &ar->arvifs, list)
+				if (arvif->is_created)
+					ath12k_mac_vif_setup_ps(arvif);
+		}
+		wiphy_unlock(wiphy);
+	}
+
+	return count;
+}
+static DEVICE_ATTR_RW(power_save_allowed);
+
+static struct attribute *ath12k_mac_attrs[] = {
+	&dev_attr_power_save_allowed.attr,
+	NULL,
+};
+
+static const struct attribute_group ath12k_mac_group = {
+	.attrs = ath12k_mac_attrs,
+};
+
+const struct attribute_group *ath12k_mac_groups[] = {
+	&ath12k_mac_group,
+	NULL,
+};
+
 void ath12k_mac_op_vif_cfg_changed(struct ieee80211_hw *hw,
 				   struct ieee80211_vif *vif,
 				   u64 changed)
@@ -4503,63 +4631,22 @@ void ath12k_mac_op_vif_cfg_changed(struct ieee80211_hw *hw,
 			}
 		}
 	}
+
+	/* mac80211 reports BSS_CHANGED_PS here, not in link_info_changed(). */
+	if (changed & BSS_CHANGED_PS) {
+		links = ahvif->links_map;
+		for_each_set_bit(link_id, &links, IEEE80211_MLD_MAX_NUM_LINKS) {
+			arvif = wiphy_dereference(hw->wiphy, ahvif->link[link_id]);
+			if (!arvif || !arvif->ar ||
+			    !arvif->ar->ab->hw_params->supports_sta_ps)
+				continue;
+
+			ahvif->ps = vif->cfg.ps;
+			ath12k_mac_vif_setup_ps(arvif);
+		}
+	}
 }
 EXPORT_SYMBOL(ath12k_mac_op_vif_cfg_changed);
-
-static void ath12k_mac_vif_setup_ps(struct ath12k_link_vif *arvif)
-{
-	struct ath12k *ar = arvif->ar;
-	struct ieee80211_vif *vif = arvif->ahvif->vif;
-	struct ieee80211_conf *conf = &ath12k_ar_to_hw(ar)->conf;
-	enum wmi_sta_powersave_param param;
-	struct ieee80211_bss_conf *info;
-	enum wmi_sta_ps_mode psmode;
-	int ret;
-	int timeout;
-	bool enable_ps;
-
-	lockdep_assert_wiphy(ath12k_ar_to_hw(ar)->wiphy);
-
-	if (vif->type != NL80211_IFTYPE_STATION)
-		return;
-
-	enable_ps = arvif->ahvif->ps;
-	if (enable_ps) {
-		psmode = WMI_STA_PS_MODE_ENABLED;
-		param = WMI_STA_PS_PARAM_INACTIVITY_TIME;
-
-		timeout = conf->dynamic_ps_timeout;
-		if (timeout == 0) {
-			info = ath12k_mac_get_link_bss_conf(arvif);
-			if (!info) {
-				ath12k_warn(ar->ab, "unable to access bss link conf in setup ps for vif %pM link %u\n",
-					    vif->addr, arvif->link_id);
-				return;
-			}
-
-			/* firmware doesn't like 0 */
-			timeout = ieee80211_tu_to_usec(info->beacon_int) / 1000;
-		}
-
-		ret = ath12k_wmi_set_sta_ps_param(ar, arvif->vdev_id, param,
-						  timeout);
-		if (ret) {
-			ath12k_warn(ar->ab, "failed to set inactivity time for vdev %d: %i\n",
-				    arvif->vdev_id, ret);
-			return;
-		}
-	} else {
-		psmode = WMI_STA_PS_MODE_DISABLED;
-	}
-
-	ath12k_dbg(ar->ab, ATH12K_DBG_MAC, "mac vdev %d psmode %s\n",
-		   arvif->vdev_id, psmode ? "enable" : "disable");
-
-	ret = ath12k_wmi_pdev_set_ps_mode(ar, arvif->vdev_id, psmode);
-	if (ret)
-		ath12k_warn(ar->ab, "failed to set sta power save mode %d for vdev %d: %d\n",
-			    psmode, arvif->vdev_id, ret);
-}
 
 static bool ath12k_mac_supports_tpc(struct ath12k *ar, struct ath12k_vif *ahvif,
 				    const struct cfg80211_chan_def *chandef)
@@ -4764,7 +4851,6 @@ static void ath12k_mac_bss_info_changed(struct ath12k *ar,
 {
 	struct ath12k_vif *ahvif = arvif->ahvif;
 	struct ieee80211_vif *vif = ath12k_ahvif_to_vif(ahvif);
-	struct ieee80211_vif_cfg *vif_cfg = &vif->cfg;
 	struct ath12k_link_vif *tx_arvif;
 	struct cfg80211_chan_def def;
 	u32 param_id, param_value;
@@ -5103,11 +5189,6 @@ skip_vdev_up:
 
 	ath12k_mac_fils_discovery(arvif, info);
 
-	if (changed & BSS_CHANGED_PS &&
-	    ar->ab->hw_params->supports_sta_ps) {
-		ahvif->ps = vif_cfg->ps;
-		ath12k_mac_vif_setup_ps(arvif);
-	}
 }
 
 static struct ath12k_vif_cache *ath12k_ahvif_get_link_cache(struct ath12k_vif *ahvif,

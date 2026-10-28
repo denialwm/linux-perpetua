@@ -151,6 +151,8 @@ void ath12k_mac_11d_scan_stop(struct ath12k *ar);
 void ath12k_mac_11d_scan_stop_all(struct ath12k_base *ab);
 
 void ath12k_mac_destroy(struct ath12k_hw_group *ag);
+
+extern const struct attribute_group *ath12k_mac_groups[];
 void ath12k_mac_unregister(struct ath12k_hw_group *ag);
 int ath12k_mac_register(struct ath12k_hw_group *ag);
 int ath12k_mac_allocate(struct ath12k_hw_group *ag);
