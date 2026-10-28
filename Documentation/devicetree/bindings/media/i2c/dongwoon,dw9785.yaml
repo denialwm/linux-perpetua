@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/dongwoon,dw9785.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Dongwoon Anatech DW9785 Lens Controller
+
+maintainers:
+  - Doctor Logix <doctor.logix@gmail.com>
+
+description:
+  The Dongwoon DW9785 drives the focus and the optical image stabilisation
+  of a camera module from its own DSP, over a 16-bit register I2C interface.
+
+properties:
+  compatible:
+    const: dongwoon,dw9785
+
+  reg:
+    maxItems: 1
+
+  vio-supply:
+    description: I/O supply.
+
+  vaf-supply:
+    description: Actuator supply.
+
+  oisvdd-supply:
+    description: Stabiliser supply, switched on after the other two.
+
+required:
+  - compatible
+  - reg
+  - vio-supply
+  - vaf-supply
+  - oisvdd-supply
+
+additionalProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        lens@24 {
+            compatible = "dongwoon,dw9785";
+            reg = <0x24>;
+
+            vio-supply = <&vreg_cam_io>;
+            vaf-supply = <&vreg_cam_af>;
+            oisvdd-supply = <&vreg_cam_ois>;
+        };
+    };
+...
