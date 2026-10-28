@@ -5613,6 +5613,41 @@ static const struct media_device_ops camss_media_ops = {
 	.link_notify = v4l2_pipeline_link_notify,
 };
 
+static int camss_icc_set(struct camss *camss, bool on)
+{
+	const struct resources_icc *icc_res = camss->res->icc_res;
+	int i;
+	int ret;
+
+	for (i = 0; i < camss->res->icc_path_num; i++) {
+		ret = icc_set_bw(camss->icc_path[i],
+				 on ? icc_res[i].icc_bw_tbl.avg : 0,
+				 on ? icc_res[i].icc_bw_tbl.peak : 0);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+/*
+ * The CCI shares the TITAN_TOP domain and keeps it powered for a while after
+ * each transfer. When the camera NoC votes go to zero while the domain stays
+ * powered and come back within the same power cycle, RPMh never completes the
+ * request and every later interconnect vote waits for it. The votes are
+ * therefore dropped once TITAN_TOP is off, not when CAMSS suspends.
+ */
+static int camss_genpd_notify(struct notifier_block *nb, unsigned long action,
+			      void *data)
+{
+	struct camss *camss = container_of(nb, struct camss, genpd_nb);
+
+	if (action == GENPD_NOTIFY_OFF)
+		camss_icc_set(camss, false);
+
+	return NOTIFY_OK;
+}
+
 static int camss_configure_pd(struct camss *camss)
 {
 	const struct camss_resources *res = camss->res;
@@ -5684,6 +5719,12 @@ static int camss_configure_pd(struct camss *camss)
 		goto fail_pm;
 	}
 
+	camss->genpd_nb.notifier_call = camss_genpd_notify;
+	if (!dev_pm_genpd_add_notifier(camss->genpd, &camss->genpd_nb))
+		camss->icc_follows_genpd = true;
+	else
+		dev_warn(dev, "interconnect votes follow runtime PM\n");
+
 	return 0;
 
 fail_pm:
@@ -5723,6 +5764,9 @@ static void camss_genpd_cleanup(struct camss *camss)
 		return;
 
 	camss_genpd_subdevice_cleanup(camss);
+
+	if (camss->icc_follows_genpd)
+		dev_pm_genpd_remove_notifier(camss->genpd);
 
 	if (camss->genpd_link)
 		device_link_del(camss->genpd_link);
@@ -6166,34 +6210,19 @@ MODULE_DEVICE_TABLE(of, camss_dt_match);
 static int __maybe_unused camss_runtime_suspend(struct device *dev)
 {
 	struct camss *camss = dev_get_drvdata(dev);
-	int i;
-	int ret;
 
-	for (i = 0; i < camss->res->icc_path_num; i++) {
-		ret = icc_set_bw(camss->icc_path[i], 0, 0);
-		if (ret)
-			return ret;
-	}
+	/* camss_genpd_notify() drops the votes with TITAN_TOP. */
+	if (camss->icc_follows_genpd)
+		return 0;
 
-	return 0;
+	return camss_icc_set(camss, false);
 }
 
 static int __maybe_unused camss_runtime_resume(struct device *dev)
 {
 	struct camss *camss = dev_get_drvdata(dev);
-	const struct resources_icc *icc_res = camss->res->icc_res;
-	int i;
-	int ret;
 
-	for (i = 0; i < camss->res->icc_path_num; i++) {
-		ret = icc_set_bw(camss->icc_path[i],
-				 icc_res[i].icc_bw_tbl.avg,
-				 icc_res[i].icc_bw_tbl.peak);
-		if (ret)
-			return ret;
-	}
-
-	return 0;
+	return camss_icc_set(camss, true);
 }
 
 static const struct dev_pm_ops camss_pm_ops = {

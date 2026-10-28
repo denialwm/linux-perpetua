@@ -137,6 +137,8 @@ struct camss {
 	int genpd_num;
 	struct device *genpd;
 	struct device_link *genpd_link;
+	struct notifier_block genpd_nb;
+	bool icc_follows_genpd;
 	struct icc_path *icc_path[ICC_SM8250_COUNT];
 	const struct camss_resources *res;
 	bool legacy_phy;
