@@ -10,6 +10,7 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/linux-event-codes.h>
 #include <dt-bindings/leds/common.h>
+#include <dt-bindings/media/video-interfaces.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 #include "kaanapali.dtsi"
@@ -259,6 +260,27 @@
 		#cooling-cells = <2>;
 
 		pinctrl-0 = <&fan_pwm_default>, <&fan_tach_default>;
+		pinctrl-names = "default";
+	};
+
+	/* PMH0101 GPIO 14 is also the main camera's VIO (stock cam_res_mgr) */
+	vreg_cam_vio: regulator-cam-vio {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_vio";
+		gpio = <&pmh0101_gpios 14 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&cam_vio_en_default>;
+		pinctrl-names = "default";
+	};
+
+	vreg_cam_uw_vana: regulator-cam-uw-vana {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_uw_vana";
+		gpio = <&pmh0101_gpios 18 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&cam_uw_vana_en_default>;
 		pinctrl-names = "default";
 	};
 
@@ -1025,6 +1047,99 @@
 	reg = <0x0 0xa1400000 0x0 0x4600000>;
 };
 
+&camss {
+	status = "okay";
+};
+
+&camss_csiphy1_in_port {
+	camss_csiphy1_inep: endpoint {
+		data-lanes = <1 2 3 4>;
+		remote-endpoint = <&csiphy1_out_ep>;
+	};
+};
+
+&cci0 {
+	status = "okay";
+};
+
+&cci0_i2c0 {
+	/* Ultrawide */
+	camera@22 {
+		compatible = "ovti,ov50d40";
+		reg = <0x22>;
+
+		clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK1_CLK>;
+		assigned-clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK1_CLK>;
+		assigned-clock-rates = <24000000>;
+
+		reset-gpios = <&tlmm 15 GPIO_ACTIVE_LOW>;
+
+		avdd-supply = <&vreg_cam_uw_vana>;
+		dvdd-supply = <&vreg_l2m_1p0>;
+		dovdd-supply = <&vreg_cam_vio>;
+
+		orientation = <1>;
+
+		pinctrl-0 = <&cam_mclk1_default>, <&cam_uw_reset_default>;
+		pinctrl-names = "default";
+
+		port {
+			ov50d40_ep: endpoint {
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <951000000>;
+				remote-endpoint = <&csiphy1_in_ep>;
+			};
+		};
+	};
+};
+
+/* Stock pulls the CCI0 lines up in the SoC */
+&cci0_i2c0_default {
+	scl-pins {
+		/delete-property/ bias-disable;
+		bias-pull-up;
+	};
+
+	sda-pins {
+		/delete-property/ bias-disable;
+		bias-pull-up;
+	};
+};
+
+&cci0_i2c1_default {
+	scl-pins {
+		/delete-property/ bias-disable;
+		bias-pull-up;
+	};
+
+	sda-pins {
+		/delete-property/ bias-disable;
+		bias-pull-up;
+	};
+};
+
+&csiphy1 {
+	vdda-0p9-supply = <&vreg_l3i_0p8>;
+	vdda-1p2-supply = <&vreg_l1d_1p2>;
+
+	status = "okay";
+};
+
+&csiphy1_in_port {
+	csiphy1_in_ep: endpoint {
+		bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+		clock-lanes = <0>;
+		data-lanes = <1 2 3 4>;
+		remote-endpoint = <&ov50d40_ep>;
+	};
+};
+
+&csiphy1_out_port {
+	csiphy1_out_ep: endpoint {
+		remote-endpoint = <&camss_csiphy1_inep>;
+	};
+};
+
 &gpu {
 	status = "okay";
 };
@@ -1210,6 +1325,20 @@
 };
 
 &pmh0101_gpios {
+	cam_vio_en_default: cam-vio-en-default-state {
+		pins = "gpio14";
+		function = "normal";
+		power-source = <0>;
+		qcom,drive-strength = <PMIC_GPIO_STRENGTH_MED>;
+	};
+
+	cam_uw_vana_en_default: cam-uw-vana-en-default-state {
+		pins = "gpio18";
+		function = "normal";
+		power-source = <0>;
+		qcom,drive-strength = <PMIC_GPIO_STRENGTH_MED>;
+	};
+
 	fan_pwm_default: fan-pwm-default-state {
 		pins = "gpio9";
 		function = "func1";
@@ -1370,6 +1499,13 @@
 		pins = "gpio215";
 		function = "gpio";
 		drive-strength = <8>;
+		bias-disable;
+	};
+
+	cam_uw_reset_default: cam-uw-reset-default-state {
+		pins = "gpio15";
+		function = "gpio";
+		drive-strength = <2>;
 		bias-disable;
 	};
 
