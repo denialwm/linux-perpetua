@@ -284,6 +284,16 @@
 		pinctrl-names = "default";
 	};
 
+	vreg_cam_main_vana: regulator-cam-main-vana {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_main_vana";
+		gpio = <&pmh0101_gpios 16 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&cam_main_vana_en_default>;
+		pinctrl-names = "default";
+	};
+
 	vreg_cam_front_vdig: regulator-cam-front-vdig {
 		compatible = "regulator-fixed";
 		regulator-name = "cam_front_vdig";
@@ -938,10 +948,11 @@
 		compatible = "qcom,pm8010-rpmh-regulators";
 		qcom,pmic-id = "M_E1";
 
-		vreg_l1m_1p0: ldo1 {
-			regulator-name = "vreg_l1m_1p0";
-			regulator-min-microvolt = <1000000>;
-			regulator-max-microvolt = <1200000>;
+		/* Main camera DVDD: stock asks 1.1 V, the LDO steps by 8 mV */
+		vreg_l1m_1p1: ldo1 {
+			regulator-name = "vreg_l1m_1p1";
+			regulator-min-microvolt = <1104000>;
+			regulator-max-microvolt = <1104000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 			regulator-allow-set-load;
 			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
@@ -1084,6 +1095,14 @@
 	};
 };
 
+&camss_csiphy2_in_port {
+	camss_csiphy2_inep: endpoint {
+		bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+		data-lanes = <1 2 3>;
+		remote-endpoint = <&csiphy2_out_ep>;
+	};
+};
+
 &camss_csiphy3_in_port {
 	camss_csiphy3_inep: endpoint {
 		data-lanes = <1 2 3 4>;
@@ -1127,8 +1146,53 @@
 	};
 };
 
+&cci0_i2c1 {
+	/* Main; its autofocus and OIS stay unpowered */
+	camera@36 {
+		compatible = "ovti,ov50e40";
+		reg = <0x36>;
+
+		clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK2_CLK>;
+		assigned-clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK2_CLK>;
+		assigned-clock-rates = <24000000>;
+
+		reset-gpios = <&tlmm 3 GPIO_ACTIVE_LOW>;
+
+		avdd-supply = <&vreg_cam_main_vana>;
+		dvdd-supply = <&vreg_l1m_1p1>;
+		dovdd-supply = <&vreg_cam_vio>;
+
+		orientation = <1>;
+		rotation = <270>;
+
+		pinctrl-0 = <&cam_mclk2_default>, <&cam_main_reset_default>;
+		pinctrl-names = "default";
+
+		port {
+			ov50e40_ep: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+				data-lanes = <1 2 3>;
+				link-frequencies = /bits/ 64 <1408000000>;
+				remote-endpoint = <&csiphy2_in_ep>;
+			};
+		};
+	};
+};
+
 /* Stock pulls the CCI0 lines up in the SoC */
 &cci0_i2c0_default {
+	scl-pins {
+		/delete-property/ bias-disable;
+		bias-pull-up;
+	};
+
+	sda-pins {
+		/delete-property/ bias-disable;
+		bias-pull-up;
+	};
+};
+
+&cci0_i2c1_default {
 	scl-pins {
 		/delete-property/ bias-disable;
 		bias-pull-up;
@@ -1281,6 +1345,27 @@
 &csiphy1_out_port {
 	csiphy1_out_ep: endpoint {
 		remote-endpoint = <&camss_csiphy1_inep>;
+	};
+};
+
+&csiphy2 {
+	vdda-0p9-supply = <&vreg_l3i_0p8>;
+	vdda-1p2-supply = <&vreg_l1d_1p2>;
+
+	status = "okay";
+};
+
+&csiphy2_in_port {
+	csiphy2_in_ep: endpoint {
+		bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+		data-lanes = <1 2 3>;
+		remote-endpoint = <&ov50e40_ep>;
+	};
+};
+
+&csiphy2_out_port {
+	csiphy2_out_ep: endpoint {
+		remote-endpoint = <&camss_csiphy2_inep>;
 	};
 };
 
@@ -1512,6 +1597,13 @@
 		qcom,drive-strength = <PMIC_GPIO_STRENGTH_MED>;
 	};
 
+	cam_main_vana_en_default: cam-main-vana-en-default-state {
+		pins = "gpio16";
+		function = "normal";
+		power-source = <0>;
+		qcom,drive-strength = <PMIC_GPIO_STRENGTH_MED>;
+	};
+
 	fan_pwm_default: fan-pwm-default-state {
 		pins = "gpio9";
 		function = "func1";
@@ -1693,6 +1785,13 @@
 
 	cam_aux_reset_default: cam-aux-reset-default-state {
 		pins = "gpio105";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cam_main_reset_default: cam-main-reset-default-state {
+		pins = "gpio3";
 		function = "gpio";
 		drive-strength = <2>;
 		bias-disable;
