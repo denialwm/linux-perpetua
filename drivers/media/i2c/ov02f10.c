@@ -38,6 +38,27 @@
 
 #define OV02F10_REG_SOFTWARE_RESET	CCI_REG8(0xfc)
 
+/* Page 1, latched by writing OV02F10_UPDATE to OV02F10_REG_UPDATE */
+#define OV02F10_REG_EXPOSURE		CCI_REG16(0x0e)
+#define OV02F10_EXPOSURE_MIN		4
+#define OV02F10_EXPOSURE_STEP		1
+#define OV02F10_EXPOSURE_MARGIN		4
+
+/* Analogue gain code, 0x10 is 1x */
+#define OV02F10_REG_AGAIN		CCI_REG8(0x22)
+#define OV02F10_AGAIN_MIN		0x10
+#define OV02F10_AGAIN_MAX		0xf8
+#define OV02F10_AGAIN_STEP		1
+#define OV02F10_AGAIN_DEFAULT		0x10
+
+/* A frame is the height, this blanking and 20 lines more */
+#define OV02F10_REG_VBLANK		CCI_REG16(0x14)
+#define OV02F10_VBLANK_FIXED		20
+#define OV02F10_VTS_MAX			0x7fff
+
+#define OV02F10_REG_UPDATE		CCI_REG8(0xfe)
+#define OV02F10_UPDATE			0x02
+
 /* Page 3 */
 #define OV02F10_REG_STREAM		CCI_REG8(0xc2)
 
@@ -57,6 +78,7 @@ struct ov02f10_mode {
 	u32 height;
 	u32 hts;
 	u32 vts;
+	u32 exposure;
 
 	const struct ov02f10_reg_list reg_list;
 };
@@ -87,6 +109,7 @@ struct ov02f10 {
 	struct v4l2_ctrl *pixel_rate;
 	struct v4l2_ctrl *hblank;
 	struct v4l2_ctrl *vblank;
+	struct v4l2_ctrl *exposure;
 
 	const struct ov02f10_mode *mode;
 };
@@ -253,6 +276,7 @@ static const struct ov02f10_mode ov02f10_supported_modes[] = {
 		.height = 1200,
 		.hts = 1720,
 		.vts = 1276,
+		.exposure = 1272,
 		.reg_list = {
 			.regs = ov02f10_1600x1200_mode,
 			.num_regs = ARRAY_SIZE(ov02f10_1600x1200_mode),
@@ -260,47 +284,110 @@ static const struct ov02f10_mode ov02f10_supported_modes[] = {
 	},
 };
 
+static int ov02f10_set_ctrl(struct v4l2_ctrl *ctrl)
+{
+	struct ov02f10 *ov02f10 = container_of(ctrl->handler, struct ov02f10,
+					       ctrl_handler);
+	const struct ov02f10_mode *mode = ov02f10->mode;
+	s64 exposure_max;
+	int ret = 0;
+
+	if (ctrl->id == V4L2_CID_VBLANK) {
+		exposure_max = mode->height + ctrl->val - OV02F10_EXPOSURE_MARGIN;
+		__v4l2_ctrl_modify_range(ov02f10->exposure,
+					 ov02f10->exposure->minimum,
+					 exposure_max,
+					 ov02f10->exposure->step,
+					 ov02f10->exposure->default_value);
+	}
+
+	if (!pm_runtime_get_if_active(ov02f10->dev))
+		return 0;
+
+	cci_write(ov02f10->regmap, OV02F10_REG_PAGE, 1, &ret);
+
+	switch (ctrl->id) {
+	case V4L2_CID_ANALOGUE_GAIN:
+		cci_write(ov02f10->regmap, OV02F10_REG_AGAIN, ctrl->val, &ret);
+		break;
+	case V4L2_CID_EXPOSURE:
+		cci_write(ov02f10->regmap, OV02F10_REG_EXPOSURE, ctrl->val,
+			  &ret);
+		break;
+	case V4L2_CID_VBLANK:
+		cci_write(ov02f10->regmap, OV02F10_REG_VBLANK,
+			  ctrl->val - OV02F10_VBLANK_FIXED, &ret);
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+	cci_write(ov02f10->regmap, OV02F10_REG_UPDATE, OV02F10_UPDATE, &ret);
+
+	pm_runtime_put(ov02f10->dev);
+
+	return ret;
+}
+
+static const struct v4l2_ctrl_ops ov02f10_ctrl_ops = {
+	.s_ctrl = ov02f10_set_ctrl,
+};
+
 static int ov02f10_init_controls(struct ov02f10 *ov02f10)
 {
 	struct v4l2_ctrl_handler *ctrl_hdlr = &ov02f10->ctrl_handler;
 	const struct ov02f10_mode *mode = ov02f10->mode;
+	s64 hblank, vblank, exposure_max;
 	struct v4l2_fwnode_device_properties props;
-	s64 hblank, vblank;
 	int ret;
 
-	v4l2_ctrl_handler_init(ctrl_hdlr, 6);
+	v4l2_ctrl_handler_init(ctrl_hdlr, 8);
 
-	ov02f10->link_freq = v4l2_ctrl_new_int_menu(ctrl_hdlr, NULL,
+	ov02f10->link_freq = v4l2_ctrl_new_int_menu(ctrl_hdlr, &ov02f10_ctrl_ops,
 					V4L2_CID_LINK_FREQ,
 					ARRAY_SIZE(ov02f10_link_freq_menu) - 1,
 					0, ov02f10_link_freq_menu);
 	if (ov02f10->link_freq)
 		ov02f10->link_freq->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
-	ov02f10->pixel_rate = v4l2_ctrl_new_std(ctrl_hdlr, NULL,
+	ov02f10->pixel_rate = v4l2_ctrl_new_std(ctrl_hdlr, &ov02f10_ctrl_ops,
 						V4L2_CID_PIXEL_RATE,
 						OV02F10_PIXEL_RATE,
 						OV02F10_PIXEL_RATE, 1,
 						OV02F10_PIXEL_RATE);
 
 	hblank = mode->hts - mode->width;
-	ov02f10->hblank = v4l2_ctrl_new_std(ctrl_hdlr, NULL,
+	ov02f10->hblank = v4l2_ctrl_new_std(ctrl_hdlr, &ov02f10_ctrl_ops,
 					    V4L2_CID_HBLANK, hblank,
 					    hblank, 1, hblank);
 	if (ov02f10->hblank)
 		ov02f10->hblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
 
 	vblank = mode->vts - mode->height;
-	ov02f10->vblank = v4l2_ctrl_new_std(ctrl_hdlr, NULL, V4L2_CID_VBLANK,
-					    vblank, vblank, 1, vblank);
-	if (ov02f10->vblank)
-		ov02f10->vblank->flags |= V4L2_CTRL_FLAG_READ_ONLY;
+	ov02f10->vblank = v4l2_ctrl_new_std(ctrl_hdlr, &ov02f10_ctrl_ops,
+					    V4L2_CID_VBLANK, vblank,
+					    OV02F10_VTS_MAX - mode->height, 1,
+					    vblank);
+
+	v4l2_ctrl_new_std(ctrl_hdlr, &ov02f10_ctrl_ops, V4L2_CID_ANALOGUE_GAIN,
+			  OV02F10_AGAIN_MIN, OV02F10_AGAIN_MAX,
+			  OV02F10_AGAIN_STEP, OV02F10_AGAIN_DEFAULT);
+
+	exposure_max = mode->vts - OV02F10_EXPOSURE_MARGIN;
+	ov02f10->exposure = v4l2_ctrl_new_std(ctrl_hdlr, &ov02f10_ctrl_ops,
+					      V4L2_CID_EXPOSURE,
+					      OV02F10_EXPOSURE_MIN,
+					      exposure_max,
+					      OV02F10_EXPOSURE_STEP,
+					      mode->exposure);
 
 	ret = v4l2_fwnode_device_parse(ov02f10->dev, &props);
 	if (ret)
 		goto error_free_hdlr;
 
-	ret = v4l2_ctrl_new_fwnode_properties(ctrl_hdlr, NULL, &props);
+	ret = v4l2_ctrl_new_fwnode_properties(ctrl_hdlr, &ov02f10_ctrl_ops,
+					      &props);
 	if (ret)
 		goto error_free_hdlr;
 
@@ -342,6 +429,11 @@ static int ov02f10_enable_streams(struct v4l2_subdev *sd,
 			    ARRAY_SIZE(ov02f10_init), &ret);
 	cci_multi_reg_write(ov02f10->regmap, reg_list->regs,
 			    reg_list->num_regs, &ret);
+	if (ret)
+		goto error;
+
+	ret = __v4l2_ctrl_handler_setup(ov02f10->sd.ctrl_handler);
+
 	cci_write(ov02f10->regmap, OV02F10_REG_PAGE, 3, &ret);
 	cci_write(ov02f10->regmap, OV02F10_REG_STREAM, 1, &ret);
 	if (ret)
@@ -376,7 +468,7 @@ static int ov02f10_disable_streams(struct v4l2_subdev *sd,
 static void ov02f10_update_pad_format(const struct ov02f10_mode *mode,
 				      struct v4l2_mbus_framefmt *fmt)
 {
-	fmt->code = MEDIA_BUS_FMT_SGBRG10_1X10;
+	fmt->code = MEDIA_BUS_FMT_SRGGB10_1X10;
 	fmt->width = mode->width;
 	fmt->height = mode->height;
 	fmt->field = V4L2_FIELD_NONE;
@@ -415,7 +507,7 @@ static int ov02f10_enum_mbus_code(struct v4l2_subdev *sd,
 	if (code->index > 0)
 		return -EINVAL;
 
-	code->code = MEDIA_BUS_FMT_SGBRG10_1X10;
+	code->code = MEDIA_BUS_FMT_SRGGB10_1X10;
 
 	return 0;
 }
@@ -427,7 +519,7 @@ static int ov02f10_enum_frame_size(struct v4l2_subdev *sd,
 	if (fse->index >= ARRAY_SIZE(ov02f10_supported_modes))
 		return -EINVAL;
 
-	if (fse->code != MEDIA_BUS_FMT_SGBRG10_1X10)
+	if (fse->code != MEDIA_BUS_FMT_SRGGB10_1X10)
 		return -EINVAL;
 
 	fse->min_width = ov02f10_supported_modes[fse->index].width;
