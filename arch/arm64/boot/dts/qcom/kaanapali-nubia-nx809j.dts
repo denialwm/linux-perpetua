@@ -256,7 +256,12 @@
 		interrupts-extended = <&tlmm 211 IRQ_TYPE_EDGE_FALLING>;
 		/* downstream computes rpm = pulses per 0.5 s * 40 */
 		pulses-per-revolution = <3>;
-		cooling-levels = <0 51 102 153 204 255>;
+		/*
+		 * Off, then from 5/63 of the LPG's 6-bit duty (4/63 is the
+		 * lowest that starts it from a stop) evenly to full speed.
+		 */
+		cooling-levels = <0 20 32 44 55 67 79 91 102 114 126 138 149 161
+				  173 185 196 208 220 232 243 255>;
 		#cooling-cells = <2>;
 
 		pinctrl-0 = <&fan_pwm_default>, <&fan_tach_default>;
@@ -2088,191 +2093,101 @@
 
 
 /*
- * Fan and liquid cooling pump follow the prime core and GPU sensors: fan
- * levels 1-5 from 45 to 65 C, pump low/mid/high from 50 to 60 C.
+ * Fan and liquid cooling pump follow the prime core and GPU sensors. The fan
+ * starts at 40 C and goes up one level every 2 C to full speed at 80 C; each
+ * level holds until 2 C below its trip. The pump runs at the vendor's high
+ * level from 70 C until the sensors fall below 65 C.
  */
+#define FAN_TRIP(zone, n, temp)						\
+	zone##_fan##n: fan##n {						\
+		temperature = <temp>;					\
+		hysteresis = <2000>;					\
+		type = "active";					\
+	};
+
+#define FAN_MAP(zone, n)						\
+	map##n {							\
+		trip = <&zone##_fan##n>;				\
+		cooling-device = <&fan n n>;				\
+	};
+
+#define FAN_TRIPS(zone)							\
+	FAN_TRIP(zone, 1, 40000)					\
+	FAN_TRIP(zone, 2, 42000)					\
+	FAN_TRIP(zone, 3, 44000)					\
+	FAN_TRIP(zone, 4, 46000)					\
+	FAN_TRIP(zone, 5, 48000)					\
+	FAN_TRIP(zone, 6, 50000)					\
+	FAN_TRIP(zone, 7, 52000)					\
+	FAN_TRIP(zone, 8, 54000)					\
+	FAN_TRIP(zone, 9, 56000)					\
+	FAN_TRIP(zone, 10, 58000)					\
+	FAN_TRIP(zone, 11, 60000)					\
+	FAN_TRIP(zone, 12, 62000)					\
+	FAN_TRIP(zone, 13, 64000)					\
+	FAN_TRIP(zone, 14, 66000)					\
+	FAN_TRIP(zone, 15, 68000)					\
+	FAN_TRIP(zone, 16, 70000)					\
+	FAN_TRIP(zone, 17, 72000)					\
+	FAN_TRIP(zone, 18, 74000)					\
+	FAN_TRIP(zone, 19, 76000)					\
+	FAN_TRIP(zone, 20, 78000)					\
+	FAN_TRIP(zone, 21, 80000)
+
+#define FAN_MAPS(zone)							\
+	FAN_MAP(zone, 1)						\
+	FAN_MAP(zone, 2)						\
+	FAN_MAP(zone, 3)						\
+	FAN_MAP(zone, 4)						\
+	FAN_MAP(zone, 5)						\
+	FAN_MAP(zone, 6)						\
+	FAN_MAP(zone, 7)						\
+	FAN_MAP(zone, 8)						\
+	FAN_MAP(zone, 9)						\
+	FAN_MAP(zone, 10)						\
+	FAN_MAP(zone, 11)						\
+	FAN_MAP(zone, 12)						\
+	FAN_MAP(zone, 13)						\
+	FAN_MAP(zone, 14)						\
+	FAN_MAP(zone, 15)						\
+	FAN_MAP(zone, 16)						\
+	FAN_MAP(zone, 17)						\
+	FAN_MAP(zone, 18)						\
+	FAN_MAP(zone, 19)						\
+	FAN_MAP(zone, 20)						\
+	FAN_MAP(zone, 21)
+
+#define PUMP_TRIP(zone)							\
+	zone##_pump: pump {						\
+		temperature = <70000>;					\
+		hysteresis = <5000>;					\
+		type = "active";					\
+	};
+
+#define PUMP_MAP(zone)							\
+	map-pump {							\
+		trip = <&zone##_pump>;					\
+		cooling-device = <&micropump 3 3>;			\
+	};
+
 &{/thermal-zones/cpu-1-0-0-thermal} {
 	cooling-maps {
-		fan1 {
-			trip = <&cpu_1_0_0_fan1>;
-			cooling-device = <&fan 1 1>;
-		};
-
-		fan2 {
-			trip = <&cpu_1_0_0_fan2>;
-			cooling-device = <&fan 2 2>;
-		};
-
-		fan3 {
-			trip = <&cpu_1_0_0_fan3>;
-			cooling-device = <&fan 3 3>;
-		};
-
-		fan4 {
-			trip = <&cpu_1_0_0_fan4>;
-			cooling-device = <&fan 4 4>;
-		};
-
-		fan5 {
-			trip = <&cpu_1_0_0_fan5>;
-			cooling-device = <&fan 5 5>;
-		};
-
-		pump1 {
-			trip = <&cpu_1_0_0_pump1>;
-			cooling-device = <&micropump 1 1>;
-		};
-
-		pump2 {
-			trip = <&cpu_1_0_0_pump2>;
-			cooling-device = <&micropump 2 2>;
-		};
-
-		pump3 {
-			trip = <&cpu_1_0_0_pump3>;
-			cooling-device = <&micropump 3 3>;
-		};
+		FAN_MAPS(cpu_1_0_0)
+		PUMP_MAP(cpu_1_0_0)
 	};
 };
 
 &{/thermal-zones/cpu-1-0-0-thermal/trips} {
-	cpu_1_0_0_fan1: fan1 {
-		temperature = <45000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	cpu_1_0_0_fan2: fan2 {
-		temperature = <50000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	cpu_1_0_0_fan3: fan3 {
-		temperature = <55000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	cpu_1_0_0_fan4: fan4 {
-		temperature = <60000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	cpu_1_0_0_fan5: fan5 {
-		temperature = <65000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	cpu_1_0_0_pump1: pump1 {
-		temperature = <50000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	cpu_1_0_0_pump2: pump2 {
-		temperature = <55000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	cpu_1_0_0_pump3: pump3 {
-		temperature = <60000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
+	FAN_TRIPS(cpu_1_0_0)
+	PUMP_TRIP(cpu_1_0_0)
 };
 
 &{/thermal-zones/gpuss-0-thermal/cooling-maps} {
-	fan1 {
-		trip = <&gpuss_0_fan1>;
-		cooling-device = <&fan 1 1>;
-	};
-
-	fan2 {
-		trip = <&gpuss_0_fan2>;
-		cooling-device = <&fan 2 2>;
-	};
-
-	fan3 {
-		trip = <&gpuss_0_fan3>;
-		cooling-device = <&fan 3 3>;
-	};
-
-	fan4 {
-		trip = <&gpuss_0_fan4>;
-		cooling-device = <&fan 4 4>;
-	};
-
-	fan5 {
-		trip = <&gpuss_0_fan5>;
-		cooling-device = <&fan 5 5>;
-	};
-
-	pump1 {
-		trip = <&gpuss_0_pump1>;
-		cooling-device = <&micropump 1 1>;
-	};
-
-	pump2 {
-		trip = <&gpuss_0_pump2>;
-		cooling-device = <&micropump 2 2>;
-	};
-
-	pump3 {
-		trip = <&gpuss_0_pump3>;
-		cooling-device = <&micropump 3 3>;
-	};
+	FAN_MAPS(gpuss_0)
+	PUMP_MAP(gpuss_0)
 };
 
 &{/thermal-zones/gpuss-0-thermal/trips} {
-	gpuss_0_fan1: fan1 {
-		temperature = <45000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	gpuss_0_fan2: fan2 {
-		temperature = <50000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	gpuss_0_fan3: fan3 {
-		temperature = <55000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	gpuss_0_fan4: fan4 {
-		temperature = <60000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	gpuss_0_fan5: fan5 {
-		temperature = <65000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	gpuss_0_pump1: pump1 {
-		temperature = <50000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	gpuss_0_pump2: pump2 {
-		temperature = <55000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
-
-	gpuss_0_pump3: pump3 {
-		temperature = <60000>;
-		hysteresis = <4000>;
-		type = "active";
-	};
+	FAN_TRIPS(gpuss_0)
+	PUMP_TRIP(gpuss_0)
 };
