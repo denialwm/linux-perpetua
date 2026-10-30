@@ -93,10 +93,14 @@ static inline struct rm692h5 *to_rm692h5(struct drm_panel *panel)
 	return container_of(panel, struct rm692h5, panel);
 }
 
-static void rm692h5_idle_on(struct mipi_dsi_multi_context *dsi_ctx)
+/* The level goes out with the switch: idle mode at the old one flashes. */
+static void rm692h5_idle_on(struct mipi_dsi_multi_context *dsi_ctx, u16 level)
 {
+	u8 set_level[] = { MIPI_DCS_SET_DISPLAY_BRIGHTNESS, level >> 8, level & 0xff };
+
 	dsi_ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xfe, 0x00);
+	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, set_level, sizeof(set_level));
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, (u8[]){ MIPI_DCS_ENTER_IDLE_MODE }, 1);
 	mipi_dsi_msleep(dsi_ctx, idle_settle_ms);
 }
@@ -134,7 +138,8 @@ static int rm692h5_set_idle(const char *val, const struct kernel_param *kp)
 
 	dsi_ctx = (struct mipi_dsi_multi_context){ .dsi = ctx->dsi };
 	if (on) {
-		rm692h5_idle_on(&dsi_ctx);
+		rm692h5_idle_on(&dsi_ctx, min_t(u32, ctx->panel.backlight->props.brightness,
+						RM692H5_MAX_BRIGHTNESS));
 	} else {
 		rm692h5_idle_off(&dsi_ctx, ctx->panel.backlight);
 		if (!dsi_ctx.accum_err)
@@ -705,9 +710,10 @@ static int rm692h5_disable(struct drm_panel *panel)
 		u16 level = min_t(uint, ambient_brightness, RM692H5_MAX_BRIGHTNESS);
 		u8 set_level[] = { MIPI_DCS_SET_DISPLAY_BRIGHTNESS, level >> 8, level & 0xff };
 
-		if (!ctx->idle)
-			rm692h5_idle_on(&dsi_ctx);
-		mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, set_level, sizeof(set_level));
+		if (ctx->idle)
+			mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, set_level, sizeof(set_level));
+		else
+			rm692h5_idle_on(&dsi_ctx, level);
 		ctx->retained = !dsi_ctx.accum_err;
 		ctx->idle = ctx->retained;
 		dev_info(&ctx->dsi->dev, "blank into idle mode at 0x%04x: %d\n",
