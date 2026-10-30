@@ -39,6 +39,24 @@
 
 #include <video/mipi_display.h>
 
+/*
+ * Always-on display. With ambient set, a standby blank puts the panel in
+ * the factory 120 Hz LP1 instead of DISPLAY_OFF, so it keeps showing the
+ * last frame while the host powers down, and a wake leaves it through NOLP.
+ * The waits let each switch finish before the host moves on.
+ */
+static bool ambient;
+module_param(ambient, bool, 0644);
+MODULE_PARM_DESC(ambient, "Blank into factory LP1, keeping the last frame lit");
+
+static uint idle_settle_ms = 150;
+module_param(idle_settle_ms, uint, 0644);
+MODULE_PARM_DESC(idle_settle_ms, "Wait after entering LP1 before the host powers down");
+
+static uint idle_exit_ms = 50;
+module_param(idle_exit_ms, uint, 0644);
+MODULE_PARM_DESC(idle_exit_ms, "Wait after leaving LP1 before new pixels");
+
 #define AA551_BRIGHTNESS_DEFAULT	1433
 #define AA551_BRIGHTNESS_MAX		4094
 
@@ -88,6 +106,8 @@ struct aa551 {
 	bool powered, standby_enabled, retained, iris_confirmed, shutting_down;
 	/* The lit panel shows the factory LP1 picture: the aod test switch. */
 	bool aod;
+	/* Blanked into LP1 for the always-on display. */
+	bool idle;
 	u32 cold_wakes, retained_wakes;
 	u64 prepare_us, enable_us;
 	u8 power_mode;
@@ -550,6 +570,7 @@ static void aa551_power_off(struct aa551 *ctx)
 	regulator_disable(ctx->vddio);
 	ctx->powered = false;
 	ctx->retained = false;
+	ctx->idle = false;
 }
 
 static void aa551_init(struct mipi_dsi_multi_context *dsi_ctx)
@@ -948,11 +969,13 @@ static int aa551_enable(struct drm_panel *panel)
 
 	mutex_lock(&ctx->fp->lock);
 	if (ctx->retained) {
-		/* Normal-mode display blanking preserves the validated black level.
-		 * The factory LP1/NOLP transition lifts black after retained wake.
-		 * No reset, sleep exit or mode transition is needed here.
-		 */
+		/* No reset or sleep exit: only an always-on blank leaves LP1. */
 		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+		if (ctx->idle) {
+			aa551_factory_nolp_120(&dc);
+			mipi_dsi_msleep(&dc, idle_exit_ms);
+			ctx->idle = false;
+		}
 	} else {
 		mipi_dsi_dcs_exit_sleep_mode_multi(&dc);
 		mipi_dsi_msleep(&dc, 120);
@@ -996,15 +1019,21 @@ static int aa551_disable(struct drm_panel *panel)
 	}
 	if (ctx->standby_enabled && !ctx->shutting_down) {
 		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
-		/* Keep the normal panel configuration while blanked. Entering
-		 * factory LP1 here caused a global brown black level after NOLP,
-		 * reproduced by fingerprint scanout and absent after cold wake.
-		 * DISPLAY_OFF hides the retained frame without that transition.
+		/* DISPLAY_OFF hides the retained frame; the always-on blank
+		 * keeps it lit in the factory 120 Hz LP1.
 		 */
-		mipi_dsi_dcs_set_display_off_multi(&dc);
+		if (ambient) {
+			aa551_factory_lp1_120(&dc);
+			mipi_dsi_msleep(&dc, idle_settle_ms);
+		} else {
+			mipi_dsi_dcs_set_display_off_multi(&dc);
+		}
 		ctx->dsi->mode_flags = flags;
 		ret = dc.accum_err;
 		ctx->retained = !ret;
+		ctx->idle = !ret && ambient;
+		if (ambient)
+			dev_info(&ctx->dsi->dev, "blank into LP1: %d\n", ret);
 	} else {
 		ret = aa551_off(ctx);
 		ctx->retained = false;
@@ -1204,6 +1233,13 @@ static int aa551_bl_update_status(struct backlight_device *bl)
 	struct aa551_fp *fp = ctx->fp;
 	u16 brightness = backlight_get_brightness(bl);
 	int ret;
+
+	/*
+	 * An always-on blank sets its own level: brightness 0 first would show
+	 * a dark frame, and the host may already be off.
+	 */
+	if (ambient && backlight_is_blank(bl))
+		return 0;
 
 	mutex_lock(&fp->lock);
 	fp->brightness = brightness;
