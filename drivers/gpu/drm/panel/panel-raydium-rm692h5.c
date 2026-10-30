@@ -36,6 +36,21 @@ static bool retain = true;
 module_param(retain, bool, 0644);
 MODULE_PARM_DESC(retain, "Keep the panel powered while blanked for a fast wake");
 
+/*
+ * Always-on display test. With ambient set, blanking puts the panel in DCS
+ * idle mode (stock lp1) at ambient_brightness instead of turning the display
+ * off, so it keeps showing the last frame from its own memory while the host
+ * powers down. Waking leaves idle mode as stock nolp does: brightness 0, then
+ * idle off, then the backlight restores the level.
+ */
+static bool ambient;
+module_param(ambient, bool, 0644);
+MODULE_PARM_DESC(ambient, "Blank into idle mode, keeping the last frame lit");
+
+static uint ambient_brightness = 0x0120;
+module_param(ambient_brightness, uint, 0644);
+MODULE_PARM_DESC(ambient_brightness, "Brightness code for a blank into idle mode (stock 0x0120)");
+
 struct rm692h5_rate;
 
 /* Power-on order and delays as in the downstream panel power sequence */
@@ -51,13 +66,78 @@ struct rm692h5 {
 	/* The refresh rate the panel runs; it outlives a retained blank. */
 	const struct rm692h5_rate *rate;
 	bool retained, shutting_down;
+	/* Lit (between enable and disable), and in DCS idle mode. */
+	bool enabled, idle;
 	ktime_t wake;
 };
+
+/* The one panel, for the idle parameter. */
+static struct rm692h5 *rm692h5_panel;
 
 static inline struct rm692h5 *to_rm692h5(struct drm_panel *panel)
 {
 	return container_of(panel, struct rm692h5, panel);
 }
+
+static void rm692h5_idle_on(struct mipi_dsi_multi_context *dsi_ctx)
+{
+	dsi_ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xfe, 0x00);
+	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, (u8[]){ MIPI_DCS_ENTER_IDLE_MODE }, 1);
+	mipi_dsi_msleep(dsi_ctx, 20);
+}
+
+/* Stock nolp: brightness 0 before idle off, so the old level never flashes. */
+static void rm692h5_idle_off(struct mipi_dsi_multi_context *dsi_ctx)
+{
+	dsi_ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xfe, 0x00);
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0x51, 0x00, 0x00);
+	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, (u8[]){ MIPI_DCS_EXIT_IDLE_MODE }, 1);
+}
+
+/* Switches idle mode on a lit panel: idle mode's look and brightness codes. */
+static int rm692h5_set_idle(const char *val, const struct kernel_param *kp)
+{
+	struct rm692h5 *ctx = rm692h5_panel;
+	struct mipi_dsi_multi_context dsi_ctx;
+	bool on;
+	int ret;
+
+	ret = kstrtobool(val, &on);
+	if (ret)
+		return ret;
+	if (!ctx || !ctx->enabled)
+		return -ENODEV;
+
+	dsi_ctx = (struct mipi_dsi_multi_context){ .dsi = ctx->dsi };
+	if (on) {
+		rm692h5_idle_on(&dsi_ctx);
+	} else {
+		rm692h5_idle_off(&dsi_ctx);
+		if (!dsi_ctx.accum_err)
+			backlight_update_status(ctx->panel.backlight);
+	}
+	if (dsi_ctx.accum_err)
+		return dsi_ctx.accum_err;
+
+	ctx->idle = on;
+	dev_info(&ctx->dsi->dev, "idle mode %s\n", on ? "on" : "off");
+	return 0;
+}
+
+static int rm692h5_get_idle(char *buffer, const struct kernel_param *kp)
+{
+	return sysfs_emit(buffer, "%c\n",
+			  rm692h5_panel && rm692h5_panel->idle ? 'Y' : 'N');
+}
+
+static const struct kernel_param_ops rm692h5_idle_ops = {
+	.set = rm692h5_set_idle,
+	.get = rm692h5_get_idle,
+};
+module_param_cb(idle, &rm692h5_idle_ops, NULL, 0644);
+MODULE_PARM_DESC(idle, "DCS idle mode on the lit panel");
 
 static int rm692h5_power_on(struct rm692h5 *ctx)
 {
@@ -518,6 +598,7 @@ static int rm692h5_cold(struct rm692h5 *ctx, const struct rm692h5_rate *rate)
 
 	msleep(28);
 	ctx->rate = rate;
+	ctx->idle = false;
 
 	return 0;
 
@@ -567,9 +648,13 @@ static int rm692h5_enable(struct drm_panel *panel)
 	 */
 	if (retained) {
 		ctx->retained = false;
+		if (ctx->idle)
+			rm692h5_idle_off(&dsi_ctx);
 		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 		mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
 		ret = dsi_ctx.accum_err;
+		if (!ret)
+			ctx->idle = false;
 		if (ret) {
 			/* Never leave a blank panel behind: start it over. */
 			dev_warn(&ctx->dsi->dev, "retained panel did not wake (%d); restarting it\n", ret);
@@ -579,6 +664,7 @@ static int rm692h5_enable(struct drm_panel *panel)
 		}
 	}
 
+	ctx->enabled = !ret;
 	dev_info(&ctx->dsi->dev, "wake retained=%d took %lld us result=%d\n",
 		 retained, ktime_us_delta(ktime_get(), ctx->wake), ret);
 	return ret;
@@ -589,7 +675,25 @@ static int rm692h5_disable(struct drm_panel *panel)
 	struct rm692h5 *ctx = to_rm692h5(panel);
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
 
-	if (!retain || ctx->shutting_down)
+	ctx->enabled = false;
+	if (ctx->shutting_down)
+		return 0;
+
+	if (ambient) {
+		u16 level = min_t(uint, ambient_brightness, RM692H5_MAX_BRIGHTNESS);
+		u8 set_level[] = { MIPI_DCS_SET_DISPLAY_BRIGHTNESS, level >> 8, level & 0xff };
+
+		if (!ctx->idle)
+			rm692h5_idle_on(&dsi_ctx);
+		mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, set_level, sizeof(set_level));
+		ctx->retained = !dsi_ctx.accum_err;
+		ctx->idle = ctx->retained;
+		dev_info(&ctx->dsi->dev, "blank into idle mode at 0x%04x: %d\n",
+			 level, dsi_ctx.accum_err);
+		return 0;
+	}
+
+	if (!retain)
 		return 0;
 
 	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
@@ -709,6 +813,7 @@ static int rm692h5_probe(struct mipi_dsi_device *dsi)
 
 	ctx->dsi = dsi;
 	mipi_dsi_set_drvdata(dsi, ctx);
+	rm692h5_panel = ctx;
 
 	dsi->lanes = 4;
 	dsi->format = MIPI_DSI_FMT_RGB888;
@@ -754,6 +859,7 @@ static void rm692h5_remove(struct mipi_dsi_device *dsi)
 		dev_err(&dsi->dev, "Failed to detach from DSI host: %d\n", ret);
 
 	drm_panel_remove(&ctx->panel);
+	rm692h5_panel = NULL;
 }
 
 /* Shutdown blanks with the full power cycle. */
