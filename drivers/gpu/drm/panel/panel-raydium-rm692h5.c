@@ -52,6 +52,19 @@ static uint ambient_brightness = 0x0120;
 module_param(ambient_brightness, uint, 0644);
 MODULE_PARM_DESC(ambient_brightness, "Brightness code for a blank into idle mode (stock 0x0120)");
 
+/*
+ * The panel takes a while to switch idle mode. Powering the host down in
+ * the middle of the switch dims the picture for a moment, and pixels
+ * written before it ends can leave a line across the screen.
+ */
+static uint idle_settle_ms = 150;
+module_param(idle_settle_ms, uint, 0644);
+MODULE_PARM_DESC(idle_settle_ms, "Wait after entering idle mode before the host powers down");
+
+static uint idle_exit_ms = 50;
+module_param(idle_exit_ms, uint, 0644);
+MODULE_PARM_DESC(idle_exit_ms, "Wait after leaving idle mode before new pixels");
+
 struct rm692h5_rate;
 
 /* Power-on order and delays as in the downstream panel power sequence */
@@ -85,7 +98,7 @@ static void rm692h5_idle_on(struct mipi_dsi_multi_context *dsi_ctx)
 	dsi_ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xfe, 0x00);
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, (u8[]){ MIPI_DCS_ENTER_IDLE_MODE }, 1);
-	mipi_dsi_msleep(dsi_ctx, 20);
+	mipi_dsi_msleep(dsi_ctx, idle_settle_ms);
 }
 
 /*
@@ -102,6 +115,7 @@ static void rm692h5_idle_off(struct mipi_dsi_multi_context *dsi_ctx,
 	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xfe, 0x00);
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, set_level, sizeof(set_level));
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, (u8[]){ MIPI_DCS_EXIT_IDLE_MODE }, 1);
+	mipi_dsi_msleep(dsi_ctx, idle_exit_ms);
 }
 
 /* Switches idle mode on a lit panel: idle mode's look and brightness codes. */
