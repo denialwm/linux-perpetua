@@ -222,6 +222,7 @@ void msm_drm_kms_unregister(struct device *dev)
 	struct msm_drm_private *priv = platform_get_drvdata(pdev);
 	struct drm_device *ddev = priv->dev;
 
+	pm_vt_switch_unregister(dev);
 	drm_atomic_helper_shutdown(ddev);
 }
 
@@ -385,4 +386,12 @@ void msm_drm_kms_post_init(struct device *dev)
 
 	drm_kms_helper_poll_init(ddev);
 	drm_client_setup(ddev, NULL);
+
+	/*
+	 * KMS saves and restores the display state across system sleep
+	 * (msm_kms_pm_prepare/complete), so suspend needs no VT switch, as
+	 * fbdev declares when it is present. The switch would take the
+	 * display from the compositor's session on every suspend.
+	 */
+	pm_vt_switch_required(dev, false);
 }
