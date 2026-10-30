@@ -86,6 +86,8 @@ struct aa551 {
 	struct gpio_desc *iris_wakeup_gpio;
 	struct gpio_desc *iris_abyp_ready_gpio;
 	bool powered, standby_enabled, retained, iris_confirmed, shutting_down;
+	/* The lit panel shows the factory LP1 picture: the aod test switch. */
+	bool aod;
 	u32 cold_wakes, retained_wakes;
 	u64 prepare_us, enable_us;
 	u8 power_mode;
@@ -101,6 +103,7 @@ static inline struct aa551 *to_aa551(struct drm_panel *panel)
 
 #include "panel-oneplus-aston-aa551-alpha.h"
 #include "panel-oneplus-aston-aa551-state.h"
+#include "panel-oneplus-aston-aa551-aod.h"
 
 #define AA551_FP_TIMEOUT_MS 30000
 #define AA551_FP_MAX_DBV 0x0dbb
@@ -984,6 +987,13 @@ static int aa551_disable(struct drm_panel *panel)
 
 	mutex_lock(&ctx->fp->lock);
 	aa551_fp_off_locked(ctx->fp);
+	if (ctx->aod) {
+		/* Never blank in the test switch's LP1. */
+		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+		aa551_factory_nolp_120(&dc);
+		ctx->dsi->mode_flags = flags;
+		ctx->aod = false;
+	}
 	if (ctx->standby_enabled && !ctx->shutting_down) {
 		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 		/* Keep the normal panel configuration while blanked. Entering
@@ -1388,7 +1398,49 @@ static ssize_t standby_state_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(standby_state);
 
+/* Switches the lit panel between factory LP1 and NOLP, to compare the two. */
+static ssize_t aod_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct aa551 *ctx = mipi_dsi_get_drvdata(to_mipi_dsi_device(dev));
+
+	return sysfs_emit(buf, "%u\n", READ_ONCE(ctx->aod));
+}
+
+static ssize_t aod_store(struct device *dev, struct device_attribute *attr,
+			 const char *buf, size_t count)
+{
+	struct aa551 *ctx = mipi_dsi_get_drvdata(to_mipi_dsi_device(dev));
+	struct mipi_dsi_multi_context dc = { .dsi = ctx->dsi };
+	unsigned long flags = ctx->dsi->mode_flags;
+	bool on;
+	int ret = kstrtobool(buf, &on);
+
+	if (ret)
+		return ret;
+	mutex_lock(&ctx->fp->lock);
+	if (!ctx->fp->panel_on || ctx->fp->active) {
+		ret = -EBUSY;
+	} else if (on != ctx->aod) {
+		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+		if (on)
+			aa551_factory_lp1_120(&dc);
+		else
+			aa551_factory_nolp_120(&dc);
+		ctx->dsi->mode_flags = flags;
+		ret = dc.accum_err;
+		if (!ret && !on)
+			ret = aa551_bl_write_locked(ctx, ctx->fp->brightness);
+		if (!ret)
+			ctx->aod = on;
+		dev_info(&ctx->dsi->dev, "factory LP1 %s: %d\n", on ? "on" : "off", ret);
+	}
+	mutex_unlock(&ctx->fp->lock);
+	return ret ?: count;
+}
+static DEVICE_ATTR_RW(aod);
+
 static struct attribute *aa551_attrs[] = {
+	&dev_attr_aod.attr,
 	&dev_attr_standby_enabled.attr,
 	&dev_attr_standby_state.attr,
 	NULL,
