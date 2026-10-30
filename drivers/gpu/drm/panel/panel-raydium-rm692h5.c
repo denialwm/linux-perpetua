@@ -61,6 +61,15 @@ static uint idle_settle_ms = 150;
 module_param(idle_settle_ms, uint, 0644);
 MODULE_PARM_DESC(idle_settle_ms, "Wait after entering idle mode before the host powers down");
 
+/*
+ * The level right after the switch, with no wait between: a level first
+ * shows normal mode at the always-on level for a moment, part of a frame
+ * darker. idle_level_first sends it before the switch, to compare.
+ */
+static bool idle_level_first;
+module_param(idle_level_first, bool, 0644);
+MODULE_PARM_DESC(idle_level_first, "Set the idle level before entering idle mode, not after");
+
 static uint idle_exit_ms = 50;
 module_param(idle_exit_ms, uint, 0644);
 MODULE_PARM_DESC(idle_exit_ms, "Wait after leaving idle mode before new pixels");
@@ -97,11 +106,15 @@ static inline struct rm692h5 *to_rm692h5(struct drm_panel *panel)
 static void rm692h5_idle_on(struct mipi_dsi_multi_context *dsi_ctx, u16 level)
 {
 	u8 set_level[] = { MIPI_DCS_SET_DISPLAY_BRIGHTNESS, level >> 8, level & 0xff };
+	bool level_first = READ_ONCE(idle_level_first);
 
 	dsi_ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xfe, 0x00);
-	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, set_level, sizeof(set_level));
+	if (level_first)
+		mipi_dsi_dcs_write_buffer_multi(dsi_ctx, set_level, sizeof(set_level));
 	mipi_dsi_dcs_write_buffer_multi(dsi_ctx, (u8[]){ MIPI_DCS_ENTER_IDLE_MODE }, 1);
+	if (!level_first)
+		mipi_dsi_dcs_write_buffer_multi(dsi_ctx, set_level, sizeof(set_level));
 	mipi_dsi_msleep(dsi_ctx, idle_settle_ms);
 }
 
