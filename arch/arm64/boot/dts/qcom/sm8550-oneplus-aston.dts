@@ -297,6 +297,17 @@
 			no-map;
 		};
 
+		/*
+		 * Kernel log across a reset. Write-combine (mem-type 0): a
+		 * cached mapping would lose the log in the CPU caches.
+		 */
+		ramoops@e2000000 {
+			compatible = "ramoops";
+			reg = <0 0xe2000000 0 0x200000>;
+			console-size = <0x200000>;
+			mem-type = <0>;
+		};
+
 		hwfence_shbuf: hwfence-shbuf-region@e6440000 {
 			reg = <0 0xe6440000 0 0x2dd000>;
 			no-map;
