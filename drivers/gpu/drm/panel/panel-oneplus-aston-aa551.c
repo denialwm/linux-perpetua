@@ -39,24 +39,6 @@
 
 #include <video/mipi_display.h>
 
-/*
- * Always-on display. With ambient set, a standby blank puts the panel in
- * the factory 120 Hz LP1 instead of DISPLAY_OFF, so it keeps showing the
- * last frame while the host powers down, and a wake leaves it through NOLP.
- * The waits let each switch finish before the host moves on.
- */
-static bool ambient;
-module_param(ambient, bool, 0644);
-MODULE_PARM_DESC(ambient, "Blank into factory LP1, keeping the last frame lit");
-
-static uint idle_settle_ms = 150;
-module_param(idle_settle_ms, uint, 0644);
-MODULE_PARM_DESC(idle_settle_ms, "Wait after entering LP1 before the host powers down");
-
-static uint idle_exit_ms = 50;
-module_param(idle_exit_ms, uint, 0644);
-MODULE_PARM_DESC(idle_exit_ms, "Wait after leaving LP1 before new pixels");
-
 #define AA551_BRIGHTNESS_DEFAULT	1433
 #define AA551_BRIGHTNESS_MAX		4094
 
@@ -104,9 +86,7 @@ struct aa551 {
 	struct gpio_desc *iris_wakeup_gpio;
 	struct gpio_desc *iris_abyp_ready_gpio;
 	bool powered, standby_enabled, retained, iris_confirmed, shutting_down;
-	/* The lit panel shows the factory LP1 picture: the aod test switch. */
-	bool aod;
-	/* Blanked into LP1 for the always-on display. */
+	/* At the 1 Hz refresh floor for the always-on display. */
 	bool idle;
 	u32 cold_wakes, retained_wakes;
 	u64 prepare_us, enable_us;
@@ -123,12 +103,58 @@ static inline struct aa551 *to_aa551(struct drm_panel *panel)
 
 #include "panel-oneplus-aston-aa551-alpha.h"
 #include "panel-oneplus-aston-aa551-state.h"
-#include "panel-oneplus-aston-aa551-aod.h"
+#include "panel-oneplus-aston-aa551-adfr.h"
 
 #define AA551_FP_TIMEOUT_MS 30000
 #define AA551_FP_MAX_DBV 0x0dbb
 
 static int aa551_bl_write_locked(struct aa551 *ctx, u16 brightness);
+
+/*
+ * Always-on display, set by the compositor while its lock screen shows the
+ * always-on picture. A standby blank then keeps the panel lit in normal mode
+ * at its 1 Hz refresh floor, showing the last frame at the backlight's level
+ * while the host powers down, and an unblank keeps the floor: the host only
+ * woke to draw a new frame. Clearing it goes back to 120 Hz, at once on a lit
+ * panel or else at the next unblank.
+ */
+static bool ambient;
+static struct aa551 *aa551_panel;
+
+static int aa551_set_ambient(const char *val, const struct kernel_param *kp)
+{
+	struct aa551 *ctx = READ_ONCE(aa551_panel);
+	bool on;
+	int ret = kstrtobool(val, &on);
+
+	if (ret)
+		return ret;
+	WRITE_ONCE(ambient, on);
+	if (on || !ctx)
+		return 0;
+
+	mutex_lock(&ctx->fp->lock);
+	if (ctx->idle && ctx->fp->panel_on) {
+		struct mipi_dsi_multi_context dc = { .dsi = ctx->dsi };
+		unsigned long flags = ctx->dsi->mode_flags;
+
+		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+		aa551_min_fps(&dc, false);
+		ctx->dsi->mode_flags = flags;
+		ret = dc.accum_err;
+		if (!ret)
+			ctx->idle = false;
+	}
+	mutex_unlock(&ctx->fp->lock);
+	return ret;
+}
+
+static const struct kernel_param_ops aa551_ambient_ops = {
+	.set = aa551_set_ambient,
+	.get = param_get_bool,
+};
+module_param_cb(ambient, &aa551_ambient_ops, &ambient, 0644);
+MODULE_PARM_DESC(ambient, "Blank to the 1 Hz floor, keeping the last frame lit");
 
 /* Factory OTP gamma extrapolation for the local fingerprint region. This is
  * read/programmed only on the first explicit illumination enable, never probe.
@@ -969,11 +995,12 @@ static int aa551_enable(struct drm_panel *panel)
 
 	mutex_lock(&ctx->fp->lock);
 	if (ctx->retained) {
-		/* No reset or sleep exit: only an always-on blank leaves LP1. */
+		/* No reset or sleep exit. While ambient stays set the host only
+		 * woke to draw, and the panel keeps its 1 Hz floor.
+		 */
 		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
-		if (ctx->idle) {
-			aa551_factory_nolp_120(&dc);
-			mipi_dsi_msleep(&dc, idle_exit_ms);
+		if (ctx->idle && !READ_ONCE(ambient)) {
+			aa551_min_fps(&dc, false);
 			ctx->idle = false;
 		}
 	} else {
@@ -1010,30 +1037,27 @@ static int aa551_disable(struct drm_panel *panel)
 
 	mutex_lock(&ctx->fp->lock);
 	aa551_fp_off_locked(ctx->fp);
-	if (ctx->aod) {
-		/* Never blank in the test switch's LP1. */
-		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
-		aa551_factory_nolp_120(&dc);
-		ctx->dsi->mode_flags = flags;
-		ctx->aod = false;
-	}
 	if (ctx->standby_enabled && !ctx->shutting_down) {
+		bool lit = READ_ONCE(ambient);
+
 		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 		/* DISPLAY_OFF hides the retained frame; the always-on blank
-		 * keeps it lit in the factory 120 Hz LP1.
+		 * keeps it lit at the 1 Hz floor.
 		 */
-		if (ambient) {
-			aa551_factory_lp1_120(&dc);
-			mipi_dsi_msleep(&dc, idle_settle_ms);
+		if (lit) {
+			if (!ctx->idle)
+				aa551_min_fps(&dc, true);
 		} else {
+			if (ctx->idle)
+				aa551_min_fps(&dc, false);
 			mipi_dsi_dcs_set_display_off_multi(&dc);
 		}
 		ctx->dsi->mode_flags = flags;
 		ret = dc.accum_err;
+		if (lit && !ctx->idle)
+			dev_info(&ctx->dsi->dev, "blank to the 1 Hz floor: %d\n", ret);
 		ctx->retained = !ret;
-		ctx->idle = !ret && ambient;
-		if (ambient)
-			dev_info(&ctx->dsi->dev, "blank into LP1: %d\n", ret);
+		ctx->idle = !ret && lit;
 	} else {
 		ret = aa551_off(ctx);
 		ctx->retained = false;
@@ -1235,10 +1259,10 @@ static int aa551_bl_update_status(struct backlight_device *bl)
 	int ret;
 
 	/*
-	 * An always-on blank sets its own level: brightness 0 first would show
-	 * a dark frame, and the host may already be off.
+	 * An always-on blank keeps the level: brightness 0 first would show a
+	 * dark frame, and the host may already be off.
 	 */
-	if (ambient && backlight_is_blank(bl))
+	if (READ_ONCE(ambient) && backlight_is_blank(bl))
 		return 0;
 
 	mutex_lock(&fp->lock);
@@ -1358,6 +1382,7 @@ static int aa551_probe(struct mipi_dsi_device *dsi)
 		return dev_err_probe(dev, ret, "Failed to attach to DSI host\n");
 	}
 
+	WRITE_ONCE(aa551_panel, ctx);
 	return 0;
 }
 
@@ -1368,6 +1393,7 @@ static void aa551_remove(struct mipi_dsi_device *dsi)
 	struct aa551 *ctx = mipi_dsi_get_drvdata(dsi);
 	int ret;
 
+	WRITE_ONCE(aa551_panel, NULL);
 	aa551_shutdown(dsi);
 	aa551_fp_stop(ctx->fp);
 	ret = mipi_dsi_detach(dsi);
@@ -1434,49 +1460,7 @@ static ssize_t standby_state_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(standby_state);
 
-/* Switches the lit panel between factory LP1 and NOLP, to compare the two. */
-static ssize_t aod_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct aa551 *ctx = mipi_dsi_get_drvdata(to_mipi_dsi_device(dev));
-
-	return sysfs_emit(buf, "%u\n", READ_ONCE(ctx->aod));
-}
-
-static ssize_t aod_store(struct device *dev, struct device_attribute *attr,
-			 const char *buf, size_t count)
-{
-	struct aa551 *ctx = mipi_dsi_get_drvdata(to_mipi_dsi_device(dev));
-	struct mipi_dsi_multi_context dc = { .dsi = ctx->dsi };
-	unsigned long flags = ctx->dsi->mode_flags;
-	bool on;
-	int ret = kstrtobool(buf, &on);
-
-	if (ret)
-		return ret;
-	mutex_lock(&ctx->fp->lock);
-	if (!ctx->fp->panel_on || ctx->fp->active) {
-		ret = -EBUSY;
-	} else if (on != ctx->aod) {
-		ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
-		if (on)
-			aa551_factory_lp1_120(&dc);
-		else
-			aa551_factory_nolp_120(&dc);
-		ctx->dsi->mode_flags = flags;
-		ret = dc.accum_err;
-		if (!ret && !on)
-			ret = aa551_bl_write_locked(ctx, ctx->fp->brightness);
-		if (!ret)
-			ctx->aod = on;
-		dev_info(&ctx->dsi->dev, "factory LP1 %s: %d\n", on ? "on" : "off", ret);
-	}
-	mutex_unlock(&ctx->fp->lock);
-	return ret ?: count;
-}
-static DEVICE_ATTR_RW(aod);
-
 static struct attribute *aa551_attrs[] = {
-	&dev_attr_aod.attr,
 	&dev_attr_standby_enabled.attr,
 	&dev_attr_standby_state.attr,
 	NULL,
