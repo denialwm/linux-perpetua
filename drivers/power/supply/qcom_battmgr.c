@@ -1994,6 +1994,12 @@ static void qcom_battmgr_enable_worker(struct work_struct *work)
 		ret = qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET, OPLUS_USB_OTG_AP_ENABLE, 1);
 		if (ret)
 			dev_err(battmgr->dev, "failed to enable OTG control from AP\n");
+
+		/*
+		 * A charger plugged in before the service came up sent its
+		 * PlugIn notification to nobody, so enable charging now.
+		 */
+		schedule_work(&battmgr->oplus_charging_work);
 	}
 
 	if (battmgr->charge_limit.num_levels) {
