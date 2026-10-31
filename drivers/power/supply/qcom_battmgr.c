@@ -122,6 +122,7 @@ enum qcom_battmgr_variant {
 
 #define BATTMGR_OPLUS_PROPERTY_SET			0x300
 #define BATTMGR_OPLUS_PROPERTY_GET			0x301
+#define OPLUS_USB_INPUT_CURRENT_LIMIT			5
 #define OPLUS_USB_OTG_AP_ENABLE				12
 #define OPLUS_USB_OTG_VBUS_REGULATOR_ENABLE		19
 #define OPLUS_USB_OTG_BOOST_CURRENT			59
@@ -1131,26 +1132,50 @@ static int qcom_battmgr_usb_get_property(struct power_supply *psy,
 	return 0;
 }
 
+static int qcom_battmgr_usb_is_writeable(struct power_supply *psy,
+					 enum power_supply_property psp)
+{
+	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
+
+	return (battmgr->variant == QCOM_BATTMGR_SM8550 ||
+		battmgr->variant == OPLUS_BATTMGR_SM8550 ||
+		battmgr->variant == OPLUS_BATTMGR_KAANAPALI) &&
+	       psp == POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT;
+}
+
 /*
  * The charger firmware applies a host input limit only to SDP, CDP and PD
  * sources; it starts an SDP at 100 mA until the gadget is configured.
  * Zero suspends the buck input and -1 restores its automatic limit for
  * any source, including DCP when an external direct charger owns charging.
+ *
+ * The Kaanapali Oplus firmware takes the host's vote through its own
+ * property, which the stock driver sets for every charger type. Zero
+ * suspends the buck input there too, but -1 only resumes it at the host's
+ * last limit: there is no automatic limit to return to.
  */
 static int qcom_battmgr_usb_set_property(struct power_supply *psy,
 					 enum power_supply_property psp,
 					 const union power_supply_propval *pval)
 {
 	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
+	u32 limit = pval->intval < 0 ? UINT_MAX : pval->intval;
 	int ret;
 
 	if (!battmgr->service_up)
 		return -EAGAIN;
 
-	if ((battmgr->variant != QCOM_BATTMGR_SM8550 &&
-	     battmgr->variant != OPLUS_BATTMGR_SM8550) ||
-	    psp != POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT)
+	if (!qcom_battmgr_usb_is_writeable(psy, psp))
 		return -EINVAL;
+
+	if (battmgr->variant == OPLUS_BATTMGR_KAANAPALI) {
+		mutex_lock(&battmgr->lock);
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET,
+						    OPLUS_USB_INPUT_CURRENT_LIMIT, limit);
+		mutex_unlock(&battmgr->lock);
+
+		return ret;
+	}
 
 	if (pval->intval > 0) {
 		ret = qcom_battmgr_usb_sm8350_update(battmgr, POWER_SUPPLY_PROP_USB_TYPE);
@@ -1169,21 +1194,10 @@ static int qcom_battmgr_usb_set_property(struct power_supply *psy,
 
 	mutex_lock(&battmgr->lock);
 	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_SET,
-					    USB_INPUT_CURR_LIMIT,
-					    pval->intval < 0 ? UINT_MAX : pval->intval);
+					    USB_INPUT_CURR_LIMIT, limit);
 	mutex_unlock(&battmgr->lock);
 
 	return ret;
-}
-
-static int qcom_battmgr_usb_is_writeable(struct power_supply *psy,
-					 enum power_supply_property psp)
-{
-	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
-
-	return (battmgr->variant == QCOM_BATTMGR_SM8550 ||
-		battmgr->variant == OPLUS_BATTMGR_SM8550) &&
-	       psp == POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT;
 }
 
 static const enum power_supply_property sc8280xp_usb_props[] = {
