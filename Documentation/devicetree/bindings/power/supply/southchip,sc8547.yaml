@@ -60,6 +60,51 @@ properties:
     description: The built-in VOOC PHY, used by a direct charging driver.
     additionalProperties: false
 
+    properties:
+      mux-states:
+        description: Routes USB D+/D- from the connector to the PHY.
+        maxItems: 1
+
+      io-channels:
+        items:
+          - description: USB connector thermistor
+          - description: Battery connector thermistor
+          - description: Board thermistor
+          - description: Charge pump MOSFET thermistor
+
+      io-channel-names:
+        items:
+          - const: usb-connector
+          - const: battery-connector
+          - const: board
+          - const: mos
+
+      southchip,secondary-pump:
+        $ref: /schemas/types.yaml#/definitions/phandle
+        description: A second SC8547D sharing the charging current.
+
+      oneplus,svooc-battery-curve:
+        $ref: /schemas/types.yaml#/definitions/uint32-matrix
+        description:
+          The battery curve the SuperVOOC adapter reads before charging, as
+          three pairs of battery voltage in microvolts and current in
+          microamps.
+        minItems: 3
+        maxItems: 3
+        items:
+          items:
+            - minimum: 3404000
+              maximum: 4664000
+            - minimum: 100000
+              maximum: 12700000
+              multipleOf: 100000
+
+    required:
+      - mux-states
+      - io-channels
+      - io-channel-names
+      - oneplus,svooc-battery-curve
+
 required:
   - compatible
   - reg
@@ -86,6 +131,15 @@ examples:
             southchip,always-otg-en;
 
             vooc-phy {
+                mux-states = <&usbss 1>;
+                io-channels = <&adc 0x2747>, <&adc 0x2744>,
+                              <&adc 0x274d>, <&adc 0x274b>;
+                io-channel-names = "usb-connector", "battery-connector",
+                                   "board", "mos";
+                southchip,secondary-pump = <&second_pump>;
+                oneplus,svooc-battery-curve = <4664000 1100000>,
+                                              <4664000 2600000>,
+                                              <3414000 7300000>;
             };
         };
     };
