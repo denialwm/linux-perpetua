@@ -59,8 +59,19 @@ enum phy_ufs_state {
 	PHY_UFS_HIBERN8_EXIT,
 };
 
+/*
+ * PCIe DRV: another processor holds the link in L1 substates while the host
+ * sleeps. On enter the PHY drops what the host votes for and keeps its
+ * configuration; on exit it takes them back.
+ */
+enum phy_pcie_state {
+	PHY_PCIE_DRV_ENTER,
+	PHY_PCIE_DRV_EXIT,
+};
+
 union phy_notify {
 	enum phy_ufs_state ufs_state;
+	enum phy_pcie_state pcie_state;
 };
 
 /**

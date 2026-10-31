@@ -27,6 +27,11 @@ enum {
 	DT_BI_TCXO_PAD,
 };
 
+/*
+ * No parent: through suspend the ADSP holds the PCIe 0 link (PCIe DRV) and
+ * votes XO itself, while this gate stays open. While the link is active,
+ * the PHY's aux clock keeps XO on.
+ */
 static struct clk_branch tcsr_pcie_0_clkref_en = {
 	.halt_reg = 0x15100,
 	.halt_check = BRANCH_HALT_SKIP,
@@ -35,10 +40,6 @@ static struct clk_branch tcsr_pcie_0_clkref_en = {
 		.enable_mask = BIT(0),
 		.hw.init = &(struct clk_init_data){
 			.name = "tcsr_pcie_0_clkref_en",
-			.parent_data = &(const struct clk_parent_data){
-				.index = DT_BI_TCXO_PAD,
-			},
-			.num_parents = 1,
 			.ops = &clk_branch2_ops,
 		},
 	},

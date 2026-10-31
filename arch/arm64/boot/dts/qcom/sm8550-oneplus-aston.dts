@@ -1245,6 +1245,8 @@
 &pcie0 {
 	/* WCN7850 WAKE# is asserted low and idles high. */
 	wake-gpios = <&tlmm 96 GPIO_ACTIVE_LOW>;
+	/* The ADSP holds the Wi-Fi link through suspend. */
+	qcom,drv-supported;
 	perst-gpios = <&tlmm 94 GPIO_ACTIVE_LOW>;
 
 	pinctrl-0 = <&pcie0_default_state>;

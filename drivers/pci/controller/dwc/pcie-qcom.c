@@ -32,6 +32,7 @@
 #include <linux/phy/phy.h>
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
+#include <linux/rpmsg.h>
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/units.h>
@@ -308,6 +309,10 @@ struct qcom_pcie {
 	struct gpio_desc *reset;
 	int global_irq;
 	bool use_pm_opp;
+	int drv_id;			/* PCIe DRV device id, <0 without */
+	bool drv_active;
+	int wake_irq;
+	bool wake_armed;
 };
 
 #define to_qcom_pcie(x)		dev_get_drvdata((x)->dev)
@@ -2171,6 +2176,17 @@ static int qcom_pcie_parse_legacy_binding(struct qcom_pcie *pcie)
 	return 0;
 }
 
+/* WAKE# during the way into suspend aborts it, like one in suspend. */
+static irqreturn_t qcom_pcie_wake_irq(int irq, void *data)
+{
+	struct qcom_pcie *pcie = data;
+
+	if (READ_ONCE(pcie->wake_armed))
+		pm_system_wakeup();
+
+	return IRQ_HANDLED;
+}
+
 static int qcom_pcie_probe(struct platform_device *pdev)
 {
 	struct qcom_pcie_perst *perst, *tmp_perst;
@@ -2180,6 +2196,7 @@ static int qcom_pcie_probe(struct platform_device *pdev)
 	struct qcom_pcie *pcie;
 	struct dw_pcie_rp *pp;
 	struct resource *res;
+	struct gpio_desc *wake;
 	struct dw_pcie *pci;
 	int ret, irq;
 
@@ -2320,6 +2337,20 @@ static int qcom_pcie_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, pcie);
 
+	pcie->drv_id = -1;
+	if (of_property_read_bool(dev->of_node, "qcom,drv-supported"))
+		pcie->drv_id = of_get_pci_domain_nr(dev->of_node);
+
+	/* WAKE# wakes the system while the ADSP holds the link (PCIe DRV). */
+	wake = devm_gpiod_get_optional(dev, "wake", GPIOD_IN);
+	if (!IS_ERR_OR_NULL(wake)) {
+		irq = gpiod_to_irq(wake);
+		if (irq > 0 && !devm_request_irq(dev, irq, qcom_pcie_wake_irq,
+						 IRQF_TRIGGER_FALLING,
+						 "qcom_pcie_wake", pcie))
+			pcie->wake_irq = irq;
+	}
+
 	ret = dw_pcie_host_init(pp);
 	if (ret) {
 		dev_err_probe(dev, ret, "cannot initialize host\n");
@@ -2375,6 +2406,263 @@ err_pm_runtime_put:
 	return ret;
 }
 
+/*
+ * PCIe DRV: while the system sleeps, the ADSP holds the link in L1.2 and
+ * votes the clocks, power and bandwidth the link needs whenever the endpoint
+ * wakes it. The host hands the link over on the "pcie_drv" rpmsg channel and
+ * drops all of its own votes, so a Wi-Fi chip armed for wake stays connected
+ * while CX and XO collapse.
+ */
+#define QCOM_PCIE_DRV_MSG_ACK			0xa
+#define QCOM_PCIE_DRV_MSG_CMD			0xc
+#define QCOM_PCIE_DRV_CMD_ENABLE		0xc0000000
+#define QCOM_PCIE_DRV_CMD_DISABLE		0xc0000001
+#define QCOM_PCIE_DRV_CMD_ENABLE_L1SS_SLEEP	0xc0000005
+#define QCOM_PCIE_DRV_CMD_DISABLE_L1SS_SLEEP	0xc0000006
+#define QCOM_PCIE_DRV_L1SS_TIMEOUT_MS		5
+#define QCOM_PCIE_DRV_ACK_TIMEOUT_MS		250
+#define QCOM_PCIE_DRV_SEQ_RESERVED		0xffff
+
+struct qcom_pcie_drv_header {
+	__le16 major;
+	__le16 minor;
+	__le16 msg_id;
+	__le16 seq;
+	__le16 reply_seq;
+	__le16 payload_size;
+	__le32 dev_id;
+	u8 reserved[8];
+} __packed;
+
+struct qcom_pcie_drv_msg {
+	struct qcom_pcie_drv_header hdr;
+	__le32 dword[4];
+} __packed;
+
+static struct {
+	struct mutex lock;
+	struct rpmsg_device *rpdev;
+	struct completion ack;
+	u16 seq;
+	u16 reply_seq;
+	u32 status;
+} qcom_pcie_drv = {
+	.lock = __MUTEX_INITIALIZER(qcom_pcie_drv.lock),
+	.ack = COMPLETION_INITIALIZER(qcom_pcie_drv.ack),
+};
+
+static int qcom_pcie_drv_send(struct qcom_pcie *pcie, u32 cmd)
+{
+	struct qcom_pcie_drv_msg msg = {};
+	int ret;
+
+	mutex_lock(&qcom_pcie_drv.lock);
+	if (!qcom_pcie_drv.rpdev) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	reinit_completion(&qcom_pcie_drv.ack);
+	qcom_pcie_drv.reply_seq = qcom_pcie_drv.seq++;
+	if (qcom_pcie_drv.seq == QCOM_PCIE_DRV_SEQ_RESERVED)
+		qcom_pcie_drv.seq = 0;
+
+	msg.hdr.major = cpu_to_le16(1);
+	msg.hdr.minor = cpu_to_le16(0);
+	msg.hdr.msg_id = cpu_to_le16(QCOM_PCIE_DRV_MSG_CMD);
+	msg.hdr.seq = cpu_to_le16(qcom_pcie_drv.reply_seq);
+	msg.hdr.payload_size = cpu_to_le16(sizeof(msg.dword));
+	msg.hdr.dev_id = cpu_to_le32(pcie->drv_id);
+	msg.dword[0] = cpu_to_le32(cmd);
+	msg.dword[1] = cpu_to_le32(pcie->drv_id);
+	if (cmd == QCOM_PCIE_DRV_CMD_ENABLE ||
+	    cmd == QCOM_PCIE_DRV_CMD_ENABLE_L1SS_SLEEP)
+		msg.dword[2] = cpu_to_le32(QCOM_PCIE_DRV_L1SS_TIMEOUT_MS);
+
+	ret = rpmsg_send(qcom_pcie_drv.rpdev->ept, &msg, sizeof(msg));
+	if (ret)
+		goto out;
+
+	if (!wait_for_completion_timeout(&qcom_pcie_drv.ack,
+				msecs_to_jiffies(QCOM_PCIE_DRV_ACK_TIMEOUT_MS)))
+		ret = -ETIMEDOUT;
+	else if (qcom_pcie_drv.status)
+		ret = -EIO;
+out:
+	mutex_unlock(&qcom_pcie_drv.lock);
+	if (ret)
+		dev_err(pcie->pci->dev, "DRV command %#x failed: %d\n", cmd, ret);
+
+	return ret;
+}
+
+static int qcom_pcie_drv_callback(struct rpmsg_device *rpdev, void *data,
+				  int len, void *priv, u32 src)
+{
+	struct qcom_pcie_drv_header *hdr = data;
+	__le32 *status = data + sizeof(*hdr);
+
+	if (len < sizeof(*hdr) + sizeof(*status) ||
+	    le16_to_cpu(hdr->msg_id) != QCOM_PCIE_DRV_MSG_ACK ||
+	    le16_to_cpu(hdr->payload_size) != sizeof(*status)) {
+		dev_warn_ratelimited(&rpdev->dev, "unexpected message\n");
+		return 0;
+	}
+
+	/* A late reply to a command that timed out is dropped. */
+	if (le16_to_cpu(hdr->reply_seq) != READ_ONCE(qcom_pcie_drv.reply_seq))
+		return 0;
+
+	qcom_pcie_drv.status = le32_to_cpu(*status);
+	complete(&qcom_pcie_drv.ack);
+
+	return 0;
+}
+
+static int qcom_pcie_drv_probe(struct rpmsg_device *rpdev)
+{
+	mutex_lock(&qcom_pcie_drv.lock);
+	qcom_pcie_drv.rpdev = rpdev;
+	mutex_unlock(&qcom_pcie_drv.lock);
+
+	return 0;
+}
+
+static void qcom_pcie_drv_remove(struct rpmsg_device *rpdev)
+{
+	mutex_lock(&qcom_pcie_drv.lock);
+	qcom_pcie_drv.rpdev = NULL;
+	mutex_unlock(&qcom_pcie_drv.lock);
+}
+
+static const struct rpmsg_device_id qcom_pcie_drv_id_table[] = {
+	{ .name = "pcie_drv" },
+	{ }
+};
+
+static struct rpmsg_driver qcom_pcie_drv_driver = {
+	.probe = qcom_pcie_drv_probe,
+	.remove = qcom_pcie_drv_remove,
+	.callback = qcom_pcie_drv_callback,
+	.id_table = qcom_pcie_drv_id_table,
+	.drv = {
+		.name = "qcom-pcie-drv",
+	},
+};
+
+static int qcom_pcie_wake_armed_one(struct pci_dev *pdev, void *data)
+{
+	bool *armed = data;
+
+	if (!pci_is_bridge(pdev) && pdev->dev.driver &&
+	    device_may_wakeup(&pdev->dev)) {
+		*armed = true;
+		return 1;
+	}
+
+	return 0;
+}
+
+/* An endpoint that must wake the system keeps its link. */
+static bool qcom_pcie_wake_armed(struct qcom_pcie *pcie)
+{
+	struct pci_host_bridge *bridge = pcie->pci->pp.bridge;
+	bool armed = false;
+
+	if (bridge && bridge->bus)
+		pci_walk_bus(bridge->bus, qcom_pcie_wake_armed_one, &armed);
+
+	return armed;
+}
+
+static int qcom_pcie_drv_suspend(struct qcom_pcie *pcie)
+{
+	union phy_notify enter = { .pcie_state = PHY_PCIE_DRV_ENTER };
+	struct qcom_pcie_resources_2_7_0 *res = &pcie->res.v2_7_0;
+	struct dw_pcie *pci = pcie->pci;
+	struct qcom_pcie_port *port;
+	int ret;
+
+	if (pcie->drv_id < 0 ||
+	    pcie->cfg->ops->get_resources != qcom_pcie_get_resources_2_7_0 ||
+	    !dw_pcie_link_up(pci) || !qcom_pcie_wake_armed(pcie))
+		return -EOPNOTSUPP;
+
+	ret = qcom_pcie_drv_send(pcie, QCOM_PCIE_DRV_CMD_ENABLE);
+	if (ret)
+		return ret;
+
+	/* The ADSP owns the link: no DBI or config access from here on. */
+	clk_bulk_disable_unprepare(res->num_clks, res->clks);
+	list_for_each_entry(port, &pcie->ports, list)
+		phy_notify_state(port->phy, enter);
+
+	icc_disable(pcie->icc_mem);
+	icc_disable(pcie->icc_cpu);
+	if (pcie->use_pm_opp)
+		dev_pm_opp_set_opp(pci->dev, NULL);
+
+	pcie->drv_active = true;
+
+	/* Without it the link only stays in L1.2 longer; not fatal. */
+	qcom_pcie_drv_send(pcie, QCOM_PCIE_DRV_CMD_ENABLE_L1SS_SLEEP);
+
+	return 0;
+}
+
+static int qcom_pcie_drv_resume(struct qcom_pcie *pcie)
+{
+	union phy_notify exit = { .pcie_state = PHY_PCIE_DRV_EXIT };
+	struct qcom_pcie_resources_2_7_0 *res = &pcie->res.v2_7_0;
+	struct device *dev = pcie->pci->dev;
+	struct qcom_pcie_port *port;
+	int ret;
+
+	pcie->drv_active = false;
+
+	ret = qcom_pcie_drv_send(pcie, QCOM_PCIE_DRV_CMD_DISABLE_L1SS_SLEEP);
+
+	if (pcie->use_pm_opp)
+		qcom_pcie_set_max_opp(dev);
+	icc_enable(pcie->icc_cpu);
+	icc_enable(pcie->icc_mem);
+
+	list_for_each_entry(port, &pcie->ports, list)
+		phy_notify_state(port->phy, exit);
+	if (clk_bulk_prepare_enable(res->num_clks, res->clks))
+		dev_err(dev, "Failed to enable clocks after DRV\n");
+
+	/* An ADSP that lost the hand-off (restarted) has nothing to return. */
+	if (!ret)
+		ret = qcom_pcie_drv_send(pcie, QCOM_PCIE_DRV_CMD_DISABLE);
+
+	qcom_pcie_icc_opp_update(pcie);
+
+	return ret;
+}
+
+static int qcom_pcie_suspend(struct device *dev)
+{
+	struct qcom_pcie *pcie = dev_get_drvdata(dev);
+
+	if (pcie && pcie->wake_irq > 0 && qcom_pcie_wake_armed(pcie))
+		pcie->wake_armed = !enable_irq_wake(pcie->wake_irq);
+
+	return 0;
+}
+
+static int qcom_pcie_resume(struct device *dev)
+{
+	struct qcom_pcie *pcie = dev_get_drvdata(dev);
+
+	if (pcie && pcie->wake_armed) {
+		disable_irq_wake(pcie->wake_irq);
+		pcie->wake_armed = false;
+	}
+
+	return 0;
+}
+
 static int qcom_pcie_suspend_noirq(struct device *dev)
 {
 	struct qcom_pcie *pcie;
@@ -2382,6 +2670,9 @@ static int qcom_pcie_suspend_noirq(struct device *dev)
 
 	pcie = dev_get_drvdata(dev);
 	if (!pcie)
+		return 0;
+
+	if (!qcom_pcie_drv_suspend(pcie))
 		return 0;
 
 	ret = dw_pcie_suspend_noirq(pcie->pci);
@@ -2441,6 +2732,9 @@ static int qcom_pcie_resume_noirq(struct device *dev)
 	pcie = dev_get_drvdata(dev);
 	if (!pcie)
 		return 0;
+
+	if (pcie->drv_active)
+		return qcom_pcie_drv_resume(pcie);
 
 	if (pcie->pci->suspended) {
 		if (pcie->use_pm_opp) {
@@ -2545,6 +2839,7 @@ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_QCOM, 0x1000, qcom_fixup_class);
 DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_QCOM, 0x1001, qcom_fixup_class);
 
 static const struct dev_pm_ops qcom_pcie_pm_ops = {
+	SYSTEM_SLEEP_PM_OPS(qcom_pcie_suspend, qcom_pcie_resume)
 	NOIRQ_SYSTEM_SLEEP_PM_OPS(qcom_pcie_suspend_noirq, qcom_pcie_resume_noirq)
 };
 
@@ -2558,4 +2853,14 @@ static struct platform_driver qcom_pcie_driver = {
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 };
-builtin_platform_driver(qcom_pcie_driver);
+static int __init qcom_pcie_driver_init(void)
+{
+	int ret;
+
+	ret = register_rpmsg_driver(&qcom_pcie_drv_driver);
+	if (ret)
+		return ret;
+
+	return platform_driver_register(&qcom_pcie_driver);
+}
+device_initcall(qcom_pcie_driver_init);

@@ -5917,10 +5917,83 @@ static int qmp_pcie_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 	return 0;
 }
 
+/*
+ * The ref clock stays on: it only opens the refclk gate, and the processor
+ * holding the link needs it.
+ */
+static void qmp_pcie_drv_clks_off(struct qmp_pcie *qmp)
+{
+	int i;
+
+	for (i = ARRAY_SIZE(qmp_pciephy_clk_l) - 1; i >= 0; i--)
+		if (strcmp(qmp->clks[i].id, "ref"))
+			clk_disable_unprepare(qmp->clks[i].clk);
+}
+
+static int qmp_pcie_drv_clks_on(struct qmp_pcie *qmp)
+{
+	int i, ret;
+
+	for (i = 0; i < ARRAY_SIZE(qmp_pciephy_clk_l); i++) {
+		if (!strcmp(qmp->clks[i].id, "ref"))
+			continue;
+		ret = clk_prepare_enable(qmp->clks[i].clk);
+		if (ret) {
+			while (--i >= 0)
+				if (strcmp(qmp->clks[i].id, "ref"))
+					clk_disable_unprepare(qmp->clks[i].clk);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+/*
+ * PCIe DRV: the PHY keeps its registers and stays powered (its GDSC is kept
+ * on through the wakeup path) while the link sits in L1.2. No register is
+ * written either way.
+ */
+static int qmp_pcie_notify_phystate(struct phy *phy, union phy_notify state)
+{
+	struct qmp_pcie *qmp = phy_get_drvdata(phy);
+	const struct qmp_phy_cfg *cfg = qmp->cfg;
+	int ret;
+
+	switch (state.pcie_state) {
+	case PHY_PCIE_DRV_ENTER:
+		clk_bulk_disable_unprepare(qmp->num_pipe_clks, qmp->pipe_clks);
+		qmp_pcie_drv_clks_off(qmp);
+		regulator_bulk_disable(cfg->num_vregs, qmp->vregs);
+		device_set_wakeup_path(qmp->dev);
+		return 0;
+	case PHY_PCIE_DRV_EXIT:
+		ret = regulator_bulk_enable(cfg->num_vregs, qmp->vregs);
+		if (ret)
+			return ret;
+		ret = qmp_pcie_drv_clks_on(qmp);
+		if (ret)
+			goto err_disable_regulators;
+		ret = clk_bulk_prepare_enable(qmp->num_pipe_clks, qmp->pipe_clks);
+		if (ret)
+			goto err_disable_clks;
+		return 0;
+	}
+
+	return -EOPNOTSUPP;
+
+err_disable_clks:
+	qmp_pcie_drv_clks_off(qmp);
+err_disable_regulators:
+	regulator_bulk_disable(cfg->num_vregs, qmp->vregs);
+	return ret;
+}
+
 static const struct phy_ops qmp_pcie_phy_ops = {
 	.power_on	= qmp_pcie_enable,
 	.power_off	= qmp_pcie_disable,
 	.set_mode	= qmp_pcie_set_mode,
+	.notify_phystate = qmp_pcie_notify_phystate,
 	.owner		= THIS_MODULE,
 };
 
