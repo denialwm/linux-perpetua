@@ -984,7 +984,8 @@ static void svooc_restore(struct sc8547_svooc *sv)
 /*
  * A replug starts over. Like the factory driver, retry after a protocol
  * failure or a timeout while the adapter stays plugged in; it drops back
- * to 5 V and answers a new handshake.
+ * to 5 V and answers a new handshake. A charger that never sent a frame
+ * is no SuperVOOC adapter, and each attempt takes its D+/D- lines.
  */
 static void svooc_done(struct sc8547_svooc *sv)
 {
@@ -999,7 +1000,7 @@ static void svooc_done(struct sc8547_svooc *sv)
 		sv->state = SVOOC_IDLE;
 		sv->error = 0;
 		sv->retries = 0;
-	} else if ((sv->error == -EPROTO || sv->error == -ETIMEDOUT) &&
+	} else if ((sv->error == -EPROTO || sv->error == -ETIMEDOUT) && sv->frames &&
 		   sv->retries < SVOOC_RETRIES && sv->mode == POWER_SUPPLY_CHARGE_TYPE_FAST) {
 		if (time_before(jiffies, retry_at)) {
 			mod_delayed_work(system_highpri_wq, &sv->work, retry_at - jiffies);
