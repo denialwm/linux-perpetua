@@ -1249,6 +1249,64 @@
 	vdd3-supply = <&vreg_l5b_3p1>;
 };
 
+&pmih0108_e1_gpios {
+	charger_therm_default: charger-therm-default-state {
+		pins = "gpio6", "gpio12", "gpio15", "gpio18";
+		function = "normal";
+		bias-high-impedance;
+	};
+};
+
+&pmk8850_vadc {
+	pinctrl-0 = <&charger_therm_default>;
+	pinctrl-names = "default";
+
+	status = "okay";
+
+	/* Charger thermistors on PMIH0108: SPMI bus 1, SID 7 */
+	channel@2744 {
+		reg = <0x2744>;
+		label = "batt_con_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@2747 {
+		reg = <0x2747>;
+		label = "usb_con_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@274a {
+		reg = <0x274a>;
+		label = "usb_temp_l";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@274b {
+		reg = <0x274b>;
+		label = "svooc_mos_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@274d {
+		reg = <0x274d>;
+		label = "subboard_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+	channel@275e {
+		reg = <0x275e>;
+		label = "usb_temp_r";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+};
+
 &pon_resin {
 	linux,code = <KEY_VOLUMEUP>;
 
