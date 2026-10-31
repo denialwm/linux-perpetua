@@ -59,6 +59,8 @@
 #define SVOOC_IGNORE_MAX	6
 /* Late replies in a row tolerated after the battery curve. */
 #define SVOOC_SKIP_MAX		3
+/* New sessions after protocol failures, until one runs or a replug. */
+#define SVOOC_RETRIES		3
 
 #define SVOOC_TICK_MS		50
 #define SVOOC_BUCK_TICK_MS	20
@@ -108,7 +110,7 @@ enum svooc_state {
 	SVOOC_STARTING,		/* main pump enabled, first current pending */
 	SVOOC_RUNNING,
 	SVOOC_STOPPING,		/* hardware off, buck not yet restored */
-	SVOOC_DONE,		/* until the adapter is unplugged */
+	SVOOC_DONE,		/* until a retry or the adapter is unplugged */
 };
 
 static const char * const svooc_state_names[] = {
@@ -181,6 +183,7 @@ struct sc8547_svooc {
 	bool dual;
 	bool change;
 	unsigned int skipped;
+	unsigned int retries;
 	bool stopping;
 };
 
@@ -827,6 +830,7 @@ static int svooc_check(struct sc8547_svooc *sv)
 	if (sv->state == SVOOC_STARTING) {
 		if (sv->sample[0].switching && sv->applied_ua) {
 			sv->state = SVOOC_RUNNING;
+			sv->retries = 0;
 			sv->ramp_after = now + msecs_to_jiffies(SVOOC_RAMP_MS);
 			dev_info(sv->dev, "SuperVOOC adapter %02x at %d mA\n",
 				 sv->proto.model, sv->applied_ua / 1000);
@@ -977,11 +981,44 @@ static void svooc_restore(struct sc8547_svooc *sv)
 		mod_delayed_work(system_highpri_wq, &sv->work, 0);
 }
 
+/*
+ * A replug starts over. Like the factory driver, retry after a protocol
+ * failure or a timeout while the adapter stays plugged in; it drops back
+ * to 5 V and answers a new handshake.
+ */
+static void svooc_done(struct sc8547_svooc *sv)
+{
+	unsigned long retry_at;
+	bool restart = false;
+	int online = 0;
+
+	svooc_get(sv->usb, POWER_SUPPLY_PROP_ONLINE, &online);
+	mutex_lock(&sv->lock);
+	retry_at = sv->stopped_at + msecs_to_jiffies(SVOOC_RETRY_MS);
+	if (!online) {
+		sv->state = SVOOC_IDLE;
+		sv->error = 0;
+		sv->retries = 0;
+	} else if ((sv->error == -EPROTO || sv->error == -ETIMEDOUT) &&
+		   sv->retries < SVOOC_RETRIES && sv->mode == POWER_SUPPLY_CHARGE_TYPE_FAST) {
+		if (time_before(jiffies, retry_at)) {
+			mod_delayed_work(system_highpri_wq, &sv->work, retry_at - jiffies);
+		} else {
+			sv->state = SVOOC_IDLE;
+			sv->error = 0;
+			sv->retries++;
+			restart = true;
+		}
+	}
+	mutex_unlock(&sv->lock);
+	if (restart)
+		mod_delayed_work(system_highpri_wq, &sv->work, 0);
+}
+
 static void svooc_work(struct work_struct *work)
 {
 	struct sc8547_svooc *sv = container_of(work, struct sc8547_svooc, work.work);
 	enum svooc_state state;
-	int online = 0;
 
 	mutex_lock(&sv->lock);
 	state = sv->state;
@@ -996,14 +1033,7 @@ static void svooc_work(struct work_struct *work)
 		svooc_restore(sv);
 		break;
 	case SVOOC_DONE:
-		/* A new attempt only for a new plug-in. */
-		svooc_get(sv->usb, POWER_SUPPLY_PROP_ONLINE, &online);
-		if (!online) {
-			mutex_lock(&sv->lock);
-			sv->state = SVOOC_IDLE;
-			sv->error = 0;
-			mutex_unlock(&sv->lock);
-		}
+		svooc_done(sv);
 		break;
 	default:
 		svooc_tick(sv);
