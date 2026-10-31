@@ -43,6 +43,13 @@ Perpetua since the design was written:
   `sc8547_svooc.c` (`CONFIG_CHARGER_SC8547_SVOOC`), the auxiliary driver
   on `sc8547_charger.vooc-phy` that runs the session. It reports through
   the MAINS supply `sc8547-svooc` and debugfs `<device>/status`.
+- devices-23 on 2026-10-31: SuperVOOC from the 80 W adapter (model 0x4B)
+  at 51 to 55 W, both pumps near 3 A, battery 11.2 A, 35 to 38 % in two
+  minutes; battery connector 48 C, pump MOSFETs 44 C. Getting there took
+  three fixes: the PHY reply no longer waits for a pump ADC sample, the
+  factory's tolerance for handshake noise and late replies, and the
+  WCD939x keeping D+/D- on the PHY when the firmware repeats the Type-C
+  state as VBUS rises (the glitch made the adapter cut VBUS).
 
 The commit split in section 4 still applies.
 
