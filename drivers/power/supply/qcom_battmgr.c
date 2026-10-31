@@ -5,6 +5,7 @@
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 #include <linux/auxiliary_bus.h>
+#include <linux/delay.h>
 #include <linux/devm-helpers.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -123,6 +124,8 @@ enum qcom_battmgr_variant {
 #define BATTMGR_OPLUS_PROPERTY_SET			0x300
 #define BATTMGR_OPLUS_PROPERTY_GET			0x301
 #define OPLUS_USB_INPUT_CURRENT_LIMIT			5
+#define OPLUS_USB_TYPE					7
+#define OPLUS_USB_VBUS_COLLAPSE_STATUS			9
 #define OPLUS_USB_OTG_AP_ENABLE				12
 #define OPLUS_USB_OTG_VBUS_REGULATOR_ENABLE		19
 #define OPLUS_USB_OTG_BOOST_CURRENT			59
@@ -333,6 +336,8 @@ struct qcom_battmgr_wireless {
 
 struct qcom_battmgr_oplus {
 	bool otg_state;
+	bool input_suspended;
+	u32 value;
 };
 
 /*
@@ -1053,6 +1058,37 @@ static const struct power_supply_desc sc8280xp_ac_psy_desc = {
 	.get_property = qcom_battmgr_ac_get_property,
 };
 
+static enum power_supply_usb_type qcom_battmgr_oplus_usb_type(u32 type)
+{
+	/* Oplus firmware uses the USB type numbers of its Android kernel. */
+	if (type <= POWER_SUPPLY_USB_TYPE_PD_PPS)
+		return type;
+	switch (type) {
+	case 9:
+		return POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID;
+	case 17: /* PD SDP */
+		return POWER_SUPPLY_USB_TYPE_PD;
+	case 0x80: /* HVDCP */
+	case 0x81: /* HVDCP 3 */
+	case 0x82: /* HVDCP 3.5 */
+		return POWER_SUPPLY_USB_TYPE_DCP;
+	default:
+		return POWER_SUPPLY_USB_TYPE_UNKNOWN;
+	}
+}
+
+/* Called with @battmgr->lock held. */
+static int qcom_battmgr_oplus_get(struct qcom_battmgr *battmgr, int property, u32 *value)
+{
+	int ret;
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_GET, property, 0);
+	if (!ret)
+		*value = battmgr->oplus.value;
+
+	return ret;
+}
+
 static const u8 sm8350_usb_prop_map[] = {
 	[POWER_SUPPLY_PROP_ONLINE] = USB_ONLINE,
 	[POWER_SUPPLY_PROP_VOLTAGE_NOW] = USB_VOLT_NOW,
@@ -1079,7 +1115,16 @@ static int qcom_battmgr_usb_sm8350_update(struct qcom_battmgr *battmgr,
 		prop = USB_ADAP_TYPE;
 
 	mutex_lock(&battmgr->lock);
-	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET, prop, 0);
+	if (battmgr->variant == OPLUS_BATTMGR_KAANAPALI &&
+	    psp == POWER_SUPPLY_PROP_USB_TYPE) {
+		u32 type;
+
+		ret = qcom_battmgr_oplus_get(battmgr, OPLUS_USB_TYPE, &type);
+		if (!ret)
+			battmgr->usb.usb_type = qcom_battmgr_oplus_usb_type(type);
+	} else {
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET, prop, 0);
+	}
 	mutex_unlock(&battmgr->lock);
 
 	return ret;
@@ -1150,9 +1195,10 @@ static int qcom_battmgr_usb_is_writeable(struct power_supply *psy,
  * any source, including DCP when an external direct charger owns charging.
  *
  * The Kaanapali Oplus firmware takes the host's vote through its own
- * property, which the stock driver sets for every charger type. Zero
- * suspends the buck input there too, but -1 only resumes it at the host's
- * last limit: there is no automatic limit to return to.
+ * property, for every charger type. Zero suspends the buck input there
+ * too. The firmware has no automatic limit of its own, so the driver keeps
+ * one: -1 resumes the input and ramps it back to the limit of the attached
+ * charger type. A positive limit holds until the next plug event.
  */
 static int qcom_battmgr_usb_set_property(struct power_supply *psy,
 					 enum power_supply_property psp,
@@ -1172,7 +1218,12 @@ static int qcom_battmgr_usb_set_property(struct power_supply *psy,
 		mutex_lock(&battmgr->lock);
 		ret = qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET,
 						    OPLUS_USB_INPUT_CURRENT_LIMIT, limit);
+		if (!ret)
+			battmgr->oplus.input_suspended = !limit;
 		mutex_unlock(&battmgr->lock);
+
+		if (!ret && pval->intval < 0)
+			schedule_work(&battmgr->oplus_charging_work);
 
 		return ret;
 	}
@@ -1376,12 +1427,12 @@ static void qcom_battmgr_notification(struct qcom_battmgr *battmgr,
 			power_supply_changed(battmgr->usb_psy);
 			return;
 		case NOTIF_OPLUS_PLUGIN_IRQ:
+		case NOTIF_OPLUS_APSD_DONE:
+		case NOTIF_OPLUS_PD_SOURCECAP_DONE:
 			schedule_work(&battmgr->oplus_charging_work);
 			power_supply_changed(battmgr->usb_psy);
 			return;
 		case NOTIF_OPLUS_TYPEC_STATE_CHANGE:
-		case NOTIF_OPLUS_APSD_DONE:
-		case NOTIF_OPLUS_PD_SOURCECAP_DONE:
 		case NOTIF_OPLUS_POWER_ROLE_STATUS:
 			power_supply_changed(battmgr->usb_psy);
 			return;
@@ -1553,25 +1604,6 @@ static void qcom_battmgr_sc8280xp_callback(struct qcom_battmgr *battmgr,
 	complete(&battmgr->ack);
 }
 
-static enum power_supply_usb_type qcom_battmgr_oplus_usb_type(u32 type)
-{
-	/* SM8550 firmware uses the USB type numbers of its Android 5.15 kernel. */
-	if (type <= POWER_SUPPLY_USB_TYPE_PD_PPS)
-		return type;
-	switch (type) {
-	case 9:
-		return POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID;
-	case 17: /* PD SDP */
-		return POWER_SUPPLY_USB_TYPE_PD;
-	case 0x80: /* HVDCP */
-	case 0x81: /* HVDCP 3 */
-	case 0x82: /* HVDCP 3.5 */
-		return POWER_SUPPLY_USB_TYPE_DCP;
-	default:
-		return POWER_SUPPLY_USB_TYPE_UNKNOWN;
-	}
-}
-
 static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 					 const struct qcom_battmgr_message *resp,
 					 size_t len)
@@ -1604,9 +1636,8 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 			if (battmgr->error)
 				goto out_complete;
 
-			if (opcode == BATTMGR_OPLUS_PROPERTY_GET) {
-				//printk("OPLUS: get property=%d value=%d result=%d\n", property, le32_to_cpu(resp->intval.value), le32_to_cpu(resp->intval.result));
-			}
+			if (opcode == BATTMGR_OPLUS_PROPERTY_GET)
+				battmgr->oplus.value = le32_to_cpu(resp->intval.value);
 
 			goto out_complete;
 		}
@@ -2013,6 +2044,9 @@ static void qcom_battmgr_enable_worker(struct work_struct *work)
 		if (ret)
 			dev_err(battmgr->dev, "failed to enable OTG control from AP\n");
 
+		/* A restarted firmware dropped the host's suspend vote. */
+		battmgr->oplus.input_suspended = false;
+
 		/*
 		 * A charger plugged in before the service came up sent its
 		 * PlugIn notification to nobody, so enable charging now.
@@ -2055,6 +2089,95 @@ out:
 	return;
 }
 
+static u32 qcom_battmgr_oplus_input_limit_ma(u32 type)
+{
+	switch (qcom_battmgr_oplus_usb_type(type)) {
+	case POWER_SUPPLY_USB_TYPE_CDP:
+		return 1500;
+	case POWER_SUPPLY_USB_TYPE_DCP:
+	case POWER_SUPPLY_USB_TYPE_ACA:
+	case POWER_SUPPLY_USB_TYPE_C:
+	case POWER_SUPPLY_USB_TYPE_PD:
+	case POWER_SUPPLY_USB_TYPE_PD_DRP:
+	case POWER_SUPPLY_USB_TYPE_PD_PPS:
+	case POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID:
+		return 2000;
+	default:
+		return 500;
+	}
+}
+
+static const u32 qcom_battmgr_oplus_input_steps_ma[] = {
+	500, 900, 1200, 1350, 1500, 1750, 2000,
+};
+
+/*
+ * The firmware holds every source at 500 mA until the host raises the
+ * limit. Ramp to the limit of the charger type as the stock kernel does:
+ * one step at a time, stepping back once VBUS collapses or sags below
+ * what the battery needs.
+ */
+static int qcom_battmgr_oplus_ramp_input(struct qcom_battmgr *battmgr)
+{
+	const u32 *steps = qcom_battmgr_oplus_input_steps_ma;
+	unsigned int min_uv, i;
+	u32 type, collapsed;
+	bool sagged = false;
+	u32 limit_ma;
+	int ret;
+
+	mutex_lock(&battmgr->lock);
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET, USB_ONLINE, 0);
+	if (ret || !battmgr->usb.online)
+		goto out;
+	ret = qcom_battmgr_oplus_get(battmgr, OPLUS_USB_TYPE, &type);
+	if (ret)
+		goto out;
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET, BATT_VOLT_NOW, 0);
+	if (ret)
+		goto out;
+	min_uv = battmgr->status.voltage_now > 4100000 ? 4550000 : 4500000;
+	mutex_unlock(&battmgr->lock);
+
+	limit_ma = qcom_battmgr_oplus_input_limit_ma(type);
+	for (i = 0; i < ARRAY_SIZE(qcom_battmgr_oplus_input_steps_ma) &&
+		    steps[i] <= limit_ma; i++) {
+		mutex_lock(&battmgr->lock);
+		if (battmgr->oplus.input_suspended)
+			goto out;
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET,
+						    OPLUS_USB_INPUT_CURRENT_LIMIT, steps[i] * 1000);
+		mutex_unlock(&battmgr->lock);
+		if (ret)
+			return ret;
+
+		msleep(50);
+
+		mutex_lock(&battmgr->lock);
+		ret = qcom_battmgr_oplus_get(battmgr, OPLUS_USB_VBUS_COLLAPSE_STATUS, &collapsed);
+		if (!ret)
+			ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+							    USB_VOLT_NOW, 0);
+		if (ret)
+			goto out;
+		sagged = collapsed || battmgr->usb.voltage_now < min_uv;
+		mutex_unlock(&battmgr->lock);
+		if (sagged)
+			break;
+	}
+
+	if (!sagged || i == 0)
+		return 0;
+
+	mutex_lock(&battmgr->lock);
+	if (!battmgr->oplus.input_suspended)
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET,
+						    OPLUS_USB_INPUT_CURRENT_LIMIT, steps[i - 1] * 1000);
+out:
+	mutex_unlock(&battmgr->lock);
+	return ret;
+}
+
 static void qcom_battmgr_oplus_charging_worker(struct work_struct *work)
 {
 	struct qcom_battmgr *battmgr = container_of(work, struct qcom_battmgr, oplus_charging_work);
@@ -2062,17 +2185,21 @@ static void qcom_battmgr_oplus_charging_worker(struct work_struct *work)
 
 	mutex_lock(&battmgr->lock);
 	/* Shouldn't happen, PlugIn notification isn't sent when OTG Enable is sent. */
-	if (!battmgr->oplus.otg_state) {
-		ret = qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET, OPLUS_CHG_EN, 1);
-		if (ret) {
-			dev_err(battmgr->dev, "failed to enable charging\n");
-			goto out;
-		}
+	if (battmgr->oplus.otg_state) {
+		mutex_unlock(&battmgr->lock);
+		return;
 	}
 
-out:
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET, OPLUS_CHG_EN, 1);
 	mutex_unlock(&battmgr->lock);
-	return;
+	if (ret) {
+		dev_err(battmgr->dev, "failed to enable charging\n");
+		return;
+	}
+
+	ret = qcom_battmgr_oplus_ramp_input(battmgr);
+	if (ret)
+		dev_err(battmgr->dev, "failed to set the input limit: %d\n", ret);
 }
 
 static void qcom_battmgr_pdr_notify(void *priv, int state)
