@@ -226,6 +226,17 @@ config CHARGER_SC8517
 	  The driver uses a discrete fuel gauge and the Qualcomm PMIC GLINK
 	  USB supply to negotiate charging and restore the normal charger path.
 
+config CHARGER_SC8547
+	tristate "Southchip SC8547D charge pump"
+	depends on I2C
+	select REGMAP_I2C
+	select AUXILIARY_BUS
+	help
+	  Say Y or M here to enable the Southchip SC8547D 2:1 switched
+	  capacitor charge pump. It reports its state and faults and is
+	  switched on only by a direct charging driver, such as the one for
+	  its SuperVOOC PHY.
+
 config BATTERY_OLPC
 	tristate "One Laptop Per Child battery"
 	depends on OLPC_EC
