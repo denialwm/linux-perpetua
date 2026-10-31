@@ -1238,3 +1238,4 @@ module_auxiliary_driver(svooc_driver);
 
 MODULE_DESCRIPTION("SuperVOOC charging through the SC8547D VOOC PHY");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS("IIO_CONSUMER");
