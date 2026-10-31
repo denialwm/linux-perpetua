@@ -38,6 +38,14 @@ properties:
   mode-switch: true
   orientation-switch: true
 
+  '#mux-state-cells':
+    const: 1
+    description:
+      The connector's D+/D- lines as a mux. State 0, the idle state, routes
+      them to the USB PHY; state 1 routes them to the DN2/DP2 outputs, for
+      example to a charger's adapter PHY. Type-C changes and suspend return
+      them to state 0.
+
   ports:
     $ref: /schemas/graph.yaml#/properties/ports
     properties:
