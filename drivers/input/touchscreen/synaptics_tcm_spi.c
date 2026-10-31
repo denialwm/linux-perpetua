@@ -85,6 +85,7 @@
 #define SYNA_TCM_CMD_ENTER_DEEP_SLEEP		0x2c
 #define SYNA_TCM_DC_GESTURE			0x09
 #define SYNA_TCM_DC_TOUCH_HOLD			0xd4
+#define SYNA_TCM_DC_REPORT_RATE			0xe6
 #define SYNA_TCM_DC_GESTURE_MASK			0xfe
 
 #define SYNA_TCM_STATUS_IDLE			0x00
@@ -187,6 +188,10 @@ struct syna_tcm {
 	u32 gesture_entries, gesture_exits, double_taps, fod_downs, fod_ups;
 	u32 gesture_errors;
 	u64 mode_us;
+	/* Report rate code set with the panel on, 0 = firmware default.
+	 * Protected by reset_lock.
+	 */
+	u16 report_rate;
 	struct touchscreen_properties prop;
 	struct gpio_desc *reset_gpio;
 	struct regulator *vdd;
@@ -1350,6 +1355,36 @@ static int syna_tcm_config_value(struct syna_tcm *ts, u8 id, u16 value)
 	return 0;
 }
 
+static int syna_tcm_read_config_value(struct syna_tcm *ts, u8 id, u16 *value)
+{
+	int error;
+
+	guard(mutex)(&ts->cmd_lock);
+	error = __syna_tcm_command(ts, SYNA_TCM_CMD_GET_DYNAMIC_CONFIG, &id, 1);
+	if (error)
+		return error;
+	if (ts->resp_length < 2)
+		return -EIO;
+	*value = get_unaligned_le16(ts->resp);
+	return 0;
+}
+
+/* Called with the panel on and the touch mode applied. A failure keeps the
+ * firmware's own rate; touch reporting stays on.
+ */
+static void syna_tcm_apply_report_rate(struct syna_tcm *ts)
+{
+	int error;
+
+	lockdep_assert_held(&ts->reset_lock);
+	if (!ts->report_rate)
+		return;
+	error = syna_tcm_config_value(ts, SYNA_TCM_DC_REPORT_RATE, ts->report_rate);
+	if (error)
+		dev_err(&ts->spi->dev, "report rate %u not applied: %d\n",
+			ts->report_rate, error);
+}
+
 static int syna_tcm_apply_mode(struct syna_tcm *ts, bool screen_off)
 {
 	u64 start = ktime_get_ns();
@@ -1390,6 +1425,8 @@ static int syna_tcm_apply_mode(struct syna_tcm *ts, bool screen_off)
 			ts->fod_contact = false;
 		}
 	}
+	if (!error && !screen_off)
+		syna_tcm_apply_report_rate(ts);
 	dev_info(&ts->spi->dev, "screen=%s gesture=%u verified=%u transition=%llu us\n",
 		 screen_off ? "off" : "on", screen_off, !error, ts->mode_us);
 	return error;
@@ -1447,8 +1484,53 @@ static ssize_t gesture_state_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(gesture_state);
 
+/* The controller's report rate code, read back. Writing a code sets it now
+ * and after every reset while the panel is on; 0 leaves the firmware's own
+ * rate from the next reset. The codes are the firmware's.
+ */
+static ssize_t report_rate_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct syna_tcm *ts = dev_get_drvdata(dev);
+	u16 value;
+	int error;
+
+	guard(mutex)(&ts->reset_lock);
+	if (READ_ONCE(ts->suspended))
+		return -EAGAIN;
+	error = syna_tcm_read_config_value(ts, SYNA_TCM_DC_REPORT_RATE, &value);
+	if (error)
+		return error;
+	return sysfs_emit(buf, "%u\n", value);
+}
+
+static ssize_t report_rate_store(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct syna_tcm *ts = dev_get_drvdata(dev);
+	u16 value;
+	int error;
+
+	error = kstrtou16(buf, 0, &value);
+	if (error)
+		return error;
+
+	guard(mutex)(&ts->reset_lock);
+	ts->report_rate = value;
+	if (!value || READ_ONCE(ts->suspended) || READ_ONCE(ts->panel_off))
+		return count;
+	error = syna_tcm_config_value(ts, SYNA_TCM_DC_REPORT_RATE, value);
+	if (error) {
+		ts->report_rate = 0;
+		return error;
+	}
+	return count;
+}
+static DEVICE_ATTR_RW(report_rate);
+
 static struct attribute *syna_tcm_attrs[] = {
-	&dev_attr_gesture_state.attr, NULL,
+	&dev_attr_gesture_state.attr, &dev_attr_report_rate.attr, NULL,
 };
 ATTRIBUTE_GROUPS(syna_tcm);
 
