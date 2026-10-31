@@ -20,6 +20,7 @@
 #include <linux/power_supply.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
+#include <linux/slab.h>
 
 #define SC8547_VBAT_OVP		0x00
 #define SC8547_VBAT_OCP		0x01
@@ -34,6 +35,7 @@
 #define SC8547_IRQ_MASK		0x10
 #define SC8547_ADC_CTRL		0x11
 #define SC8547_ADC_IBUS		0x13
+#define SC8547_ADC_VBUS		0x15
 #define SC8547_ADC_TDIE		0x1f
 #define SC8547_VOOC_CTRL	0x2b
 #define SC8547_DET_CTRL		0x33
@@ -407,6 +409,31 @@ int sc8547_sample(struct sc8547 *cp, struct sc8547_sample *sample)
 EXPORT_SYMBOL_GPL(sc8547_sample);
 
 /**
+ * sc8547_read_vbus() - read only the input voltage, for a quick reply
+ * @cp: a prepared pump
+ * @uv: the input voltage
+ */
+int sc8547_read_vbus(struct sc8547 *cp, int *uv)
+{
+	u8 adc[2];
+	int ret, thaw;
+
+	mutex_lock(&cp->lock);
+	ret = cp->prepared ? regmap_set_bits(cp->regmap, SC8547_ADC_CTRL,
+					     SC8547_ADC_FREEZE) : -EINVAL;
+	if (!ret) {
+		ret = regmap_bulk_read(cp->regmap, SC8547_ADC_VBUS, adc, sizeof(adc));
+		thaw = regmap_clear_bits(cp->regmap, SC8547_ADC_CTRL, SC8547_ADC_FREEZE);
+		ret = ret ?: thaw;
+	}
+	if (!ret)
+		*uv = sc8547_adc(adc, 0, 0x0f) * 3750;
+	mutex_unlock(&cp->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(sc8547_read_vbus);
+
+/**
  * sc8547_set_phy_handler() - dispatch the shared interrupt to the VOOC PHY
  * @cp: the pump
  * @handler: called in the interrupt thread before the pump's own check, or NULL
@@ -563,6 +590,50 @@ static void sc8547_cleanup(void *data)
 	mutex_unlock(&cp->lock);
 }
 
+static void sc8547_release_phy(struct device *dev)
+{
+	struct auxiliary_device *adev = to_auxiliary_dev(dev);
+
+	fwnode_handle_put(dev_fwnode(dev));
+	kfree(adev);
+}
+
+static void sc8547_remove_phy(void *data)
+{
+	auxiliary_device_delete(data);
+	auxiliary_device_uninit(data);
+}
+
+/* The PHY gets its own node: it describes the charging path around it. */
+static int sc8547_add_phy(struct sc8547 *cp, struct fwnode_handle *phy, u32 id)
+{
+	struct auxiliary_device *adev;
+	int ret;
+
+	adev = kzalloc(sizeof(*adev), GFP_KERNEL);
+	if (!adev) {
+		fwnode_handle_put(phy);
+		return -ENOMEM;
+	}
+	adev->name = "vooc-phy";
+	adev->id = id;
+	adev->dev.parent = cp->dev;
+	adev->dev.release = sc8547_release_phy;
+	device_set_node(&adev->dev, phy);
+	ret = auxiliary_device_init(adev);
+	if (ret) {
+		fwnode_handle_put(phy);
+		kfree(adev);
+		return ret;
+	}
+	ret = auxiliary_device_add(adev);
+	if (ret) {
+		auxiliary_device_uninit(adev);
+		return ret;
+	}
+	return devm_add_action_or_reset(cp->dev, sc8547_remove_phy, adev);
+}
+
 static int sc8547_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
@@ -627,10 +698,9 @@ static int sc8547_probe(struct i2c_client *client)
 
 	phy = device_get_named_child_node(dev, "vooc-phy");
 	if (phy) {
-		fwnode_handle_put(phy);
-		if (!__devm_auxiliary_device_create(dev, KBUILD_MODNAME, "vooc-phy",
-						    NULL, client->addr))
-			return dev_err_probe(dev, -ENOMEM, "Cannot add the VOOC PHY\n");
+		ret = sc8547_add_phy(cp, phy, client->addr);
+		if (ret)
+			return dev_err_probe(dev, ret, "Cannot add the VOOC PHY\n");
 	}
 	i2c_set_clientdata(client, cp);
 	return devm_add_action_or_reset(dev, sc8547_clear_clientdata, client);
