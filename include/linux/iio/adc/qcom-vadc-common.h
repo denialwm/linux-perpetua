@@ -128,6 +128,7 @@ struct adc5_data {
 	const u32	full_scale_code_volt;
 	const u32	full_scale_code_cur;
 	const u32	full_scale_code_raw;
+	const u32	sid_mask;
 	const struct adc5_channels *adc_chans;
 	const struct iio_info *info;
 	unsigned int	*decimation;

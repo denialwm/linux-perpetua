@@ -225,8 +225,8 @@ static int adc_tm5_gen3_configure(struct adc_tm5_gen3_channel_props *prop,
 	if (ret < 0)
 		return ret;
 
-	/* Write SID */
-	buf[0] = FIELD_PREP(ADC5_GEN3_SID_MASK, prop->common_props.sid);
+	/* Write SID, checked against the generation's mask by the ADC driver */
+	buf[0] = prop->common_props.sid;
 
 	/* Select TM channel and indicate there is an actual conversion request */
 	buf[1] = ADC5_GEN3_CHAN_CONV_REQ | prop->tm_chan_index;

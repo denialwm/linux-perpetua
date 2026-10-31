@@ -41,6 +41,8 @@
 
 #define ADC5_GEN3_SID				0x4f
 #define ADC5_GEN3_SID_MASK			GENMASK(3, 0)
+/* Gen4 reaches PMICs on two SPMI buses: the bus in bits 6:5, the SID below. */
+#define ADC5_GEN4_SID_MASK			GENMASK(6, 0)
 
 #define ADC5_GEN3_PERPH_CH			0x50
 #define ADC5_GEN3_CHAN_CONV_REQ			BIT(7)
@@ -99,6 +101,7 @@
 #define ADC5_GEN3_AMUX2_GPIO_100K_PU		0x4b
 #define ADC5_GEN3_AMUX3_GPIO_100K_PU		0x4c
 #define ADC5_GEN3_AMUX4_GPIO_100K_PU		0x4d
+#define ADC5_GEN4_AMUX5_GPIO_100K_PU		0x5e
 
 #define ADC5_MAX_CHANNEL			0xc0
 
@@ -146,7 +149,7 @@ struct adc5_device_data {
  * @channel: channel number, refer to the channel list.
  * @cal_method: calibration method.
  * @decimation: sampling rate supported for the channel.
- * @sid: ID of PMIC owning the channel.
+ * @sid: ID of PMIC owning the channel, with its SPMI bus on Gen4.
  * @label: Channel name used in device tree.
  * @prescale: channel scaling performed on the input signal.
  * @hw_settle_time_us: the time between AMUX being configured and the

@@ -131,8 +131,8 @@ static int adc5_gen3_configure(struct adc5_chip *adc,
 	if (ret)
 		return ret;
 
-	/* Write SID */
-	buf[0] = FIELD_PREP(ADC5_GEN3_SID_MASK, prop->sid);
+	/* Write SID, checked against the generation's mask at probe */
+	buf[0] = prop->sid;
 
 	/*
 	 * Use channel 0 by default for immediate conversion and to indicate
@@ -453,6 +453,7 @@ static int adc5_gen3_get_fw_channel_data(struct adc5_chip *adc,
 	/*
 	 * Value read from "reg" is virtual channel number
 	 * virtual channel number = sid << 8 | channel number
+	 * On Gen4 the SID carries the SPMI bus: sid = bus << 5 | SID.
 	 */
 	sid = FIELD_GET(ADC5_GEN3_VIRTUAL_SID_MASK, chan);
 	chan = FIELD_GET(ADC5_GEN3_CHANNEL_MASK, chan);
@@ -461,6 +462,10 @@ static int adc5_gen3_get_fw_channel_data(struct adc5_chip *adc,
 		return dev_err_probe(dev, -EINVAL,
 				     "%s invalid channel number %d\n",
 				     name, chan);
+
+	if (sid & ~data->sid_mask)
+		return dev_err_probe(dev, -EINVAL, "%s invalid SID %#x\n",
+				     name, sid);
 
 	prop->common_props.channel = chan;
 	prop->common_props.sid = sid;
@@ -526,10 +531,56 @@ static int adc5_gen3_get_fw_channel_data(struct adc5_chip *adc,
 	return 0;
 }
 
+/* Gen4 numbers these channels as Gen3 does. */
+static const struct adc5_channels adc5_gen4_chans_pmic[ADC5_MAX_CHANNEL] = {
+	[ADC5_GEN3_REF_GND]		= ADC5_CHAN_VOLT(0, SCALE_HW_CALIB_DEFAULT)
+	[ADC5_GEN3_1P25VREF]		= ADC5_CHAN_VOLT(0, SCALE_HW_CALIB_DEFAULT)
+	[ADC5_GEN3_DIE_TEMP]		= ADC5_CHAN_TEMP(0,
+						SCALE_HW_CALIB_PMIC_THERM_PM7)
+	[ADC5_GEN3_AMUX1_THM_100K_PU]	= ADC5_CHAN_TEMP(0,
+					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+	[ADC5_GEN3_AMUX2_THM_100K_PU]	= ADC5_CHAN_TEMP(0,
+					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+	[ADC5_GEN3_AMUX3_THM_100K_PU]	= ADC5_CHAN_TEMP(0,
+					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+	[ADC5_GEN3_AMUX4_THM_100K_PU]	= ADC5_CHAN_TEMP(0,
+					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+	[ADC5_GEN3_AMUX5_THM_100K_PU]	= ADC5_CHAN_TEMP(0,
+					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+	[ADC5_GEN3_AMUX6_THM_100K_PU]	= ADC5_CHAN_TEMP(0,
+					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+	[ADC5_GEN3_AMUX1_GPIO_100K_PU]	= ADC5_CHAN_TEMP(0,
+					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+	[ADC5_GEN3_AMUX2_GPIO_100K_PU]	= ADC5_CHAN_TEMP(0,
+					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+	[ADC5_GEN3_AMUX3_GPIO_100K_PU]	= ADC5_CHAN_TEMP(0,
+					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+	[ADC5_GEN3_AMUX4_GPIO_100K_PU]	= ADC5_CHAN_TEMP(0,
+					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+	[ADC5_GEN4_AMUX5_GPIO_100K_PU]	= ADC5_CHAN_TEMP(0,
+					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+};
+
 static const struct adc5_data adc5_gen3_data_pmic = {
 	.full_scale_code_volt = 0x70e4,
 	.full_scale_code_raw = RATIO_MAX_ADC7,
+	.sid_mask = ADC5_GEN3_SID_MASK,
 	.adc_chans = adc5_gen3_chans_pmic,
+	.info = &adc5_gen3_info,
+	.decimation = (unsigned int [ADC5_DECIMATION_SAMPLES_MAX])
+			   { 85, 340, 1360 },
+	.hw_settle_1 = (unsigned int [VADC_HW_SETTLE_SAMPLES_MAX])
+			   { 15, 100, 200, 300,
+			     400, 500, 600, 700,
+			     1000, 2000, 4000, 8000,
+			     16000, 32000, 64000, 128000 },
+};
+
+static const struct adc5_data adc5_gen4_data_pmic = {
+	.full_scale_code_volt = 0x70e4,
+	.full_scale_code_raw = 0xffff,	/* ratiometric codes use all 16 bits */
+	.sid_mask = ADC5_GEN4_SID_MASK,
+	.adc_chans = adc5_gen4_chans_pmic,
 	.info = &adc5_gen3_info,
 	.decimation = (unsigned int [ADC5_DECIMATION_SAMPLES_MAX])
 			   { 85, 340, 1360 },
@@ -544,6 +595,10 @@ static const struct of_device_id adc5_match_table[] = {
 	{
 		.compatible = "qcom,spmi-adc5-gen3",
 		.data = &adc5_gen3_data_pmic,
+	},
+	{
+		.compatible = "qcom,spmi-adc5-gen4",
+		.data = &adc5_gen4_data_pmic,
 	},
 	{ }
 };
