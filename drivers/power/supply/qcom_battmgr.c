@@ -14,6 +14,7 @@
 #include <linux/property.h>
 #include <linux/soc/qcom/pdr.h>
 #include <linux/soc/qcom/pmic_glink.h>
+#include <linux/spinlock.h>
 #include <linux/math.h>
 #include <linux/thermal.h>
 #include <linux/units.h>
@@ -363,6 +364,15 @@ struct qcom_battmgr {
 	int error;
 	struct completion ack;
 
+	/*
+	 * @rx_lock protects the outstanding request below, so that a reply
+	 * to another request or an unsolicited message cannot complete it.
+	 */
+	spinlock_t rx_lock;
+	bool pending;
+	u32 pending_opcode;
+	u32 pending_property;
+
 	bool service_up;
 
 	struct qcom_battmgr_info info;
@@ -384,24 +394,52 @@ struct qcom_battmgr {
 	struct mutex lock;
 };
 
+static bool qcom_battmgr_property_opcode(u32 opcode)
+{
+	switch (opcode) {
+	case BATTMGR_BAT_PROPERTY_GET:
+	case BATTMGR_BAT_PROPERTY_SET:
+	case BATTMGR_USB_PROPERTY_GET:
+	case BATTMGR_USB_PROPERTY_SET:
+	case BATTMGR_WLS_PROPERTY_GET:
+	case BATTMGR_WLS_PROPERTY_SET:
+	case BATTMGR_OPLUS_PROPERTY_GET:
+	case BATTMGR_OPLUS_PROPERTY_SET:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/* Called with @battmgr->lock held. */
 static int qcom_battmgr_request(struct qcom_battmgr *battmgr, void *data, size_t len)
 {
+	const struct qcom_battmgr_property_request *request = data;
+	unsigned long flags;
 	unsigned long left;
+	u32 opcode = le32_to_cpu(request->hdr.opcode);
 	int ret;
 
+	spin_lock_irqsave(&battmgr->rx_lock, flags);
 	reinit_completion(&battmgr->ack);
-
 	battmgr->error = 0;
+	battmgr->pending_opcode = opcode;
+	if (qcom_battmgr_property_opcode(opcode))
+		battmgr->pending_property = le32_to_cpu(request->property);
+	battmgr->pending = true;
+	spin_unlock_irqrestore(&battmgr->rx_lock, flags);
 
 	ret = pmic_glink_send(battmgr->client, data, len);
-	if (ret < 0)
-		return ret;
+	if (!ret) {
+		left = wait_for_completion_timeout(&battmgr->ack, HZ);
+		ret = left ? battmgr->error : -ETIMEDOUT;
+	}
 
-	left = wait_for_completion_timeout(&battmgr->ack, HZ);
-	if (!left)
-		return -ETIMEDOUT;
+	spin_lock_irqsave(&battmgr->rx_lock, flags);
+	battmgr->pending = false;
+	spin_unlock_irqrestore(&battmgr->rx_lock, flags);
 
-	return battmgr->error;
+	return ret;
 }
 
 static int qcom_battmgr_request_property(struct qcom_battmgr *battmgr, int opcode,
@@ -1769,19 +1807,44 @@ out_complete:
 	complete(&battmgr->ack);
 }
 
+/* Called with @battmgr->rx_lock held. */
+static bool qcom_battmgr_expected(struct qcom_battmgr *battmgr,
+				  const struct qcom_battmgr_message *resp, size_t len)
+{
+	u32 opcode = le32_to_cpu(resp->hdr.opcode);
+
+	if (!battmgr->pending || opcode != battmgr->pending_opcode)
+		return false;
+	if (!qcom_battmgr_property_opcode(opcode))
+		return true;
+
+	return len >= sizeof(resp->hdr) + sizeof(resp->intval.property) &&
+	       le32_to_cpu(resp->intval.property) == battmgr->pending_property;
+}
+
 static void qcom_battmgr_callback(const void *data, size_t len, void *priv)
 {
 	const struct pmic_glink_hdr *hdr = data;
 	struct qcom_battmgr *battmgr = priv;
 	unsigned int opcode = le32_to_cpu(hdr->opcode);
+	unsigned long flags;
 
-	if (opcode == BATTMGR_NOTIFICATION)
+	if (opcode == BATTMGR_NOTIFICATION) {
 		qcom_battmgr_notification(battmgr, data, len);
-	else if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
-		 battmgr->variant == QCOM_BATTMGR_X1E80100)
-		qcom_battmgr_sc8280xp_callback(battmgr, data, len);
-	else
-		qcom_battmgr_sm8350_callback(battmgr, data, len);
+		return;
+	}
+
+	/* Drop a late reply to a timed-out request and unsolicited messages. */
+	spin_lock_irqsave(&battmgr->rx_lock, flags);
+	if (qcom_battmgr_expected(battmgr, data, len)) {
+		if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
+		    battmgr->variant == QCOM_BATTMGR_X1E80100)
+			qcom_battmgr_sc8280xp_callback(battmgr, data, len);
+		else
+			qcom_battmgr_sm8350_callback(battmgr, data, len);
+		battmgr->pending = false;
+	}
+	spin_unlock_irqrestore(&battmgr->rx_lock, flags);
 }
 
 /* Called with @battmgr->lock held. */
@@ -1921,6 +1984,7 @@ static void qcom_battmgr_enable_worker(struct work_struct *work)
 	};
 	int ret;
 
+	mutex_lock(&battmgr->lock);
 	ret = qcom_battmgr_request(battmgr, &req, sizeof(req));
 	if (ret)
 		dev_err(battmgr->dev, "failed to request power notifications\n");
@@ -1932,14 +1996,13 @@ static void qcom_battmgr_enable_worker(struct work_struct *work)
 	}
 
 	if (battmgr->charge_limit.num_levels) {
-		mutex_lock(&battmgr->lock);
 		/* A restarted firmware holds its defaults again. */
 		battmgr->charge_limit.max_ua = 0;
 		battmgr->charge_limit.applied_ua = 0;
 		if (battmgr->charge_limit.state)
 			qcom_battmgr_apply_charge_limit(battmgr);
-		mutex_unlock(&battmgr->lock);
 	}
+	mutex_unlock(&battmgr->lock);
 }
 
 static void qcom_battmgr_oplus_otg_worker(struct work_struct *work)
@@ -2040,6 +2103,7 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 	psy_cfg_supply.num_supplicants = 1;
 
 	mutex_init(&battmgr->lock);
+	spin_lock_init(&battmgr->rx_lock);
 	init_completion(&battmgr->ack);
 
 	match = of_match_device(qcom_battmgr_of_variants, dev->parent);
