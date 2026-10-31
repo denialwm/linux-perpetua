@@ -31,9 +31,11 @@ Perpetua since the design was written:
   works.
 - qcom_battmgr: the OnePlus SM8550 variant (6863c8889702) and the writable
   SM8550 input limit (3c1fe3cc4f6d) cover part of 3.4.2 for SM8550 only;
-  BAT/USB/WLS SET results are checked (ac4fb177caca). Request matching,
-  PDR-down completion, Oplus usb notifications and the attached-charger
-  `OPLUS_CHG_EN` are still missing.
+  BAT/USB/WLS SET results are checked (ac4fb177caca). Section A below
+  (request matching through the input limit policy) landed on 2026-10-31.
+- The Kaanapali firmware holds every source at 500 mA and has no automatic
+  limit, so battmgr ramps the input limit by charger type as stock does
+  (A8): a 10 W wall charger (type 9, Apple brick) draws 2 A at 5 V.
 - Iceland has no ADC, pump or USBSS mux nodes yet.
 
 The commit split in section 4 still applies.
@@ -529,7 +531,7 @@ dumps move to debugfs.
 **Rule:** standard charging must be unchanged after every commit until the
 final DT and opt-in steps.
 
-**A. battmgr (no policy)**
+**A. battmgr**
 1. dt-bindings: add the `oplus` prefix and `oplus,kaanapali-pmic-glink`.
 2. qcom_battmgr: match responses to the outstanding request (rx_lock,
    enable_worker lock).
@@ -540,6 +542,8 @@ final DT and opt-in steps.
 6. qcom_battmgr: oplus: translate USB type/online; add a writable input
    limit.
 7. qcom_battmgr: oplus: notify the usb supply on Type-C and plug events.
+8. qcom_battmgr: oplus: set the input limit by charger type (stock
+   steps and VBUS checks; 0 and -1 stay the host's suspend vote).
 
 **B. ADC**
 8. dt-bindings: adc5-gen3: add Gen4.
