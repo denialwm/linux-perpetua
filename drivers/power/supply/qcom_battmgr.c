@@ -439,7 +439,8 @@ static int qcom_battmgr_request(struct qcom_battmgr *battmgr, void *data, size_t
 	battmgr->pending = false;
 	spin_unlock_irqrestore(&battmgr->rx_lock, flags);
 
-	return ret;
+	/* A firmware result code is not an errno. */
+	return ret > 0 ? -EREMOTEIO : ret;
 }
 
 static int qcom_battmgr_request_property(struct qcom_battmgr *battmgr, int opcode,
@@ -1712,7 +1713,7 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 		}
 
 		/* The firmware acknowledges a write with a nonzero code on failure. */
-		battmgr->error = le32_to_cpu(resp->intval.result) ? -EIO : 0;
+		battmgr->error = le32_to_cpu(resp->intval.result);
 		break;
 	case BATTMGR_USB_PROPERTY_GET:
 		property = le32_to_cpu(resp->intval.property);
