@@ -55,6 +55,7 @@
 #include <linux/pm.h>
 #include <linux/pm_wakeirq.h>
 #include <linux/pm_wakeup.h>
+#include <linux/property.h>
 #include <drm/drm_panel.h>
 
 #include "synaptics_tcm_gesture.h"
@@ -189,7 +190,7 @@ struct syna_tcm {
 	u32 gesture_errors;
 	u64 mode_us;
 	/* Report rate code set with the panel on, 0 = firmware default.
-	 * Protected by reset_lock.
+	 * Starts from syna,report-rate. Protected by reset_lock.
 	 */
 	u16 report_rate;
 	struct touchscreen_properties prop;
@@ -1538,6 +1539,7 @@ static int syna_tcm_probe(struct spi_device *spi)
 {
 	struct device *dev = &spi->dev;
 	struct syna_tcm *ts;
+	u32 report_rate = 0;
 	int error;
 
 	if (spi->controller->flags & SPI_CONTROLLER_HALF_DUPLEX)
@@ -1555,6 +1557,12 @@ static int syna_tcm_probe(struct spi_device *spi)
 	ts->has_panel = drm_is_panel_follower(dev);
 	ts->panel_off = ts->has_panel;
 	spi_set_drvdata(spi, ts);
+
+	device_property_read_u32(dev, "syna,report-rate", &report_rate);
+	if (report_rate > U16_MAX)
+		return dev_err_probe(dev, -EINVAL, "invalid report rate %u\n",
+				     report_rate);
+	ts->report_rate = report_rate;
 
 	error = devm_mutex_init(dev, &ts->reset_lock);
 	if (error)
