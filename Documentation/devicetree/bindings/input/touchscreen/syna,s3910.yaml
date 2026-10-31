@@ -44,6 +44,14 @@ properties:
   avdd-supply:
     description: Analog supply.
 
+  syna,report-rate:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    maximum: 0xffff
+    description:
+      Touch report rate applied whenever the panel turns on, as the firmware's
+      own rate code (dynamic configuration 0xe6). Absent or 0 keeps the rate
+      the firmware starts with.
+
 required:
   - compatible
   - reg
