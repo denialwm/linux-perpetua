@@ -560,6 +560,7 @@ static int wcd939x_usbss_mux_set(struct typec_mux_dev *mux,
 				 struct typec_mux_state *state)
 {
 	struct wcd939x_usbss *usbss = typec_mux_get_drvdata(mux);
+	unsigned int svid = state->alt ? state->alt->svid : 0;
 	int ret = 0;
 
 	mutex_lock(&usbss->lock);
@@ -574,13 +575,9 @@ static int wcd939x_usbss_mux_set(struct typec_mux_dev *mux,
 		return 0;
 	}
 
-	if (usbss->mode != state->mode) {
+	if (usbss->mode != state->mode || usbss->svid != svid) {
 		usbss->mode = state->mode;
-
-		if (state->alt)
-			usbss->svid = state->alt->svid;
-		else
-			usbss->svid = 0; // No SVID
+		usbss->svid = svid;
 
 		ret = wcd939x_usbss_set(usbss);
 	}
