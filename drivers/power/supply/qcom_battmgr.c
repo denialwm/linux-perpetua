@@ -1362,27 +1362,31 @@ static void qcom_battmgr_notification(struct qcom_battmgr *battmgr,
 	notification = le32_to_cpu(msg->notification);
 	notification &= 0xff;
 
+	/* The Oplus events describe the USB input; supplies of it reread it. */
 	if (battmgr->variant == OPLUS_BATTMGR_KAANAPALI) {
 		switch (notification) {
 		case NOTIF_OPLUS_OTG_ENABLE:
 			battmgr->oplus.otg_state = true;
 			schedule_work(&battmgr->oplus_otg_work);
+			power_supply_changed(battmgr->usb_psy);
 			return;
 		case NOTIF_OPLUS_OTG_DISABLE:
 			battmgr->oplus.otg_state = false;
 			schedule_work(&battmgr->oplus_otg_work);
-			return;
-		case NOTIF_OPLUS_CID_DETECT:
-			return;
-		case NOTIF_OPLUS_TYPEC_STATE_CHANGE:
+			power_supply_changed(battmgr->usb_psy);
 			return;
 		case NOTIF_OPLUS_PLUGIN_IRQ:
 			schedule_work(&battmgr->oplus_charging_work);
+			power_supply_changed(battmgr->usb_psy);
 			return;
+		case NOTIF_OPLUS_TYPEC_STATE_CHANGE:
 		case NOTIF_OPLUS_APSD_DONE:
-		case NOTIF_OPLUS_UFCS_DISABLE_MOS:
 		case NOTIF_OPLUS_PD_SOURCECAP_DONE:
 		case NOTIF_OPLUS_POWER_ROLE_STATUS:
+			power_supply_changed(battmgr->usb_psy);
+			return;
+		case NOTIF_OPLUS_CID_DETECT:
+		case NOTIF_OPLUS_UFCS_DISABLE_MOS:
 			return;
 		}
 	}
