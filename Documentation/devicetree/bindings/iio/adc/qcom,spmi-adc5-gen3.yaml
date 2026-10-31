@@ -21,9 +21,15 @@ description: |
   All boards using a particular (SOC + master PMIC) combination will have the
   same number of ADC SDAMs supported on that PMIC.
 
+  Gen4 also measures channels of PMICs on a second SPMI bus. A channel's
+  virtual number then carries the bus above the SID:
+  bus << 13 | sid << 8 | channel.
+
 properties:
   compatible:
-    const: qcom,spmi-adc5-gen3
+    enum:
+      - qcom,spmi-adc5-gen3
+      - qcom,spmi-adc5-gen4
 
   reg:
     items:
