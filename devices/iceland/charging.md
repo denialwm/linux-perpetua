@@ -37,7 +37,12 @@ Perpetua since the design was written:
   limit, so battmgr ramps the input limit by charger type as stock does
   (A8, A9): a wall charger reporting as an Apple brick (type 9) draws
   3 A at 4.93 V, 14.7 W, where stock stops at 10 W.
-- Iceland has no ADC, pump or USBSS mux nodes yet.
+- Sections B to F landed on 2026-10-31, built as devices-22: the gen3
+  ADC thermistors, `sc8547_charger.c` for both pumps, the WCD939x D+/D-
+  mux, the `oplus_svooc.c` protocol library with KUnit tests, and
+  `sc8547_svooc.c` (`CONFIG_CHARGER_SC8547_SVOOC`), the auxiliary driver
+  on `sc8547_charger.vooc-phy` that runs the session. It reports through
+  the MAINS supply `sc8547-svooc` and debugfs `<device>/status`.
 
 The commit split in section 4 still applies.
 
@@ -376,7 +381,7 @@ as plain psy writes. The exports then come from the chip driver, not from a
 shared driver.
 
 **VOOC/UFCS PHY.** If the node has a `vooc-phy` subnode (main pump only),
-the driver creates an auxiliary device `sc8547.vooc-phy`:
+the driver creates an auxiliary device `sc8547_charger.vooc-phy`:
 - it shares the regmap and the chip lock;
 - it dispatches PHY flag events from the same threaded IRQ.
 
@@ -469,8 +474,10 @@ Never look psys up by name.
 
 ### 3.5 The proprietary part: oplus-svooc
 
-**Driver.** `drivers/power/supply/oplus_svooc*.c` under
-`CONFIG_CHARGER_OPLUS_SVOOC`, an auxiliary driver on `sc8547.vooc-phy`.
+**Driver.** As built: the protocol in `oplus_svooc.c` (`CONFIG_OPLUS_SVOOC`,
+KUnit in `oplus_svooc_test.c`) and the session in `sc8547_svooc.c`
+(`CONFIG_CHARGER_SC8547_SVOOC`), an auxiliary driver on
+`sc8547_charger.vooc-phy`. The file split below was the plan.
 
 **File split.**
 
