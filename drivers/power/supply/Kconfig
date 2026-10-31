@@ -248,6 +248,17 @@ config CHARGER_SC8547
 	  switched on only by a direct charging driver, such as the one for
 	  its SuperVOOC PHY.
 
+config CHARGER_SC8547_SVOOC
+	tristate "SuperVOOC charging through the SC8547D VOOC PHY"
+	depends on CHARGER_SC8547 && BATTERY_QCOM_BATTMGR
+	depends on IIO && MULTIPLEXER
+	select OPLUS_SVOOC
+	help
+	  Say Y or M here to charge from Oplus SuperVOOC adapters through the
+	  VOOC PHY of an SC8547D charge pump, with an optional second pump.
+	  The Qualcomm PMIC GLINK USB supply detects the charger and gives
+	  up its input while the pumps charge.
+
 config BATTERY_OLPC
 	tristate "One Laptop Per Child battery"
 	depends on OLPC_EC

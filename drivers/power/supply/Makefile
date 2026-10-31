@@ -121,6 +121,7 @@ obj-$(CONFIG_CHARGER_CROS_PCHG)	+= cros_peripheral_charger.o
 obj-$(CONFIG_CHARGER_SC2731)	+= sc2731_charger.o
 obj-$(CONFIG_CHARGER_SC8517)	+= sc8517_charger.o
 obj-$(CONFIG_CHARGER_SC8547)	+= sc8547_charger.o
+obj-$(CONFIG_CHARGER_SC8547_SVOOC)	+= sc8547_svooc.o
 obj-$(CONFIG_OPLUS_SVOOC)	+= oplus_svooc.o
 obj-$(CONFIG_OPLUS_SVOOC_KUNIT_TEST)	+= oplus_svooc_test.o
 obj-$(CONFIG_FUEL_GAUGE_SC27XX)	+= sc27xx_fuel_gauge.o
