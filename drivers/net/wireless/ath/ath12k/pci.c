@@ -1786,6 +1786,14 @@ static __maybe_unused int ath12k_pci_pm_suspend_late(struct device *dev)
 	if (ret)
 		ath12k_warn(ab, "failed to late suspend core: %d\n", ret);
 
+	/*
+	 * Armed for wake-on-WLAN, the chip wakes the host with an MSI, which
+	 * it can only send from D0: saving the state here keeps the PCI core
+	 * from putting it (and its root port) into D3hot.
+	 */
+	if (!ret && device_may_wakeup(dev) && ath12k_core_wow_suspended(ab))
+		pci_save_state(to_pci_dev(dev));
+
 	return ret;
 }
 

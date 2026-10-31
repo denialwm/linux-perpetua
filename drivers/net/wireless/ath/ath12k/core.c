@@ -214,6 +214,14 @@ int ath12k_core_suspend_late(struct ath12k_base *ab)
 }
 EXPORT_SYMBOL(ath12k_core_suspend_late);
 
+/* Suspended into wake-on-WLAN: the firmware keeps running, MHI is in M3. */
+bool ath12k_core_wow_suspended(struct ath12k_base *ab)
+{
+	return ab->hw_params->supports_suspend &&
+	       ath12k_core_continue_suspend_resume(ab) == 0;
+}
+EXPORT_SYMBOL(ath12k_core_wow_suspended);
+
 int ath12k_core_resume_early(struct ath12k_base *ab)
 {
 	int ret;
