@@ -12,6 +12,7 @@
 #include <linux/debugfs.h>
 #include <linux/iio/consumer.h>
 #include <linux/jiffies.h>
+#include <linux/ktime.h>
 #include <linux/math64.h>
 #include <linux/minmax.h>
 #include <linux/module.h>
@@ -54,6 +55,10 @@
 #define SVOOC_POWER_MAX_UW	60000000LL
 #define SVOOC_VBAT_MAX_UV	4480000
 #define SVOOC_SECOND_UA		1400000
+/* Noise frames tolerated before the adapter's first one. */
+#define SVOOC_IGNORE_MAX	6
+/* Late replies in a row tolerated after the battery curve. */
+#define SVOOC_SKIP_MAX		3
 
 #define SVOOC_TICK_MS		50
 #define SVOOC_BUCK_TICK_MS	20
@@ -150,6 +155,10 @@ struct sc8547_svooc {
 	unsigned long stopped_at;
 	unsigned int ticks;
 	unsigned int frames;
+	unsigned int irqs;
+	unsigned int ignored;
+	/* The slowest reply, from the interrupt thread to the TX write. */
+	unsigned int worst_us;
 	unsigned int quiet;
 	unsigned int disagree;
 	int limit_ua;
@@ -158,13 +167,16 @@ struct sc8547_svooc {
 	int applied_ua;
 	int pending_ua;
 	int error;
+	/* The PHY's last RX byte and flags, for the stop message. */
+	u8 rx;
+	u8 flags;
 	bool phy_on;
 	bool route;
 	bool buck_off;
 	bool second_on;
 	bool dual;
 	bool change;
-	bool skipped;
+	unsigned int skipped;
 	bool stopping;
 };
 
@@ -377,8 +389,8 @@ static void svooc_stop_locked(struct sc8547_svooc *sv, int error)
 		return;
 	sv->error = error;
 	if (error)
-		dev_warn(sv->dev, "SuperVOOC stopped in %s: %d\n",
-			 svooc_state_names[sv->state], error);
+		dev_warn(sv->dev, "SuperVOOC stopped in %s: %d (rx %02x flags %02x)\n",
+			 svooc_state_names[sv->state], error, sv->rx, sv->flags);
 	else
 		dev_info(sv->dev, "SuperVOOC finished\n");
 	if (sv->second && sc8547_disable(sv->second))
@@ -475,6 +487,26 @@ static int svooc_receive(struct sc8547_svooc *sv, u8 rx, u8 flags)
 	u8 payload;
 	int ret;
 
+	/*
+	 * Until the adapter's first frame, ignore what the handshake leaves
+	 * on the line, as the factory driver does.
+	 */
+	if (!sv->frames && (!(flags & SC8547_PHY_RX_DONE) || (flags & SC8547_PHY_ERRORS) ||
+			    oplus_svooc_decode(rx, &req)))
+		return (flags & SC8547_PHY_RX_DONE) && ++sv->ignored > SVOOC_IGNORE_MAX ?
+		       -EPROTO : 0;
+	if (flags & SC8547_PHY_ERRORS) {
+		/*
+		 * After the battery curve the factory driver lets a late reply
+		 * pass and the adapter asks again. A lost current reply, or one
+		 * during identification, is fatal.
+		 */
+		if ((flags & SC8547_PHY_ERRORS) == SC8547_PHY_TX_FAILED &&
+		    sv->proto.curve_sent && !sv->pending_ua &&
+		    ++sv->skipped <= SVOOC_SKIP_MAX)
+			return 0;
+		return -EPROTO;
+	}
 	if (sv->pending_ua && (flags & SC8547_PHY_TX_DONE)) {
 		sv->applied_ua = sv->pending_ua;
 		sv->pending_ua = 0;
@@ -486,24 +518,10 @@ static int svooc_receive(struct sc8547_svooc *sv, u8 rx, u8 flags)
 	} else if (sv->pending_ua && (flags & SC8547_PHY_RX_DONE)) {
 		return -EPROTO;
 	}
-	if (flags & SC8547_PHY_ERRORS) {
-		/*
-		 * A lone failed reply to a battery query happens during long
-		 * sessions; the adapter asks again. Anything more is fatal.
-		 */
-		if ((flags & SC8547_PHY_ERRORS) == SC8547_PHY_TX_FAILED &&
-		    sv->state == SVOOC_RUNNING && !sv->skipped && !sv->change &&
-		    !oplus_svooc_decode(rx, &req) &&
-		    req.command == OPLUS_SVOOC_GET_VBAT) {
-			sv->skipped = true;
-			return 0;
-		}
-		return -EPROTO;
-	}
 	if (!(flags & SC8547_PHY_RX_DONE))
 		return 0;
 
-	sv->skipped = false;
+	sv->skipped = 0;
 	ret = oplus_svooc_decode(rx, &req);
 	if (ret)
 		return ret;
@@ -538,14 +556,22 @@ static int svooc_receive(struct sc8547_svooc *sv, u8 rx, u8 flags)
 static void svooc_phy_irq(void *data)
 {
 	struct sc8547_svooc *sv = data;
+	ktime_t start = ktime_get();
 	u8 rx[2];
 	int ret;
 
 	mutex_lock(&sv->lock);
 	if (sv->phy_on) {
 		ret = regmap_bulk_read(sv->regmap, SC8547_RX, rx, sizeof(rx));
-		if (!ret)
+		if (!ret) {
+			sv->rx = rx[0];
+			sv->flags = rx[1];
+			sv->irqs++;
 			ret = svooc_receive(sv, rx[0], rx[1]);
+			if (!ret)
+				sv->worst_us = max_t(unsigned int, sv->worst_us,
+						     ktime_us_delta(ktime_get(), start));
+		}
 		if (ret)
 			svooc_stop_locked(sv, ret);
 	}
@@ -613,11 +639,16 @@ static void svooc_start(struct sc8547_svooc *sv)
 	sv->state = SVOOC_IDENTIFY;
 	sv->error = 0;
 	sv->frames = 0;
+	sv->irqs = 0;
+	sv->ignored = 0;
+	sv->worst_us = 0;
+	sv->rx = 0;
+	sv->flags = 0;
 	sv->ticks = 0;
 	sv->taper_ua = sv->limit_ua;
 	sv->target_ua = 0;
 	sv->change = false;
-	sv->skipped = false;
+	sv->skipped = 0;
 	sv->disagree = 0;
 	sv->discharge_since = 0;
 	sv->started = jiffies;
@@ -802,7 +833,8 @@ static void svooc_tick(struct sc8547_svooc *sv)
 	read_bat = !(sv->ticks % 4);
 	read_therm = !(sv->ticks % 10);
 	mutex_unlock(&sv->lock);
-	read_usb = read_bat || state == SVOOC_SUSPEND;
+	/* Once VBUS rises the PMIC reports USB offline; the pumps watch it. */
+	read_usb = state < SVOOC_GRANTED && (read_bat || state == SVOOC_SUSPEND);
 
 	/* Slow reads outside the lock: the PHY must answer within milliseconds. */
 	ret = sc8547_sample(sv->main, &sample[0]);
@@ -1058,8 +1090,10 @@ static int svooc_status_show(struct seq_file *s, void *data)
 	const struct sc8547_sample *m = &sv->sample[0], *c = &sv->sample[1];
 
 	mutex_lock(&sv->lock);
-	seq_printf(s, "state %s error %d frames %u model %02x\n",
-		   svooc_state_names[sv->state], sv->error, sv->frames, sv->proto.model);
+	seq_printf(s, "state %s error %d frames %u irqs %u rx %02x flags %02x model %02x\n",
+		   svooc_state_names[sv->state], sv->error, sv->frames, sv->irqs,
+		   sv->rx, sv->flags, sv->proto.model);
+	seq_printf(s, "worst reply %u us\n", sv->worst_us);
 	seq_printf(s, "limit %d target %d applied %d pending %d taper %d uA\n",
 		   sv->limit_ua, sv->change ? sv->target_ua : 0, sv->applied_ua,
 		   sv->pending_ua, sv->taper_ua);
