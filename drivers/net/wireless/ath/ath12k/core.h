@@ -956,6 +956,8 @@ struct ath12k_base {
 	enum ath12k_hw_rev hw_rev;
 	/* Userspace keeps station power save off, see power_save_allowed. */
 	bool power_save_blocked;
+	/* The host holds the link through suspend (Qualcomm PCIe DRV). */
+	bool suspend_keeps_link;
 	struct platform_device *pdev;
 	struct device *dev;
 	struct ath12k_qmi qmi;

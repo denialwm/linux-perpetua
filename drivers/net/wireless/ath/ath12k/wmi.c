@@ -10872,7 +10872,12 @@ int ath12k_wmi_wow_enable(struct ath12k *ar)
 
 	cmd->enable = cpu_to_le32(1);
 	cmd->pause_iface_config = cpu_to_le32(WOW_IFACE_PAUSE_ENABLED);
-	ath12k_dbg(ar->ab, ATH12K_DBG_WMI, "wmi tlv wow enable\n");
+	/* With the link kept, the firmware wakes the host through WAKE#. */
+	if (ar->ab->suspend_keeps_link)
+		cmd->flags = cpu_to_le32(WMI_WOW_FLAG_ENABLE_DRV_PCIE_L1SS_SLEEP |
+					 WMI_WOW_FLAG_SYSTEM_SUSPEND_WOW);
+	ath12k_dbg(ar->ab, ATH12K_DBG_WMI, "wmi tlv wow enable flags %#x\n",
+		   le32_to_cpu(cmd->flags));
 
 	ret = ath12k_wmi_cmd_send(ar->wmi, skb, WMI_WOW_ENABLE_CMDID);
 	if (ret) {

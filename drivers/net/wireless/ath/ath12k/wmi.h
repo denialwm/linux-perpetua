@@ -5561,6 +5561,9 @@ enum wmi_wow_interface_cfg {
 	WOW_IFACE_PAUSE_DISABLED
 };
 
+#define WMI_WOW_FLAG_ENABLE_DRV_PCIE_L1SS_SLEEP	BIT(4)
+#define WMI_WOW_FLAG_SYSTEM_SUSPEND_WOW		BIT(5)
+
 #define C2S(x) case x: return #x
 
 static inline const char *wow_wakeup_event(enum wmi_wow_wakeup_event ev)
