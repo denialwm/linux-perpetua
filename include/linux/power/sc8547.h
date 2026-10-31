@@ -37,7 +37,6 @@ int sc8547_prepare(struct sc8547 *cp);
 int sc8547_enable(struct sc8547 *cp);
 int sc8547_disable(struct sc8547 *cp);
 int sc8547_sample(struct sc8547 *cp, struct sc8547_sample *sample);
-int sc8547_read_vbus(struct sc8547 *cp, int *uv);
 void sc8547_set_phy_handler(struct sc8547 *cp, void (*handler)(void *data),
 			    void *data);
 

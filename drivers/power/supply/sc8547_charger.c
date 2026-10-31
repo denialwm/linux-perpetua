@@ -87,6 +87,8 @@ struct sc8547 {
 	struct mutex phy_lock;
 	void (*phy_handler)(void *data);
 	void *phy_data;
+	/* The last sample, for the properties: a read there could delay a reply. */
+	struct sc8547_sample last;
 	int health;
 	u8 vbat_ovp;
 	u8 vbus_ovp;
@@ -194,16 +196,20 @@ static int sc8547_fault_health(unsigned int status, unsigned int protection,
  */
 static int sc8547_check_locked(struct sc8547 *cp, bool *switching)
 {
+	u8 regs[SC8547_PROTECTION + 1 - SC8547_STATUS];
 	unsigned int status, protection, mode;
 	int health, ret;
 
-	ret = regmap_read(cp->regmap, SC8547_STATUS, &status);
-	if (!ret)
-		ret = regmap_read(cp->regmap, SC8547_PROTECTION, &protection);
-	if (!ret)
-		ret = regmap_read(cp->regmap, SC8547_MODE, &mode);
+	/*
+	 * One transfer, so the bus stays free for VOOC PHY replies. Reading
+	 * the control register in it services the watchdog.
+	 */
+	ret = regmap_bulk_read(cp->regmap, SC8547_STATUS, regs, sizeof(regs));
 	if (ret)
 		return ret;
+	status = regs[0];
+	mode = regs[SC8547_MODE - SC8547_STATUS];
+	protection = regs[SC8547_PROTECTION - SC8547_STATUS];
 	if (switching)
 		*switching = status & SC8547_STATUS_SWITCHING;
 	health = sc8547_fault_health(status, protection, mode);
@@ -230,11 +236,12 @@ static int sc8547_read_adc_locked(struct sc8547 *cp, struct sc8547_sample *s)
 	u8 adc[SC8547_ADC_TDIE + 2 - SC8547_ADC_IBUS];
 	int ret, thaw;
 
-	ret = regmap_set_bits(cp->regmap, SC8547_ADC_CTRL, SC8547_ADC_FREEZE);
+	/* A prepared pump's ADC control holds only the enable bit. */
+	ret = regmap_write(cp->regmap, SC8547_ADC_CTRL, SC8547_ADC_EN | SC8547_ADC_FREEZE);
 	if (ret)
 		return ret;
 	ret = regmap_bulk_read(cp->regmap, SC8547_ADC_IBUS, adc, sizeof(adc));
-	thaw = regmap_clear_bits(cp->regmap, SC8547_ADC_CTRL, SC8547_ADC_FREEZE);
+	thaw = regmap_write(cp->regmap, SC8547_ADC_CTRL, SC8547_ADC_EN);
 	if (ret)
 		return ret;
 	if (thaw)
@@ -327,6 +334,7 @@ int sc8547_prepare(struct sc8547 *cp)
 		cp->health = POWER_SUPPLY_HEALTH_GOOD;
 		ret = sc8547_check_locked(cp, NULL);
 	}
+	cp->last = (struct sc8547_sample){};
 	cp->prepared = !ret;
 	mutex_unlock(&cp->lock);
 	return ret;
@@ -393,7 +401,6 @@ EXPORT_SYMBOL_GPL(sc8547_disable);
  */
 int sc8547_sample(struct sc8547 *cp, struct sc8547_sample *sample)
 {
-	unsigned int control;
 	int ret;
 
 	/*
@@ -402,9 +409,6 @@ int sc8547_sample(struct sc8547 *cp, struct sc8547_sample *sample)
 	 */
 	mutex_lock(&cp->lock);
 	ret = cp->prepared ? sc8547_check_locked(cp, &sample->switching) : -EINVAL;
-	/* Reading the control register services the watchdog. */
-	if (!ret)
-		ret = regmap_read(cp->regmap, SC8547_CONTROL, &control);
 	sample->health = cp->health;
 	mutex_unlock(&cp->lock);
 	if (ret)
@@ -412,35 +416,12 @@ int sc8547_sample(struct sc8547 *cp, struct sc8547_sample *sample)
 	/* A fault in between unprepares the pump. */
 	mutex_lock(&cp->lock);
 	ret = cp->prepared ? sc8547_read_adc_locked(cp, sample) : -EIO;
+	if (!ret)
+		cp->last = *sample;
 	mutex_unlock(&cp->lock);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(sc8547_sample);
-
-/**
- * sc8547_read_vbus() - read only the input voltage, for a quick reply
- * @cp: a prepared pump
- * @uv: the input voltage
- */
-int sc8547_read_vbus(struct sc8547 *cp, int *uv)
-{
-	u8 adc[2];
-	int ret, thaw;
-
-	mutex_lock(&cp->lock);
-	ret = cp->prepared ? regmap_set_bits(cp->regmap, SC8547_ADC_CTRL,
-					     SC8547_ADC_FREEZE) : -EINVAL;
-	if (!ret) {
-		ret = regmap_bulk_read(cp->regmap, SC8547_ADC_VBUS, adc, sizeof(adc));
-		thaw = regmap_clear_bits(cp->regmap, SC8547_ADC_CTRL, SC8547_ADC_FREEZE);
-		ret = ret ?: thaw;
-	}
-	if (!ret)
-		*uv = sc8547_adc(adc, 0, 0x0f) * 3750;
-	mutex_unlock(&cp->lock);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(sc8547_read_vbus);
 
 /**
  * sc8547_set_phy_handler() - dispatch the shared interrupt to the VOOC PHY
@@ -495,50 +476,48 @@ static int sc8547_get_property(struct power_supply *psy,
 			       union power_supply_propval *val)
 {
 	struct sc8547 *cp = power_supply_get_drvdata(psy);
-	struct sc8547_sample s = {};
-	bool switching = false;
-	int ret = 0;
+	struct sc8547_sample s;
+	bool prepared;
+	int health;
 
-	if (prop == POWER_SUPPLY_PROP_MODEL_NAME) {
+	mutex_lock(&cp->lock);
+	s = cp->last;
+	prepared = cp->prepared;
+	health = cp->health;
+	mutex_unlock(&cp->lock);
+
+	switch (prop) {
+	case POWER_SUPPLY_PROP_MODEL_NAME:
 		val->strval = "SC8547D";
 		return 0;
-	}
-	mutex_lock(&cp->lock);
-	/* Never read the control register here: it would feed the watchdog. */
-	switch (prop) {
 	case POWER_SUPPLY_PROP_STATUS:
-	case POWER_SUPPLY_PROP_ONLINE:
-	case POWER_SUPPLY_PROP_HEALTH:
-		sc8547_check_locked(cp, &switching);
-		break;
-	default:
-		ret = cp->prepared ? sc8547_read_adc_locked(cp, &s) : -ENODATA;
-	}
-	switch (prop) {
-	case POWER_SUPPLY_PROP_STATUS:
-		val->intval = switching ? POWER_SUPPLY_STATUS_CHARGING :
+		val->intval = prepared && s.switching ? POWER_SUPPLY_STATUS_CHARGING :
 			POWER_SUPPLY_STATUS_NOT_CHARGING;
-		break;
+		return 0;
 	case POWER_SUPPLY_PROP_ONLINE:
-		val->intval = switching;
-		break;
+		val->intval = prepared && s.switching;
+		return 0;
 	case POWER_SUPPLY_PROP_HEALTH:
-		val->intval = cp->health;
+		val->intval = health;
+		return 0;
+	default:
 		break;
+	}
+	if (!prepared)
+		return -ENODATA;
+	switch (prop) {
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		val->intval = s.vbat_uv;
-		break;
+		return 0;
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		val->intval = s.ibus_ua;
-		break;
+		return 0;
 	case POWER_SUPPLY_PROP_TEMP:
 		val->intval = s.temp;
-		break;
+		return 0;
 	default:
-		ret = -EINVAL;
+		return -EINVAL;
 	}
-	mutex_unlock(&cp->lock);
-	return ret;
 }
 
 static int sc8547_read_limit(struct device *dev, const char *name, u32 def,

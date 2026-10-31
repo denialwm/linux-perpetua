@@ -62,6 +62,8 @@
 
 #define SVOOC_TICK_MS		50
 #define SVOOC_BUCK_TICK_MS	20
+/* The adapter's frames come some 45 ms apart; past this it is silent. */
+#define SVOOC_SAMPLE_MS		100
 #define SVOOC_RETRY_MS		10000
 #define SVOOC_FIRST_FRAME_MS	3000
 #define SVOOC_FRAME_MS		1000
@@ -153,6 +155,8 @@ struct sc8547_svooc {
 	unsigned long ramp_after;
 	unsigned long discharge_since;
 	unsigned long stopped_at;
+	/* The main pump's last sample, @sample[0]. */
+	unsigned long sampled_at;
 	unsigned int ticks;
 	unsigned int frames;
 	unsigned int irqs;
@@ -432,17 +436,15 @@ static u8 svooc_vbat_reply(struct sc8547_svooc *sv)
 static int svooc_power_command(struct sc8547_svooc *sv,
 			       const struct oplus_svooc_request *req, u8 *payload)
 {
-	int ret, ua, vbus;
+	int ret, ua;
 
 	switch (req->command) {
 	case OPLUS_SVOOC_VBUS_OK:
 		if (sv->state != SVOOC_GRANTED && sv->state != SVOOC_STARTING &&
 		    sv->state != SVOOC_RUNNING)
 			return -EPROTO;
-		ret = sc8547_read_vbus(sv->main, &vbus);
-		if (ret)
-			return ret;
-		*payload = oplus_svooc_vbus(vbus, sv->bat.uv);
+		/* Read after the last reply, as the factory driver does. */
+		*payload = oplus_svooc_vbus(sv->sample[0].vbus_uv, sv->bat.uv);
 		/* The pump switches on before the adapter hears "normal". */
 		if (*payload == OPLUS_SVOOC_VBUS_NORMAL && sv->state == SVOOC_GRANTED) {
 			ret = sc8547_enable(sv->main);
@@ -553,6 +555,24 @@ static int svooc_receive(struct sc8547_svooc *sv, u8 rx, u8 flags)
 	return ret;
 }
 
+/*
+ * The pump may stretch an ADC read for 4 ms, longer than the adapter waits
+ * for a reply. Read it in the quiet gap after a reply, as the factory
+ * driver does; only a silent adapter leaves it to the worker.
+ */
+static int svooc_sample_main(struct sc8547_svooc *sv)
+{
+	struct sc8547_sample s;
+	int ret;
+
+	ret = sc8547_sample(sv->main, &s);
+	if (ret)
+		return ret;
+	sv->sample[0] = s;
+	sv->sampled_at = jiffies;
+	return 0;
+}
+
 static void svooc_phy_irq(void *data)
 {
 	struct sc8547_svooc *sv = data;
@@ -571,6 +591,10 @@ static void svooc_phy_irq(void *data)
 			if (!ret)
 				sv->worst_us = max_t(unsigned int, sv->worst_us,
 						     ktime_us_delta(ktime_get(), start));
+			/* Every clean frame got a reply. */
+			if (!ret && sv->frames && (rx[1] & SC8547_PHY_RX_DONE) &&
+			    !(rx[1] & SC8547_PHY_ERRORS))
+				ret = svooc_sample_main(sv);
 		}
 		if (ret)
 			svooc_stop_locked(sv, ret);
@@ -653,6 +677,7 @@ static void svooc_start(struct sc8547_svooc *sv)
 	sv->discharge_since = 0;
 	sv->started = jiffies;
 	sv->last_rx = jiffies;
+	sv->sampled_at = jiffies - msecs_to_jiffies(SVOOC_SAMPLE_MS);
 	sv->phy_on = true;
 	/* The handshake starts the adapter talking: be ready first. */
 	ret = regmap_write(sv->regmap, SC8547_VOOC_CTRL, 0x81);
@@ -823,7 +848,7 @@ static void svooc_tick(struct sc8547_svooc *sv)
 	struct sc8547_sample sample[2] = {};
 	struct svooc_battery bat;
 	int therm[SVOOC_THERMS], usb_ua = 0, usb_uv = 0, online = 0;
-	bool read_bat, read_therm, read_usb, suspend = false, second = false, changed;
+	bool read_main, read_bat, read_therm, read_usb, suspend = false, second = false, changed;
 	enum svooc_state state;
 	int ret;
 
@@ -832,12 +857,14 @@ static void svooc_tick(struct sc8547_svooc *sv)
 	sv->ticks++;
 	read_bat = !(sv->ticks % 4);
 	read_therm = !(sv->ticks % 10);
+	/* While the adapter talks, the PHY interrupt samples the main pump. */
+	read_main = time_after(jiffies, sv->sampled_at + msecs_to_jiffies(SVOOC_SAMPLE_MS));
 	mutex_unlock(&sv->lock);
 	/* Once VBUS rises the PMIC reports USB offline; the pumps watch it. */
 	read_usb = state < SVOOC_GRANTED && (read_bat || state == SVOOC_SUSPEND);
 
 	/* Slow reads outside the lock: the PHY must answer within milliseconds. */
-	ret = sc8547_sample(sv->main, &sample[0]);
+	ret = read_main ? sc8547_sample(sv->main, &sample[0]) : 0;
 	if (!ret && sv->second)
 		ret = sc8547_sample(sv->second, &sample[1]);
 	if (!ret && read_bat)
@@ -858,7 +885,11 @@ static void svooc_tick(struct sc8547_svooc *sv)
 		goto unlock;
 	if (ret)
 		goto stop;
-	memcpy(sv->sample, sample, sizeof(sample));
+	if (read_main) {
+		sv->sample[0] = sample[0];
+		sv->sampled_at = jiffies;
+	}
+	sv->sample[1] = sample[1];
 	if (read_bat)
 		sv->bat = bat;
 	if (read_therm)
