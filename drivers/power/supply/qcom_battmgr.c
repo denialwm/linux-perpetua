@@ -17,6 +17,7 @@
 #include <linux/soc/qcom/pmic_glink.h>
 #include <linux/spinlock.h>
 #include <linux/math.h>
+#include <linux/math64.h>
 #include <linux/thermal.h>
 #include <linux/units.h>
 
@@ -558,6 +559,45 @@ static int qcom_battmgr_bat_sm8350_update(struct qcom_battmgr *battmgr,
 	return ret;
 }
 
+/*
+ * The Kaanapali Oplus firmware describes only its own buck. While the host
+ * holds the buck input at zero an external charger owns charging, and the
+ * direction of the battery current tells the status. Its power reading is
+ * not voltage times current at all, so compute that.
+ */
+static int qcom_battmgr_bat_oplus_update(struct qcom_battmgr *battmgr,
+					 enum power_supply_property psp)
+{
+	struct qcom_battmgr_status *status = &battmgr->status;
+	int ret;
+
+	if (psp != POWER_SUPPLY_PROP_STATUS && psp != POWER_SUPPLY_PROP_POWER_NOW)
+		return qcom_battmgr_bat_sm8350_update(battmgr, psp);
+
+	mutex_lock(&battmgr->lock);
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET, BATT_CURR_NOW, 0);
+	if (ret)
+		goto out_unlock;
+
+	if (psp == POWER_SUPPLY_PROP_POWER_NOW) {
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET,
+						    BATT_VOLT_NOW, 0);
+		if (!ret)
+			status->power_now = div_s64((s64)status->voltage_now *
+						    status->current_now, 1000000);
+		goto out_unlock;
+	}
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET, BATT_STATUS, 0);
+	if (!ret && battmgr->oplus.input_suspended)
+		status->status = status->current_now > 0 ? POWER_SUPPLY_STATUS_CHARGING :
+							   POWER_SUPPLY_STATUS_DISCHARGING;
+
+out_unlock:
+	mutex_unlock(&battmgr->lock);
+	return ret;
+}
+
 static int qcom_battmgr_bat_sc8280xp_update(struct qcom_battmgr *battmgr,
 					    enum power_supply_property psp)
 {
@@ -611,6 +651,8 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
 	if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
 	    battmgr->variant == QCOM_BATTMGR_X1E80100)
 		ret = qcom_battmgr_bat_sc8280xp_update(battmgr, psp);
+	else if (battmgr->variant == OPLUS_BATTMGR_KAANAPALI)
+		ret = qcom_battmgr_bat_oplus_update(battmgr, psp);
 	else
 		ret = qcom_battmgr_bat_sm8350_update(battmgr, psp);
 	if (ret < 0)
