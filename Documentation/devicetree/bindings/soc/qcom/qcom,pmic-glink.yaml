@@ -56,6 +56,10 @@ properties:
           - const: oneplus,sm8550-pmic-glink
           - const: qcom,sm8550-pmic-glink
           - const: qcom,pmic-glink
+      - items:
+          - const: oneplus,kaanapali-pmic-glink
+          - const: qcom,kaanapali-pmic-glink
+          - const: qcom,pmic-glink
 
   '#address-cells':
     const: 1
