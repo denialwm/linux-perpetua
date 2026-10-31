@@ -652,8 +652,13 @@ static int wcd939x_usbss_switch_set(struct typec_switch_dev *sw,
 
 	mutex_lock(&usbss->lock);
 
-	/* Any Type-C change takes D+/D- back from the charger first. */
-	if (usbss->orientation != orientation || usbss->dpdm_charger) {
+	/*
+	 * A real Type-C change takes D+/D- back from the charger. A repeat of
+	 * the same state leaves the route alone: the firmware reports the
+	 * connector again when a SuperVOOC adapter raises VBUS, and a glitch
+	 * on D+/D- then makes the adapter drop it.
+	 */
+	if (usbss->orientation != orientation) {
 		usbss->orientation = orientation;
 		usbss->dpdm_charger = false;
 
@@ -688,8 +693,7 @@ static int wcd939x_usbss_mux_set(struct typec_mux_dev *mux,
 		return 0;
 	}
 
-	if (usbss->mode != state->mode || usbss->svid != svid ||
-	    usbss->dpdm_charger) {
+	if (usbss->mode != state->mode || usbss->svid != svid) {
 		usbss->mode = state->mode;
 		usbss->svid = svid;
 		usbss->dpdm_charger = false;
