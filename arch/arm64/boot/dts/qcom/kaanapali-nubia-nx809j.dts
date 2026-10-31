@@ -1778,6 +1778,9 @@
 		vdd-supply = <&vreg_l4b_1p8>;
 		avdd-supply = <&vreg_l14b_3p2>;
 
+		/* 240 Hz, a touch sample for every 144 Hz frame; firmware starts at 120 Hz. */
+		syna,report-rate = <3>;
+
 		pinctrl-0 = <&ts_default>;
 		pinctrl-names = "default";
 	};
