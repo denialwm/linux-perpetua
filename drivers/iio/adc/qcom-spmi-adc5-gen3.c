@@ -528,6 +528,7 @@ static int adc5_gen3_get_fw_channel_data(struct adc5_chip *adc,
 
 static const struct adc5_data adc5_gen3_data_pmic = {
 	.full_scale_code_volt = 0x70e4,
+	.full_scale_code_raw = RATIO_MAX_ADC7,
 	.adc_chans = adc5_gen3_chans_pmic,
 	.info = &adc5_gen3_info,
 	.decimation = (unsigned int [ADC5_DECIMATION_SAMPLES_MAX])
