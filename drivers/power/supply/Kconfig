@@ -226,6 +226,17 @@ config CHARGER_SC8517
 	  The driver uses a discrete fuel gauge and the Qualcomm PMIC GLINK
 	  USB supply to negotiate charging and restore the normal charger path.
 
+config OPLUS_SVOOC
+	tristate
+
+config OPLUS_SVOOC_KUNIT_TEST
+	tristate "KUnit tests for the Oplus SuperVOOC protocol" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	select OPLUS_SVOOC
+	default KUNIT_ALL_TESTS
+	help
+	  Unit tests for the SuperVOOC adapter protocol library.
+
 config CHARGER_SC8547
 	tristate "Southchip SC8547D charge pump"
 	depends on I2C
