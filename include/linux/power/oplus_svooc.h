@@ -49,10 +49,12 @@ enum oplus_svooc_exchange {
  * @circuit: FASTCHG reply describing the charging circuit, without the
  *	permission bit.
  * @curve: battery curve payloads, in transmission order.
- * @permit: grant fast charging in the next FASTCHG reply.
+ * @permit: the charger is ready for fast charging.
  * @identified: the adapter answered the challenge.
  * @model: the adapter model, or 0.
  * @curve_sent: the adapter has read the battery curve.
+ * @granted: a FASTCHG reply granted fast charging, once the adapter was
+ *	identified, had read the curve and @permit was set.
  */
 struct oplus_svooc {
 	u8 circuit;
@@ -61,6 +63,7 @@ struct oplus_svooc {
 	bool identified;
 	u8 model;
 	bool curve_sent;
+	bool granted;
 	/* private: */
 	enum oplus_svooc_exchange exchange;
 	bool offered;

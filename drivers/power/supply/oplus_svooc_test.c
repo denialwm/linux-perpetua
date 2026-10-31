@@ -57,6 +57,7 @@ static void oplus_svooc_test_session(struct kunit *test)
 	int i;
 
 	oplus_svooc_reset(&svooc);
+	svooc.permit = true;
 	KUNIT_EXPECT_EQ(test, oplus_svooc_reply(test, &svooc, 0xa8, 0), 0x230);
 	KUNIT_EXPECT_EQ(test, oplus_svooc_reply(test, &svooc,
 			oplus_svooc_rx(OPLUS_SVOOC_FASTCHG), 0), 0x230);
@@ -85,10 +86,15 @@ static void oplus_svooc_test_session(struct kunit *test)
 	KUNIT_EXPECT_TRUE(test, svooc.curve_sent);
 
 	/* Power commands wait for the grant, then go to the caller. */
+	svooc.permit = false;
+	KUNIT_EXPECT_EQ(test, oplus_svooc_reply(test, &svooc,
+			oplus_svooc_rx(OPLUS_SVOOC_FASTCHG), 0), 0x230);
+	svooc.permit = true;
 	KUNIT_ASSERT_EQ(test, oplus_svooc_decode(oplus_svooc_rx(OPLUS_SVOOC_VBUS_OK), &req), 0);
 	KUNIT_EXPECT_EQ(test, oplus_svooc_handle(&svooc, &req, 0, &payload), -EACCES);
-	svooc.permit = true;
+	KUNIT_EXPECT_FALSE(test, svooc.granted);
 	KUNIT_EXPECT_EQ(test, oplus_svooc_reply(test, &svooc, 0x44, 0), 0x138);
+	KUNIT_EXPECT_TRUE(test, svooc.granted);
 	KUNIT_EXPECT_EQ(test, oplus_svooc_reply(test, &svooc,
 			oplus_svooc_rx(OPLUS_SVOOC_FASTCHG), 0), 0x270);
 	KUNIT_EXPECT_EQ(test, oplus_svooc_handle(&svooc, &req, 0, &payload), 0);

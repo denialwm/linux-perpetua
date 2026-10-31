@@ -51,6 +51,7 @@ void oplus_svooc_reset(struct oplus_svooc *svooc)
 	svooc->identified = false;
 	svooc->model = 0;
 	svooc->curve_sent = false;
+	svooc->granted = false;
 	svooc->exchange = OPLUS_SVOOC_COMMAND;
 	svooc->offered = false;
 	svooc->attempts = 0;
@@ -99,7 +100,7 @@ int oplus_svooc_handle(struct oplus_svooc *svooc,
 
 	/* VOOC2 adapters open with a FASTCHG offer; answer it as SuperVOOC. */
 	if (req->vooc2) {
-		if (cmd != OPLUS_SVOOC_FASTCHG || svooc->permit ||
+		if (cmd != OPLUS_SVOOC_FASTCHG || svooc->granted ||
 		    svooc->exchange != OPLUS_SVOOC_COMMAND)
 			return -EPROTO;
 		svooc->offered = true;
@@ -150,17 +151,20 @@ int oplus_svooc_handle(struct oplus_svooc *svooc,
 	switch (cmd) {
 	case OPLUS_SVOOC_FASTCHG:
 		svooc->offered = true;
-		*payload = svooc->circuit | (svooc->permit ? 0x40 : 0);
+		if (svooc->permit && svooc->identified && svooc->model &&
+		    svooc->curve_sent)
+			svooc->granted = true;
+		*payload = svooc->circuit | (svooc->granted ? 0x40 : 0);
 		return 1;
 	case OPLUS_SVOOC_IDENTIFY:
-		if (!svooc->offered || svooc->permit || ++svooc->attempts > 3)
+		if (!svooc->offered || svooc->granted || ++svooc->attempts > 3)
 			return -EPROTO;
 		svooc->identified = false;
 		svooc->curve_sent = false;
 		*payload = oplus_svooc_challenge(svooc, random);
 		return 1;
 	case OPLUS_SVOOC_MODEL:
-		if (!svooc->offered || svooc->permit)
+		if (!svooc->offered || svooc->granted)
 			return -EPROTO;
 		svooc->model = 0;
 		svooc->curve_sent = false;
@@ -169,7 +173,7 @@ int oplus_svooc_handle(struct oplus_svooc *svooc,
 		*payload = 0x28;
 		return 1;
 	case OPLUS_SVOOC_BATTERY:
-		if (!svooc->identified || !svooc->model || svooc->permit)
+		if (!svooc->identified || !svooc->model || svooc->granted)
 			return -EPROTO;
 		svooc->curve_sent = false;
 		svooc->exchange = OPLUS_SVOOC_CURVE;
@@ -180,7 +184,7 @@ int oplus_svooc_handle(struct oplus_svooc *svooc,
 	case OPLUS_SVOOC_VBUS_OK:
 	case OPLUS_SVOOC_GET_CURRENT:
 	case OPLUS_SVOOC_AP_STATUS:
-		return svooc->permit ? 0 : -EACCES;
+		return svooc->granted ? 0 : -EACCES;
 	case OPLUS_SVOOC_BAD_CABLE:
 		return -ENOLINK;
 	default:
