@@ -81,11 +81,12 @@ struct sc8547 {
 	struct device *dev;
 	struct regmap *regmap;
 	struct power_supply *psy;
-	/* Serializes the switching state, fault latch and ADC snapshots. */
+	/* Serializes the switching state, fault latch and each ADC snapshot. */
 	struct mutex lock;
+	/* Apart from @lock, so a reply never waits for an ADC read. */
+	struct mutex phy_lock;
 	void (*phy_handler)(void *data);
 	void *phy_data;
-	int irq;
 	int health;
 	u8 vbat_ovp;
 	u8 vbus_ovp;
@@ -395,14 +396,22 @@ int sc8547_sample(struct sc8547 *cp, struct sc8547_sample *sample)
 	unsigned int control;
 	int ret;
 
+	/*
+	 * Two short holds: a VOOC PHY reply may need the pump in between, and
+	 * the adapter waits only a few milliseconds for it.
+	 */
 	mutex_lock(&cp->lock);
 	ret = cp->prepared ? sc8547_check_locked(cp, &sample->switching) : -EINVAL;
 	/* Reading the control register services the watchdog. */
 	if (!ret)
 		ret = regmap_read(cp->regmap, SC8547_CONTROL, &control);
-	if (!ret)
-		ret = sc8547_read_adc_locked(cp, sample);
 	sample->health = cp->health;
+	mutex_unlock(&cp->lock);
+	if (ret)
+		return ret;
+	/* A fault in between unprepares the pump. */
+	mutex_lock(&cp->lock);
+	ret = cp->prepared ? sc8547_read_adc_locked(cp, sample) : -EIO;
 	mutex_unlock(&cp->lock);
 	return ret;
 }
@@ -444,29 +453,23 @@ EXPORT_SYMBOL_GPL(sc8547_read_vbus);
 void sc8547_set_phy_handler(struct sc8547 *cp, void (*handler)(void *data),
 			    void *data)
 {
-	mutex_lock(&cp->lock);
+	mutex_lock(&cp->phy_lock);
 	cp->phy_handler = handler;
 	cp->phy_data = data;
-	mutex_unlock(&cp->lock);
-	if (!handler)
-		synchronize_irq(cp->irq);
+	mutex_unlock(&cp->phy_lock);
 }
 EXPORT_SYMBOL_GPL(sc8547_set_phy_handler);
 
 static irqreturn_t sc8547_irq(int irq, void *data)
 {
 	struct sc8547 *cp = data;
-	void (*handler)(void *data);
-	void *handler_data;
 	int health;
 
-	mutex_lock(&cp->lock);
-	handler = cp->phy_handler;
-	handler_data = cp->phy_data;
-	mutex_unlock(&cp->lock);
 	/* The PHY answers the adapter within milliseconds: it goes first. */
-	if (handler)
-		handler(handler_data);
+	mutex_lock(&cp->phy_lock);
+	if (cp->phy_handler)
+		cp->phy_handler(cp->phy_data);
+	mutex_unlock(&cp->phy_lock);
 	mutex_lock(&cp->lock);
 	health = cp->health;
 	sc8547_check_locked(cp, NULL);
@@ -655,9 +658,9 @@ static int sc8547_probe(struct i2c_client *client)
 	if (!cp)
 		return -ENOMEM;
 	cp->dev = dev;
-	cp->irq = client->irq;
 	cp->health = POWER_SUPPLY_HEALTH_GOOD;
 	mutex_init(&cp->lock);
+	mutex_init(&cp->phy_lock);
 	ret = sc8547_parse(cp);
 	if (ret)
 		return ret;
