@@ -2054,13 +2054,24 @@ out:
 static void qcom_battmgr_pdr_notify(void *priv, int state)
 {
 	struct qcom_battmgr *battmgr = priv;
+	unsigned long flags;
 
 	if (state == SERVREG_SERVICE_STATE_UP) {
 		battmgr->service_up = true;
 		schedule_work(&battmgr->enable_work);
-	} else {
-		battmgr->service_up = false;
+		return;
 	}
+
+	battmgr->service_up = false;
+
+	/* A stopped firmware never answers: fail the waiter now. */
+	spin_lock_irqsave(&battmgr->rx_lock, flags);
+	if (battmgr->pending) {
+		battmgr->error = -ENOTCONN;
+		battmgr->pending = false;
+		complete(&battmgr->ack);
+	}
+	spin_unlock_irqrestore(&battmgr->rx_lock, flags);
 }
 
 static const struct of_device_id qcom_battmgr_of_variants[] = {
