@@ -2094,28 +2094,30 @@ static u32 qcom_battmgr_oplus_input_limit_ma(u32 type)
 	switch (qcom_battmgr_oplus_usb_type(type)) {
 	case POWER_SUPPLY_USB_TYPE_CDP:
 		return 1500;
-	case POWER_SUPPLY_USB_TYPE_DCP:
-	case POWER_SUPPLY_USB_TYPE_ACA:
-	case POWER_SUPPLY_USB_TYPE_C:
 	case POWER_SUPPLY_USB_TYPE_PD:
 	case POWER_SUPPLY_USB_TYPE_PD_DRP:
 	case POWER_SUPPLY_USB_TYPE_PD_PPS:
-	case POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID:
 		return 2000;
+	case POWER_SUPPLY_USB_TYPE_DCP:
+	case POWER_SUPPLY_USB_TYPE_ACA:
+	case POWER_SUPPLY_USB_TYPE_C:
+	case POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID:
+		return 3000;
 	default:
 		return 500;
 	}
 }
 
 static const u32 qcom_battmgr_oplus_input_steps_ma[] = {
-	500, 900, 1200, 1350, 1500, 1750, 2000,
+	500, 900, 1200, 1350, 1500, 1750, 2000, 2500, 3000,
 };
 
 /*
  * The firmware holds every source at 500 mA until the host raises the
  * limit. Ramp to the limit of the charger type as the stock kernel does:
  * one step at a time, stepping back once VBUS collapses or sags below
- * what the battery needs.
+ * what the battery needs. A wall charger tells nothing of its capacity,
+ * so it gets the top step and the ramp stops where it gives out.
  */
 static int qcom_battmgr_oplus_ramp_input(struct qcom_battmgr *battmgr)
 {
