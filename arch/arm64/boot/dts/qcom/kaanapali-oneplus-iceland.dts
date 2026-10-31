@@ -991,6 +991,7 @@
 
 		mode-switch;
 		orientation-switch;
+		#mux-state-cells = <1>;
 
 		ports {
 			#address-cells = <1>;
@@ -1004,6 +1005,25 @@
 				};
 			};
 		};
+	};
+};
+
+&i2c12 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	charge_pump_second: charge-pump@6a {
+		compatible = "southchip,sc8547d";
+		reg = <0x6a>;
+
+		interrupts-extended = <&tlmm 3 IRQ_TYPE_EDGE_FALLING>;
+		pinctrl-0 = <&cp_second_irq_default>;
+		pinctrl-names = "default";
+
+		southchip,vbat-ovp-microvolt = <4850000>;
+		southchip,vbus-ovp-microvolt = <10500000>;
+		southchip,ibus-ocp-microamp = <3600000>;
+		southchip,switching-frequency-hz = <600000>;
 	};
 };
 
@@ -1028,6 +1048,50 @@
 		vin-supply = <&vph_pwr>;
 		enable-gpios = <&tlmm 1 GPIO_ACTIVE_HIGH>;
 	};
+};
+
+&i2c_hub_0 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	charge_pump_main: charge-pump@6a {
+		compatible = "southchip,sc8547d";
+		reg = <0x6a>;
+
+		interrupts-extended = <&tlmm 0 IRQ_TYPE_EDGE_FALLING>;
+		pinctrl-0 = <&cp_main_irq_default>;
+		pinctrl-names = "default";
+
+		southchip,vbat-ovp-microvolt = <4850000>;
+		southchip,vbus-ovp-microvolt = <10500000>;
+		southchip,ibus-ocp-microamp = <3600000>;
+		southchip,switching-frequency-hz = <500000>;
+		southchip,always-otg-en;
+
+		vooc-phy {
+			mux-states = <&wcd_usbss 1>;
+
+			io-channels = <&pmk8850_vadc 0x2747>,
+				      <&pmk8850_vadc 0x2744>,
+				      <&pmk8850_vadc 0x274d>,
+				      <&pmk8850_vadc 0x274b>;
+			io-channel-names = "usb-connector",
+					   "battery-connector",
+					   "board",
+					   "mos";
+
+			southchip,secondary-pump = <&charge_pump_second>;
+
+			/* Battery voltage and current pairs the adapter reads. */
+			oneplus,svooc-battery-curve = <4664000 1100000>,
+						      <4664000 2600000>,
+						      <3414000 7300000>;
+		};
+	};
+};
+
+&i2c_master_hub {
+	status = "okay";
 };
 
 &mdss {
@@ -1396,6 +1460,20 @@
 
 &tlmm {
 	gpio-reserved-ranges = <36 4>;
+
+	cp_main_irq_default: cp-main-irq-state {
+		pins = "gpio0";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	cp_second_irq_default: cp-second-irq-state {
+		pins = "gpio3";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
 
 	wlan_en: wlan-en-state {
 		pins = "gpio16";
