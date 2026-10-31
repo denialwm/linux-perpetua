@@ -35,7 +35,8 @@ Perpetua since the design was written:
   (request matching through the input limit policy) landed on 2026-10-31.
 - The Kaanapali firmware holds every source at 500 mA and has no automatic
   limit, so battmgr ramps the input limit by charger type as stock does
-  (A8): a 10 W wall charger (type 9, Apple brick) draws 2 A at 5 V.
+  (A8, A9): a wall charger reporting as an Apple brick (type 9) draws
+  3 A at 4.93 V, 14.7 W, where stock stops at 10 W.
 - Iceland has no ADC, pump or USBSS mux nodes yet.
 
 The commit split in section 4 still applies.
@@ -544,6 +545,7 @@ final DT and opt-in steps.
 7. qcom_battmgr: oplus: notify the usb supply on Type-C and plug events.
 8. qcom_battmgr: oplus: set the input limit by charger type (stock
    steps and VBUS checks; 0 and -1 stay the host's suspend vote).
+9. qcom_battmgr: oplus: let wall chargers ramp to 3 A.
 
 **B. ADC**
 8. dt-bindings: adc5-gen3: add Gen4.
