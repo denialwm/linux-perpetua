@@ -60,6 +60,13 @@ properties:
   power-domains:
     maxItems: 1
 
+  qcom,shared-se:
+    type: boolean
+    description:
+      The serial engine is shared with another execution environment, such
+      as a coprocessor, which drives the same bus. Each transfer then locks
+      the engine through GPI DMA, so the two never interleave.
+
   reg:
     maxItems: 1
 
