@@ -2189,7 +2189,7 @@ static int cs35l43_dai_set_sysclk(struct snd_soc_dai *dai,
 	return 0;
 }
 
-int cs35l43_component_write(struct snd_soc_component *component,
+static int cs35l43_component_write(struct snd_soc_component *component,
 				unsigned int reg, unsigned int val)
 {
 	struct cs35l43_private *cs35l43 =
@@ -2203,7 +2203,7 @@ int cs35l43_component_write(struct snd_soc_component *component,
 	return ret;
 }
 
-unsigned int cs35l43_component_read(struct snd_soc_component *component,
+static unsigned int cs35l43_component_read(struct snd_soc_component *component,
 				unsigned int reg)
 {
 	struct cs35l43_private *cs35l43 =
