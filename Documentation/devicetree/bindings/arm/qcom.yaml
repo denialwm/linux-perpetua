@@ -176,6 +176,7 @@ properties:
               - oneplus,iceland
               - qcom,kaanapali-mtp
               - qcom,kaanapali-qrd
+              - xiaomi,pudding
           - const: qcom,kaanapali
 
       - items:
