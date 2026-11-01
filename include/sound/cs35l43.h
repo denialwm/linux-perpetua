@@ -121,6 +121,7 @@ struct cs35l43_private {
 	int hibernate_delay_ms;
 	int ultrasonic_mode;
 	int slot_width;
+	int slots;
 	int delta_requested;
 	int delta_applied;
 	int low_pwr_mode;

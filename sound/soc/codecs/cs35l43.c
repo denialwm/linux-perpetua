@@ -2018,11 +2018,15 @@ static const struct cs35l43_global_fs_config cs35l43_fs_rates[] = {
 	{ 32000,	0x13 },
 };
 
+static int cs35l43_component_set_sysclk(struct snd_soc_component *component,
+				int clk_id, int source, unsigned int freq,
+				int dir);
+
 static int cs35l43_pcm_hw_params(struct snd_pcm_substream *substream,
 				 struct snd_pcm_hw_params *params,
 				 struct snd_soc_dai *dai)
 {
-	int i;
+	int i, ret;
 	unsigned int rate = params_rate(params);
 	u8 asp_width, asp_wl;
 	struct cs35l43_private *cs35l43 =
@@ -2053,6 +2057,15 @@ static int cs35l43_pcm_hw_params(struct snd_pcm_substream *substream,
 			    cs35l43->slot_width : params_physical_width(params);
 	dev_dbg(cs35l43->dev, "%s\n wl=%d, width=%d, rate=%d", __func__,
 				asp_wl, asp_width, rate);
+
+	/*
+	 * The PLL runs from the bit clock. Machine drivers that never set the
+	 * codec's clock, such as Qualcomm's, leave it to the stream.
+	 */
+	ret = cs35l43_component_set_sysclk(dai->component, CS35L43_PLLSRC_SCLK, 0,
+					   rate * asp_width * (cs35l43->slots ?: 2), 0);
+	if (ret)
+		return ret;
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		regmap_update_bits(cs35l43->regmap, CS35L43_ASP_CONTROL2,
@@ -2544,6 +2557,7 @@ static int cs35l43_dai_set_tdm_slot(struct snd_soc_dai *dai,
 			snd_soc_component_get_drvdata(dai->component);
 
 	cs35l43->slot_width = slot_width;
+	cs35l43->slots = slots;
 
 	return 0;
 }
