@@ -2477,6 +2477,12 @@ static int cs35l43_handle_of_data(struct device *dev,
 	if (ret < 0)
 		pdata->dsp_part_name = "cs35l43";
 
+	/*
+	 * As on CS35L56: the firmware UID names the board's tuning files, and
+	 * the amplifier's sound-name-prefix picks each amplifier's own.
+	 */
+	of_property_read_string(np, "cirrus,firmware-uid", &cs35l43->dsp.system_name);
+
 	cs35l43->low_pwr_mode = of_property_read_bool(np, "cirrus,low-pwr-mode-standby");
 
 	return 0;

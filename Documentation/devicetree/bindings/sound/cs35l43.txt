@@ -41,6 +41,11 @@ Optional properties:
   - cirrus,classh-disable : Boolean which will disable Class H tracking and
   set Boost voltage to the value in the 'boost-ctl-millivolt' property
 
+  - cirrus,firmware-uid : String naming the board's DSP firmware, as on
+  CS35L56: cirrus/cs35l43-dsp1-spk-prot-<uid>.wmfw, and a tuning per
+  amplifier in cirrus/cs35l43-dsp1-spk-prot-<uid>-<sound-name-prefix>.bin.
+  Without it the driver loads cs35l43-dsp1-spk-prot.wmfw and .bin.
+
   - cirrus,hw-noise-gate-select : Hardware Noise Gate feature. Each bit selects
   a different block for detection.
 
