@@ -2,6 +2,7 @@
 
 #include <linux/aperture.h>
 #include <linux/clk.h>
+#include <linux/interconnect.h>
 #include <linux/minmax.h>
 #include <linux/of_address.h>
 #include <linux/of_clk.h>
@@ -566,6 +567,46 @@ static int simpledrm_device_attach_genpd(struct simpledrm_device *sdev)
 }
 #endif
 
+#if defined CONFIG_OF && defined CONFIG_INTERCONNECT
+/*
+ * The bootloader votes for the bandwidth its scanout needs. Once the
+ * interconnect providers sync their state those votes are dropped and the
+ * display controller underflows, so hold every listed path for as long as
+ * the framebuffer is in use. The bandwidth the boot mode needs is unknown,
+ * so request the peak.
+ */
+static int simpledrm_device_attach_icc(struct simpledrm_device *sdev)
+{
+	struct device *dev = sdev->sysfb.dev.dev;
+	int i, count, ret;
+
+	count = of_count_phandle_with_args(dev->of_node, "interconnects",
+					   "#interconnect-cells");
+	if (count < 0)
+		return 0;
+
+	/* Each path is a source and destination pair. */
+	for (i = 0; i < count / 2; i++) {
+		struct icc_path *path = devm_of_icc_get_by_index(dev, i);
+
+		if (IS_ERR(path))
+			return dev_err_probe(dev, PTR_ERR(path),
+					     "failed to get interconnect path %d\n", i);
+		ret = icc_set_bw(path, 0, UINT_MAX);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "failed to vote interconnect path %d\n", i);
+	}
+
+	return 0;
+}
+#else
+static int simpledrm_device_attach_icc(struct simpledrm_device *sdev)
+{
+	return 0;
+}
+#endif
+
 /*
  * Modesetting
  */
@@ -654,6 +695,9 @@ static struct simpledrm_device *simpledrm_device_create(struct drm_driver *drv,
 	if (ret)
 		return ERR_PTR(ret);
 	ret = simpledrm_device_attach_genpd(sdev);
+	if (ret)
+		return ERR_PTR(ret);
+	ret = simpledrm_device_attach_icc(sdev);
 	if (ret)
 		return ERR_PTR(ret);
 
