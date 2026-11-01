@@ -1668,10 +1668,17 @@ static int gpi_create_i2c_tre(struct gchan *chan, struct gpi_desc *desc,
 
 		tre->dword[3] = u32_encode_bits(TRE_TYPE_GO, TRE_FLAGS_TYPE);
 
-		if (i2c->multi_msg)
+		/*
+		 * The GO of a read is the whole tx descriptor: without an event
+		 * of its own it would stay queued, and the next tx event would
+		 * complete it in place of its own descriptor.
+		 */
+		if (i2c->multi_msg) {
 			tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_LINK);
-		else
+			tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_IEOB);
+		} else {
 			tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_CHAIN);
+		}
 	}
 
 	if (i2c->op == I2C_READ || i2c->multi_msg == false) {

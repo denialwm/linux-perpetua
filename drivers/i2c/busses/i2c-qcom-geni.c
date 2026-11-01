@@ -789,11 +789,12 @@ skip_tx_dma_map:
 		goto err_config;
 	}
 
-	desc->callback_result = i2c_gpi_cb_result;
-	desc->callback_param = gi2c;
-
-	if (!((msgs[msg_idx].flags & I2C_M_RD) && op == I2C_WRITE))
+	/* The rx descriptor of a read reports its end, not the tx GO */
+	if (!((msgs[msg_idx].flags & I2C_M_RD) && op == I2C_WRITE)) {
+		desc->callback_result = i2c_gpi_cb_result;
+		desc->callback_param = gi2c;
 		gi2c_gpi_xfer->msg_idx_cnt++;
+	}
 
 	cookie = dmaengine_submit(desc);
 	if (dma_submit_error(cookie)) {
