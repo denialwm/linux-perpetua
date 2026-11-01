@@ -244,6 +244,86 @@ static int cs35l43_delta_select_put(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+/*
+ * The protection firmware marks its calibration read-only, as its own
+ * calibration fills it, so a stored calibration goes to DSP memory directly.
+ */
+static int cs35l43_write_cal_word(struct cs_dsp *dsp, const char *name, u32 val)
+{
+	struct cs_dsp_coeff_ctl *ctl;
+
+	ctl = cs_dsp_get_ctl(dsp, name, WMFW_ADSP2_XM, CS35L43_ALG_ID_PROT);
+	if (!ctl)
+		return -ENOENT;
+
+	return cs_dsp_write_data_word(dsp, WMFW_ADSP2_XM,
+				      ctl->alg_region.base + ctl->offset, val);
+}
+
+/* Each firmware download starts uncalibrated: call after the DSP runs. */
+static void cs35l43_apply_calibration(struct cs35l43_private *cs35l43)
+{
+	const struct cirrus_amp_cal_data *cal = &cs35l43->cal_data;
+	struct cs_dsp *dsp = &cs35l43->dsp.cs_dsp;
+	int ret;
+
+	if (!cs35l43->cal_data_valid)
+		return;
+
+	mutex_lock(&dsp->pwr_lock);
+	if (!dsp->running) {
+		mutex_unlock(&dsp->pwr_lock);
+		return;
+	}
+	ret = cs35l43_write_cal_word(dsp, "CAL_AMBIENT", cal->calAmbient);
+	if (!ret)
+		ret = cs35l43_write_cal_word(dsp, "CAL_R", cal->calR);
+	if (!ret)
+		ret = cs35l43_write_cal_word(dsp, "CAL_STATUS", cal->calStatus);
+	if (!ret)
+		ret = cs35l43_write_cal_word(dsp, "CAL_CHECKSUM",
+					     cal->calR + cal->calStatus);
+	mutex_unlock(&dsp->pwr_lock);
+
+	if (ret)
+		dev_err(cs35l43->dev, "Failed to apply calibration: %d\n", ret);
+	else
+		dev_info(cs35l43->dev, "Calibration applied: R %u\n", cal->calR);
+}
+
+static int cs35l43_cal_data_get(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct cs35l43_private *cs35l43 = snd_soc_component_get_drvdata(component);
+
+	memcpy(ucontrol->value.bytes.data, &cs35l43->cal_data,
+	       sizeof(cs35l43->cal_data));
+
+	return 0;
+}
+
+/* As CS35L56's CAL_DATA: the board's factory calibration, set once. */
+static int cs35l43_cal_data_put(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct cs35l43_private *cs35l43 = snd_soc_component_get_drvdata(component);
+	const struct cirrus_amp_cal_data *cal = (const void *)ucontrol->value.bytes.data;
+
+	if (cal->calStatus != CS35L43_CAL_STATUS_SUCCESS || !cal->calR)
+		return -EINVAL;
+
+	if (cs35l43->cal_data_valid)
+		return memcmp(cal, &cs35l43->cal_data, sizeof(*cal)) ? -EACCES : 0;
+
+	cs35l43->cal_data = *cal;
+	cs35l43->cal_data_valid = true;
+	cs35l43_apply_calibration(cs35l43);
+
+	return 1;
+}
+
 static int cs35l43_ultrasonic_mode_get(struct snd_kcontrol *kcontrol,
 				   struct snd_ctl_elem_value *ucontrol)
 {
@@ -433,6 +513,8 @@ static const struct snd_kcontrol_new cs35l43_aud_controls[] = {
 	SOC_SINGLE_RANGE("ASPRX3 Slot Position", CS35L43_ASP_FRAME_CONTROL5, 16, 0, 7, 0),
 	SOC_SINGLE_EXT("Delta Select", SND_SOC_NOPM, 0, 10, 0,
 			cs35l43_delta_select_get, cs35l43_delta_select_put),
+	SND_SOC_BYTES_EXT("CAL_DATA", sizeof(struct cirrus_amp_cal_data),
+			  cs35l43_cal_data_get, cs35l43_cal_data_put),
 	WM_ADSP2_PRELOAD_SWITCH("DSP1", 1),
 	WM_ADSP_FW_CONTROL("DSP1", 0),
 };
@@ -973,6 +1055,7 @@ static int cs35l43_dsp_preload_ev(struct snd_soc_dapm_widget *w,
 			return 0;
 		regmap_write(cs35l43->regmap, CS35L43_PWRMGT_CTL, CS35L43_MEM_RDY);
 		wm_adsp_event(w, kcontrol, event);
+		cs35l43_apply_calibration(cs35l43);
 
 		if (cs35l43->low_pwr_mode == CS35L43_LOW_PWR_MODE_STANDBY)
 			regmap_write(cs35l43->regmap, CS35L43_DSP_VIRTUAL1_MBOX_1,

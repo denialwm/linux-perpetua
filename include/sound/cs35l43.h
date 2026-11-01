@@ -13,6 +13,7 @@
 #ifndef __CS35L43_H
 #define __CS35L43_H
 
+#include <sound/cs-amp-lib.h>
 
 #define CS35L43_RX_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE)
 #define CS35L43_TX_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE \
@@ -127,6 +128,8 @@ struct cs35l43_private {
 	int low_pwr_mode;
 	bool first_event;
 	bool write_seq_initialized;
+	bool cal_data_valid;
+	struct cirrus_amp_cal_data cal_data;
 	unsigned int max_spi_freq;
 	struct gpio_desc *reset_gpio;
 	struct mutex hb_lock;
