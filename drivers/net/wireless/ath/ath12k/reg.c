@@ -310,7 +310,13 @@ int ath12k_regd_update(struct ath12k *ar, bool init)
 		ath12k_mac_update_freq_range(ar, freq_low, freq_high);
 	}
 
-	if (supported_bands & WMI_HOST_WLAN_5GHZ_CAP && !ar->supports_6ghz) {
+	/* A radio can carry both the 5 GHz and the 6 GHz band, as single-pdev
+	 * chips do: take the 5 GHz range whenever the radio has that band, as
+	 * at registration. Otherwise a country without 6 GHz rules leaves only
+	 * the 2.4 GHz channels in the firmware's scan channel list.
+	 */
+	if (supported_bands & WMI_HOST_WLAN_5GHZ_CAP &&
+	    ar->mac.sbands[NL80211_BAND_5GHZ].channels) {
 		if (ab->hw_params->single_pdev_only) {
 			phy_id = ar->pdev->cap.band[WMI_HOST_WLAN_5GHZ_CAP].phy_id;
 			reg_cap = &ab->hal_reg_cap[phy_id];
