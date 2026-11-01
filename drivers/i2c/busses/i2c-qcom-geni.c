@@ -138,6 +138,7 @@ struct geni_i2c_dev {
 	struct dma_chan *rx_c;
 	bool no_dma;
 	bool gpi_mode;
+	bool shared_se;
 	bool is_tx_multi_desc_xfer;
 	u32 num_msgs;
 	struct geni_i2c_gpi_multi_desc_xfer i2c_multi_desc_config;
@@ -841,6 +842,65 @@ out:
 	return ret;
 }
 
+static void i2c_gpi_lock_cb(void *cb, const struct dmaengine_result *result)
+{
+	struct geni_i2c_dev *gi2c = cb;
+
+	if (result->result != DMA_TRANS_NOERROR)
+		gi2c->err = -EIO;
+
+	complete(&gi2c->done);
+}
+
+/*
+ * Takes (@op I2C_LOCK) or gives back (I2C_UNLOCK) a serial engine shared with
+ * another execution environment, which waits on its own lock meanwhile.
+ */
+static int geni_i2c_gpi_lock(struct geni_i2c_dev *gi2c,
+			     struct dma_slave_config *config, enum i2c_op op)
+{
+	struct gpi_i2c_config *peripheral = config->peripheral_config;
+	struct dma_async_tx_descriptor *desc;
+	unsigned long time_left;
+	dma_cookie_t cookie;
+	int ret;
+
+	peripheral->op = op;
+	ret = dmaengine_slave_config(gi2c->tx_c, config);
+	if (ret)
+		goto out;
+
+	desc = dmaengine_prep_slave_single(gi2c->tx_c, 0, 0, DMA_MEM_TO_DEV,
+					   DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
+	if (!desc) {
+		ret = -EIO;
+		goto out;
+	}
+
+	desc->callback_result = i2c_gpi_lock_cb;
+	desc->callback_param = gi2c;
+
+	gi2c->err = 0;
+	reinit_completion(&gi2c->done);
+	cookie = dmaengine_submit(desc);
+	if (dma_submit_error(cookie)) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	dma_async_issue_pending(gi2c->tx_c);
+	time_left = wait_for_completion_timeout(&gi2c->done, XFER_TIMEOUT);
+	ret = time_left ? gi2c->err : -ETIMEDOUT;
+	if (ret)
+		dmaengine_terminate_sync(gi2c->tx_c);
+
+out:
+	if (ret)
+		dev_err(gi2c->se.dev, "%s of the shared engine failed: %d\n",
+			op == I2C_LOCK ? "lock" : "unlock", ret);
+	return ret;
+}
+
 static int geni_i2c_gpi_xfer(struct geni_i2c_dev *gi2c, struct i2c_msg msgs[], int num)
 {
 	struct dma_slave_config config = {};
@@ -866,6 +926,12 @@ static int geni_i2c_gpi_xfer(struct geni_i2c_dev *gi2c, struct i2c_msg msgs[], i
 	trace_geni_i2c_bus_setup(gi2c->se.dev, gi2c->clk_freq_out,
 				 itr->clk_div, itr->t_high_cnt,
 				 itr->t_low_cnt, itr->t_cycle_cnt);
+
+	if (gi2c->shared_se) {
+		ret = geni_i2c_gpi_lock(gi2c, &config, I2C_LOCK);
+		if (ret)
+			return ret;
+	}
 
 	gi2c->num_msgs = num;
 	gi2c->is_tx_multi_desc_xfer = false;
@@ -950,6 +1016,9 @@ static int geni_i2c_gpi_xfer(struct geni_i2c_dev *gi2c, struct i2c_msg msgs[], i
 			geni_i2c_gpi_multi_desc_unmap(gi2c, msgs, &peripheral);
 	}
 
+	if (gi2c->shared_se)
+		geni_i2c_gpi_lock(gi2c, &config, I2C_UNLOCK);
+
 	return num;
 
 err:
@@ -960,6 +1029,10 @@ err:
 		geni_i2c_gpi_multi_desc_unmap(gi2c, msgs, &peripheral);
 	else
 		geni_i2c_gpi_unmap(gi2c, &msgs[i], tx_buf, tx_addr, rx_buf, rx_addr);
+
+	/* The other owner waits until the engine is given back */
+	if (gi2c->shared_se)
+		geni_i2c_gpi_lock(gi2c, &config, I2C_UNLOCK);
 
 	return ret;
 }
@@ -1081,6 +1154,13 @@ static int geni_i2c_init(struct geni_i2c_dev *gi2c)
 	}
 
 	proto = geni_se_read_proto(&gi2c->se);
+	if (gi2c->shared_se && proto != GENI_SE_I2C) {
+		/* Loading firmware would pull the engine from under the other owner */
+		ret = dev_err_probe(gi2c->se.dev, -ENXIO,
+				    "shared serial engine runs protocol %d, not I2C\n", proto);
+		goto err;
+	}
+
 	if (proto == GENI_SE_INVALID_PROTO) {
 		ret = geni_load_se_firmware(&gi2c->se, GENI_SE_I2C);
 		if (ret) {
@@ -1097,6 +1177,13 @@ static int geni_i2c_init(struct geni_i2c_dev *gi2c)
 		gi2c->no_dma = true;
 	} else {
 		fifo_disable = readl_relaxed(gi2c->se.base + GENI_IF_DISABLE_RO) & FIFO_IF_DISABLE;
+	}
+
+	if (gi2c->shared_se && !fifo_disable) {
+		/* Only GPI DMA can lock the engine against the other owner */
+		ret = dev_err_probe(gi2c->se.dev, -ENXIO,
+				    "shared serial engine is not in GPI DMA mode\n");
+		goto err;
 	}
 
 	if (fifo_disable) {
@@ -1177,6 +1264,8 @@ static int geni_i2c_probe(struct platform_device *pdev)
 		dev_info(dev, "Bus frequency not specified, default to 100kHz.\n");
 		gi2c->clk_freq_out = I2C_MAX_STANDARD_MODE_FREQ;
 	}
+
+	gi2c->shared_se = device_property_read_bool(dev, "qcom,shared-se");
 
 	if (has_acpi_companion(dev))
 		ACPI_COMPANION_SET(&gi2c->adap.dev, ACPI_COMPANION(dev));
