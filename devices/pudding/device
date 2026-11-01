@@ -1,0 +1,5 @@
+# Xiaomi 17 (pudding)
+name='Xiaomi 17'
+vendor=qcom
+soc=kaanapali
+boot=android-gki
