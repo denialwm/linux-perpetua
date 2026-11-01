@@ -40,6 +40,7 @@
  */
 
 #include <linux/completion.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
 #include <linux/input.h>
@@ -98,6 +99,27 @@
 
 #define SYNA_TCM_REPORT_IDENTIFY		0x10
 #define SYNA_TCM_REPORT_TOUCH			0x11
+/* A raw sensor frame, from firmware that leaves touch processing to the host. */
+#define SYNA_TCM_REPORT_FRAME			0xc0
+
+/* Raw frames kept for debugfs, about 7 s at 135 Hz. */
+#define SYNA_TCM_FRAME_RING			1024
+
+/*
+ * A raw frame is a 64-byte header followed by the mutual capacitance image:
+ * signed 16-bit differences from the untouched level, image row after image
+ * row. Along a row the position runs in y, from row to row in x; the header
+ * gives the nodes in a row and the number of rows. A finger peaks near 1000
+ * over about 3 x 3 nodes, noise stays within 30, and a lifting finger falls
+ * under 100 within a frame.
+ */
+#define SYNA_TCM_FRAME_HEADER_SIZE		64
+#define SYNA_TCM_FRAME_COLS			48
+#define SYNA_TCM_FRAME_ROWS			49
+#define SYNA_TCM_FRAME_TOUCH_LEVEL		200
+#define SYNA_TCM_FRAME_NOISE_LEVEL		30
+/* Nodes on each side of a finger's peak that its position is weighed over. */
+#define SYNA_TCM_FRAME_REACH			2
 
 #define SYNA_TCM_MODE_APPLICATION		0x01
 #define SYNA_TCM_MODE_HOST_DOWNLOAD		0x02
@@ -135,8 +157,10 @@ enum syna_tcm_touch_code {
 	SYNA_TCM_TOUCH_OBJECT_N_CLASSIFICATION = 0x07,
 	SYNA_TCM_TOUCH_OBJECT_N_X_POSITION = 0x08,
 	SYNA_TCM_TOUCH_OBJECT_N_Y_POSITION = 0x09,
+	SYNA_TCM_TOUCH_GESTURE_ID = 0x10,
 	SYNA_TCM_TOUCH_NUM_OF_ACTIVE_OBJECTS = 0x18,
 	SYNA_TCM_TOUCH_NUM_OF_CPU_CYCLES_USED_SINCE_LAST_FRAME = 0x19,
+	SYNA_TCM_TOUCH_GESTURE_DATA = 0x1b,
 	SYNA_TCM_TOUCH_TUNING_GAUSSIAN_WIDTHS = 0x80,
 	SYNA_TCM_TOUCH_TUNING_0D_BUTTONS_VARIANCE = 0x82,
 };
@@ -186,11 +210,17 @@ struct syna_tcm {
 	struct input_dev *gesture_input;
 	struct drm_panel_follower panel_follower;
 	bool has_panel, panel_off, gesture_mode, fod_contact, wake_suspend;
+	/*
+	 * The firmware took the factory layout with fingerprint-area gestures.
+	 * Otherwise it kept its own, which leads with the gesture id alone.
+	 */
+	bool fod_layout;
 	u32 gesture_entries, gesture_exits, double_taps, fod_downs, fod_ups;
 	u32 gesture_errors;
 	u64 mode_us;
-	/* Report rate code set with the panel on, 0 = firmware default.
-	 * Starts from syna,report-rate. Protected by reset_lock.
+	/* Report rate code set with the panel on, or after each reset when
+	 * there is no panel to follow; 0 = firmware default. Starts from
+	 * syna,report-rate. Protected by reset_lock.
 	 */
 	u16 report_rate;
 	struct touchscreen_properties prop;
@@ -247,6 +277,19 @@ struct syna_tcm {
 	unsigned int max_y;
 	unsigned int max_objects;
 	struct syna_tcm_object *objects;
+
+	/* Contacts found in a raw frame and the slots they are tracked in. */
+	struct input_mt_pos *frame_pos;
+	int *frame_slots;
+
+	/* When the controller last asked to be read. */
+	ktime_t irq_time;
+
+	/* Raw frames for debugfs: each a le64 time in ns, then the payload. */
+	u8 *frames;
+	unsigned int frame_length;
+	u64 frame_count;
+	wait_queue_head_t frame_wait;
 };
 
 /*
@@ -278,6 +321,7 @@ static const u8 syna_tcm_gesture_config[] = {
 };
 
 static int syna_tcm_apply_mode(struct syna_tcm *ts, bool screen_off);
+static void syna_tcm_apply_report_rate(struct syna_tcm *ts);
 
 static int syna_tcm_grow(u8 **buf, unsigned int *size, unsigned int need)
 {
@@ -480,7 +524,7 @@ static void syna_tcm_release_contacts(struct syna_tcm *ts)
 static bool syna_tcm_code_has_width(u8 code)
 {
 	return (code >= SYNA_TCM_TOUCH_TIMESTAMP &&
-		code <= SYNA_TCM_TOUCH_NUM_OF_CPU_CYCLES_USED_SINCE_LAST_FRAME) ||
+		code <= SYNA_TCM_TOUCH_GESTURE_DATA) ||
 	       (code >= SYNA_TCM_TOUCH_TUNING_GAUSSIAN_WIDTHS &&
 		code <= SYNA_TCM_TOUCH_TUNING_0D_BUTTONS_VARIANCE) ||
 	       code == 0xc6 || code == 0xc7;
@@ -651,10 +695,27 @@ static int syna_tcm_parse_touch_report(struct syna_tcm *ts)
  * firmware's own coordinates. Ordinary MT reports are suppressed in gesture
  * mode. Never generate a contact from a timer, wake key, or cached location.
  */
+static void syna_tcm_report_double_tap(struct syna_tcm *ts)
+{
+	ts->double_taps++;
+	pm_wakeup_event(&ts->spi->dev, 500);
+	input_report_key(ts->gesture_input, KEY_WAKEUP, 1);
+	input_sync(ts->gesture_input);
+	input_report_key(ts->gesture_input, KEY_WAKEUP, 0);
+	input_sync(ts->gesture_input);
+}
+
 static bool syna_tcm_report_gesture(struct syna_tcm *ts)
 {
 	struct syna_tcm_gesture gesture;
 	int error;
+
+	if (!ts->fod_layout) {
+		if (ts->gesture_mode && ts->payload_length &&
+		    ts->in[SYNA_TCM_HEADER_SIZE] == SYNA_TCM_GESTURE_DTAP)
+			syna_tcm_report_double_tap(ts);
+		return ts->gesture_mode;
+	}
 
 	error = syna_tcm_decode_gesture(&ts->in[SYNA_TCM_HEADER_SIZE],
 				       ts->payload_length, ts->max_x, ts->max_y,
@@ -669,12 +730,7 @@ static bool syna_tcm_report_gesture(struct syna_tcm *ts)
 	}
 
 	if (gesture.code == SYNA_TCM_GESTURE_DTAP && ts->gesture_mode) {
-		ts->double_taps++;
-		pm_wakeup_event(&ts->spi->dev, 500);
-		input_report_key(ts->gesture_input, KEY_WAKEUP, 1);
-		input_sync(ts->gesture_input);
-		input_report_key(ts->gesture_input, KEY_WAKEUP, 0);
-		input_sync(ts->gesture_input);
+		syna_tcm_report_double_tap(ts);
 	} else if (gesture.code == SYNA_TCM_GESTURE_FOD_DOWN &&
 		   (ts->gesture_mode || ts->fod_contact)) {
 		if (!ts->fod_contact) {
@@ -717,6 +773,7 @@ static void syna_tcm_report_touch(struct syna_tcm *ts)
 		return;
 	}
 
+	input_set_timestamp(ts->input, ts->irq_time);
 	ts->fod_contact = false;
 	for (i = 0; i < ts->max_objects; i++) {
 		object = &ts->objects[i];
@@ -807,6 +864,167 @@ static void syna_tcm_handle_response(struct syna_tcm *ts)
 	complete(&ts->cmd_done);
 }
 
+struct syna_tcm_image {
+	const u8 *nodes;
+	int rows;
+	int cols;
+};
+
+static int syna_tcm_frame_node(const struct syna_tcm_image *image,
+			       int row, int col)
+{
+	if (row < 0 || row >= image->rows || col < 0 || col >= image->cols)
+		return 0;
+
+	return (s16)get_unaligned_le16(&image->nodes[2 * (row * image->cols + col)]);
+}
+
+/* Maps a position in 1/256 nodes, node centres at n + 128, to 0..max. */
+static unsigned int syna_tcm_frame_scale(int pos, unsigned int nodes,
+					 unsigned int max)
+{
+	return clamp((pos + 128) * (int)(max + 1) / (int)(nodes * 256), 0, (int)max);
+}
+
+/*
+ * A finger is a node above the touch level that no neighbour exceeds (of
+ * equal ones the first in the image), at the centroid of the nodes above
+ * noise within reach of it. The reach takes in the whole finger: a 3 x 3
+ * patch drops a row of it each time the peak moves to the next node, and
+ * the position jumps by a quarter node. The input core tracks the fingers
+ * from frame to frame.
+ */
+static void syna_tcm_report_frame(struct syna_tcm *ts)
+{
+	const u8 *header = &ts->in[SYNA_TCM_HEADER_SIZE];
+	struct syna_tcm_image image = {
+		.nodes = &header[SYNA_TCM_FRAME_HEADER_SIZE],
+		.rows = header[SYNA_TCM_FRAME_ROWS],
+		.cols = header[SYNA_TCM_FRAME_COLS],
+	};
+	unsigned int count = 0;
+	int row, col, dr, dc, i;
+
+	lockdep_assert_held(&ts->io_lock);
+
+	/* With the display off only the firmware's gestures count. */
+	if (!ts->report_touch || ts->gesture_mode)
+		return;
+
+	if (ts->payload_length < SYNA_TCM_FRAME_HEADER_SIZE + 2 * image.rows * image.cols) {
+		dev_err_ratelimited(&ts->spi->dev,
+				    "frame of %u bytes is too short for %u rows of %u nodes\n",
+				    ts->payload_length, image.rows, image.cols);
+		return;
+	}
+
+	for (row = 0; row < image.rows && count < ts->max_objects; row++) {
+		for (col = 0; col < image.cols && count < ts->max_objects; col++) {
+			int value = syna_tcm_frame_node(&image, row, col);
+			int sum = 0, sum_row = 0, sum_col = 0;
+			bool peak = value >= SYNA_TCM_FRAME_TOUCH_LEVEL;
+
+			for (dr = -1; peak && dr <= 1; dr++) {
+				for (dc = -1; dc <= 1; dc++) {
+					int n = syna_tcm_frame_node(&image, row + dr, col + dc);
+
+					if (n > value || (n == value &&
+							  (dr < 0 || (dr == 0 && dc < 0))))
+						peak = false;
+				}
+			}
+			if (!peak)
+				continue;
+
+			for (dr = -SYNA_TCM_FRAME_REACH; dr <= SYNA_TCM_FRAME_REACH; dr++) {
+				for (dc = -SYNA_TCM_FRAME_REACH; dc <= SYNA_TCM_FRAME_REACH; dc++) {
+					int n = syna_tcm_frame_node(&image, row + dr, col + dc) -
+						SYNA_TCM_FRAME_NOISE_LEVEL;
+
+					if (n > 0) {
+						sum += n;
+						sum_row += n * dr;
+						sum_col += n * dc;
+					}
+				}
+			}
+
+			ts->frame_pos[count].x =
+				syna_tcm_frame_scale(row * 256 + sum_row * 256 / sum,
+						     image.rows, ts->max_x);
+			ts->frame_pos[count].y =
+				syna_tcm_frame_scale(col * 256 + sum_col * 256 / sum,
+						     image.cols, ts->max_y);
+			count++;
+		}
+	}
+
+	if (input_mt_assign_slots(ts->input, ts->frame_slots, ts->frame_pos,
+				  count, ts->max_x / 4))
+		return;
+
+	input_set_timestamp(ts->input, ts->irq_time);
+	for (i = 0; i < count; i++) {
+		input_mt_slot(ts->input, ts->frame_slots[i]);
+		input_mt_report_slot_state(ts->input, MT_TOOL_FINGER, true);
+		touchscreen_report_pos(ts->input, &ts->prop, ts->frame_pos[i].x,
+				       ts->frame_pos[i].y, true);
+	}
+
+	input_mt_sync_frame(ts->input);
+	input_sync(ts->input);
+}
+
+static void syna_tcm_handle_frame(struct syna_tcm *ts)
+{
+	unsigned int record, slot;
+
+	lockdep_assert_held(&ts->io_lock);
+
+	syna_tcm_report_frame(ts);
+
+	if (!ts->frames) {
+		ts->frames = kvmalloc_array(SYNA_TCM_FRAME_RING,
+					    sizeof(__le64) + ts->payload_length,
+					    GFP_KERNEL);
+		if (!ts->frames)
+			return;
+		ts->frame_length = ts->payload_length;
+		dev_info(&ts->spi->dev, "raw frames of %u bytes, %u rows of %u nodes\n",
+			 ts->frame_length,
+			 ts->in[SYNA_TCM_HEADER_SIZE + SYNA_TCM_FRAME_ROWS],
+			 ts->in[SYNA_TCM_HEADER_SIZE + SYNA_TCM_FRAME_COLS]);
+	}
+
+	if (ts->payload_length != ts->frame_length) {
+		dev_warn_ratelimited(&ts->spi->dev,
+				     "frame of %u bytes, expected %u\n",
+				     ts->payload_length, ts->frame_length);
+		return;
+	}
+
+	record = sizeof(__le64) + ts->frame_length;
+	div_u64_rem(ts->frame_count, SYNA_TCM_FRAME_RING, &slot);
+	put_unaligned_le64(ktime_to_ns(ts->irq_time), &ts->frames[slot * record]);
+	memcpy(&ts->frames[slot * record + sizeof(__le64)],
+	       &ts->in[SYNA_TCM_HEADER_SIZE], ts->frame_length);
+	ts->frame_count++;
+	wake_up_interruptible(&ts->frame_wait);
+}
+
+/*
+ * The time the controller asks to be read is when its report was ready; the
+ * read that follows waits for the thread and the bus.
+ */
+static irqreturn_t syna_tcm_hardirq(int irq, void *data)
+{
+	struct syna_tcm *ts = data;
+
+	ts->irq_time = ktime_get();
+
+	return IRQ_WAKE_THREAD;
+}
+
 static irqreturn_t syna_tcm_irq(int irq, void *data)
 {
 	struct syna_tcm *ts = data;
@@ -834,6 +1052,11 @@ static irqreturn_t syna_tcm_irq(int irq, void *data)
 		syna_tcm_handle_identify(ts);
 	else if (ts->code == SYNA_TCM_REPORT_TOUCH)
 		syna_tcm_report_touch(ts);
+	else if (ts->code == SYNA_TCM_REPORT_FRAME)
+		syna_tcm_handle_frame(ts);
+	else
+		dev_dbg(&ts->spi->dev, "report %#x of %u bytes\n",
+			ts->code, ts->payload_length);
 
 	return IRQ_HANDLED;
 }
@@ -1068,11 +1291,20 @@ static int syna_tcm_get_report_config(struct syna_tcm *ts)
 	if (ts->resp_length)
 		memcpy(ts->config, ts->resp, ts->resp_length);
 	ts->config_length = ts->resp_length;
-	if (ts->has_panel &&
-	    (ts->config_length < sizeof(syna_tcm_gesture_config) ||
-	     memcmp(ts->config, syna_tcm_gesture_config,
-		    sizeof(syna_tcm_gesture_config))))
+	if (!ts->has_panel)
+		return 0;
+
+	ts->fod_layout = ts->config_length >= sizeof(syna_tcm_gesture_config) &&
+			 !memcmp(ts->config, syna_tcm_gesture_config,
+				 sizeof(syna_tcm_gesture_config));
+	/* Xiaomi's firmware keeps its own layout; a leading gesture id still wakes. */
+	if (!ts->fod_layout &&
+	    (ts->config_length < 2 ||
+	     ts->config[0] != SYNA_TCM_TOUCH_GESTURE_ID || ts->config[1] != 8)) {
+		dev_err(&ts->spi->dev, "report layout without a gesture id: %*ph\n",
+			min(ts->config_length, 32U), ts->config);
 		return -EPROTO;
+	}
 
 	return 0;
 }
@@ -1178,6 +1410,7 @@ static int syna_tcm_reinit(struct syna_tcm *ts)
 	if (ts->has_panel)
 		return syna_tcm_apply_mode(ts, ts->panel_off);
 
+	syna_tcm_apply_report_rate(ts);
 	return 0;
 }
 
@@ -1222,6 +1455,7 @@ static int syna_tcm_wake(struct syna_tcm *ts)
 	if (ts->has_panel)
 		return syna_tcm_apply_mode(ts, ts->panel_off);
 
+	syna_tcm_apply_report_rate(ts);
 	return 0;
 }
 
@@ -1281,6 +1515,7 @@ static void syna_tcm_free_buffers(void *data)
 	kfree(ts->fill);
 	kfree(ts->resp);
 	kfree(ts->config);
+	kvfree(ts->frames);
 }
 
 /* Runs before the interrupt is freed, so that no work is queued again. */
@@ -1317,6 +1552,13 @@ static int syna_tcm_setup_input(struct syna_tcm *ts)
 	if (!ts->objects)
 		return -ENOMEM;
 
+	ts->frame_pos = devm_kcalloc(dev, ts->max_objects,
+				     sizeof(*ts->frame_pos), GFP_KERNEL);
+	ts->frame_slots = devm_kcalloc(dev, ts->max_objects,
+				       sizeof(*ts->frame_slots), GFP_KERNEL);
+	if (!ts->frame_pos || !ts->frame_slots)
+		return -ENOMEM;
+
 	input->name = SYNA_TCM_INPUT_NAME;
 	input->id.bustype = BUS_SPI;
 
@@ -1324,8 +1566,10 @@ static int syna_tcm_setup_input(struct syna_tcm *ts)
 	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, ts->max_y, 0, 0);
 	touchscreen_parse_properties(input, true, &ts->prop);
 
+	/* Tracking is for raw frames, which carry no contact ids. */
 	error = input_mt_init_slots(input, ts->max_objects,
-				    INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
+				    INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED |
+				    INPUT_MT_TRACK);
 	if (error)
 		return dev_err_probe(dev, error, "failed to init MT slots\n");
 
@@ -1535,9 +1779,59 @@ static struct attribute *syna_tcm_attrs[] = {
 };
 ATTRIBUTE_GROUPS(syna_tcm);
 
+/*
+ * Streams the raw frames: each read waits for frames newer than the file
+ * position, and a reader that falls behind the ring skips to its oldest.
+ */
+static ssize_t syna_tcm_frames_read(struct file *file, char __user *buf,
+				    size_t count, loff_t *ppos)
+{
+	struct syna_tcm *ts = file->private_data;
+	unsigned int record, slot;
+	size_t copied = 0;
+	u64 index;
+	int error;
+
+	error = wait_event_interruptible(ts->frame_wait, ts->frames &&
+		div_u64(*ppos, sizeof(__le64) + ts->frame_length) < ts->frame_count);
+	if (error)
+		return error;
+
+	guard(mutex)(&ts->io_lock);
+
+	record = sizeof(__le64) + ts->frame_length;
+	index = div_u64(*ppos, record);
+	if (ts->frame_count > SYNA_TCM_FRAME_RING)
+		index = max(index, ts->frame_count - SYNA_TCM_FRAME_RING);
+
+	while (index < ts->frame_count && count - copied >= record) {
+		div_u64_rem(index, SYNA_TCM_FRAME_RING, &slot);
+		if (copy_to_user(buf + copied, &ts->frames[slot * record], record))
+			return copied ?: -EFAULT;
+		copied += record;
+		index++;
+	}
+
+	*ppos = index * record;
+
+	return copied ?: -EINVAL;
+}
+
+static const struct file_operations syna_tcm_frames_fops = {
+	.owner = THIS_MODULE,
+	.open = simple_open,
+	.read = syna_tcm_frames_read,
+};
+
+static void syna_tcm_remove_debugfs(void *data)
+{
+	debugfs_remove_recursive(data);
+}
+
 static int syna_tcm_probe(struct spi_device *spi)
 {
 	struct device *dev = &spi->dev;
+	struct dentry *debugfs;
 	struct syna_tcm *ts;
 	u32 report_rate = 0;
 	int error;
@@ -1578,10 +1872,17 @@ static int syna_tcm_probe(struct spi_device *spi)
 
 	init_completion(&ts->cmd_done);
 	init_completion(&ts->reset_done);
+	init_waitqueue_head(&ts->frame_wait);
 	INIT_WORK(&ts->reinit_work, syna_tcm_reinit_work);
 	INIT_DELAYED_WORK(&ts->resume_work, syna_tcm_resume_work);
 
 	error = devm_add_action_or_reset(dev, syna_tcm_free_buffers, ts);
+	if (error)
+		return error;
+
+	debugfs = debugfs_create_dir(dev_name(dev), NULL);
+	debugfs_create_file("frames", 0400, debugfs, ts, &syna_tcm_frames_fops);
+	error = devm_add_action_or_reset(dev, syna_tcm_remove_debugfs, debugfs);
 	if (error)
 		return error;
 
@@ -1620,8 +1921,9 @@ static int syna_tcm_probe(struct spi_device *spi)
 		return error;
 
 	/* The identify report of the power-on reset is read right away. */
-	error = devm_request_threaded_irq(dev, spi->irq, NULL, syna_tcm_irq,
-					  IRQF_ONESHOT, dev_name(dev), ts);
+	error = devm_request_threaded_irq(dev, spi->irq, syna_tcm_hardirq,
+					  syna_tcm_irq, IRQF_ONESHOT,
+					  dev_name(dev), ts);
 	if (error)
 		return dev_err_probe(dev, error, "failed to request IRQ\n");
 
@@ -1682,6 +1984,9 @@ static int syna_tcm_probe(struct spi_device *spi)
 		error = devm_drm_panel_add_follower(dev, &ts->panel_follower);
 		if (error)
 			return dev_err_probe(dev, error, "failed to follow display panel\n");
+	} else {
+		scoped_guard(mutex, &ts->reset_lock)
+			syna_tcm_apply_report_rate(ts);
 	}
 
 	dev_info(dev, "TouchComm v%u, %.*s, build %u: %ux%u, %u objects\n",
