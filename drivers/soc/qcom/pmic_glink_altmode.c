@@ -159,6 +159,8 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode, u32 cm
 	req.cmd = cpu_to_le32(cmd);
 	req.arg = cpu_to_le32(arg);
 
+	/* A late ack of an earlier request that timed out is not this one's. */
+	reinit_completion(&altmode->pan_ack);
 	ret = pmic_glink_send(altmode->client, &req, sizeof(req));
 	if (ret) {
 		dev_err(altmode->dev, "failed to send altmode request: %#x (%d)\n", cmd, ret);
@@ -546,9 +548,19 @@ static void pmic_glink_altmode_put_switch(void *data)
 static void pmic_glink_altmode_enable_worker(struct work_struct *work)
 {
 	struct pmic_glink_altmode *altmode = work_to_altmode(work);
+	int tries;
 	int ret;
 
-	ret = pmic_glink_altmode_request(altmode, ALTMODE_PAN_EN, 0);
+	/*
+	 * Xiaomi's SoCCP firmware holds a request that reaches it just after
+	 * its channel opens until another message arrives; asking again gets
+	 * both answered.
+	 */
+	for (tries = 3; tries; tries--) {
+		ret = pmic_glink_altmode_request(altmode, ALTMODE_PAN_EN, 0);
+		if (ret != -ETIMEDOUT)
+			break;
+	}
 	if (ret)
 		dev_err(altmode->dev, "failed to request altmode notifications: %d\n", ret);
 }
