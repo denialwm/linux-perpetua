@@ -315,13 +315,22 @@ static void pmic_glink_ucsi_register(struct work_struct *work)
 	struct pmic_glink_ucsi *ucsi = container_of(work, struct pmic_glink_ucsi, register_work);
 	unsigned long flags;
 	bool pd_running;
+	int tries;
 
 	spin_lock_irqsave(&ucsi->state_lock, flags);
 	pd_running = ucsi->pd_running;
 	spin_unlock_irqrestore(&ucsi->state_lock, flags);
 
 	if (!ucsi->ucsi_registered && pd_running) {
-		ucsi_register(ucsi->ucsi);
+		/*
+		 * Xiaomi's SoCCP firmware holds a request that reaches it just
+		 * after its channel opens until another message arrives. The
+		 * version read then times out; reading again gets both answered.
+		 */
+		for (tries = 3; tries; tries--) {
+			if (ucsi_register(ucsi->ucsi) != -ETIMEDOUT)
+				break;
+		}
 		ucsi->ucsi_registered = true;
 	} else if (ucsi->ucsi_registered && !pd_running) {
 		ucsi_unregister(ucsi->ucsi);
