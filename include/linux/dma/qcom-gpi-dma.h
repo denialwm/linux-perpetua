@@ -49,9 +49,15 @@ struct gpi_spi_config {
 	u32 rx_len;
 };
 
+/*
+ * I2C_LOCK and I2C_UNLOCK take and give back a serial engine shared with
+ * another execution environment; neither moves data.
+ */
 enum i2c_op {
 	I2C_WRITE = 1,
 	I2C_READ,
+	I2C_LOCK,
+	I2C_UNLOCK,
 };
 
 /**

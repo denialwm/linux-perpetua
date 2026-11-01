@@ -21,6 +21,8 @@
 #define TRE_TYPE_IMMEDIATE_DMA	0x11
 #define TRE_TYPE_GO		0x20
 #define TRE_TYPE_CONFIG0	0x22
+#define TRE_TYPE_LOCK		0x30
+#define TRE_TYPE_UNLOCK		0x31
 
 /* TRE flags */
 #define TRE_FLAGS_CHAIN		BIT(0)
@@ -1630,6 +1632,23 @@ static int gpi_create_i2c_tre(struct gchan *chan, struct gpi_desc *desc,
 	dma_addr_t address;
 	struct gpi_tre *tre;
 	unsigned int i;
+
+	/* A lock or unlock stands alone and reports its own end */
+	if (i2c->op == I2C_LOCK || i2c->op == I2C_UNLOCK) {
+		tre = &desc->tre[0];
+
+		tre->dword[0] = 0;
+		tre->dword[1] = 0;
+		tre->dword[2] = 0;
+
+		tre->dword[3] = u32_encode_bits(i2c->op == I2C_LOCK ? TRE_TYPE_LOCK : TRE_TYPE_UNLOCK,
+						TRE_FLAGS_TYPE);
+		tre->dword[3] |= u32_encode_bits(1, TRE_FLAGS_IEOB);
+
+		dev_dbg(dev, "TRE:0 %x:%x:%x:%x\n", tre->dword[0], tre->dword[1],
+			tre->dword[2], tre->dword[3]);
+		return 1;
+	}
 
 	/* first create config tre if applicable */
 	if (i2c->set_config) {
