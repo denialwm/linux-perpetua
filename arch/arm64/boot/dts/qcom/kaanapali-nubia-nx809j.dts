@@ -13,6 +13,14 @@
 #include <dt-bindings/media/video-interfaces.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+/*
+ * CPU throttle temperature for kaanapali-cpu-cooling.dtsi. Stock throttles
+ * on skin-msm-therm from 43 °C and pauses the prime cores only at 112 and
+ * 114 °C; with the fan alone the prime cores passed 105 °C while gaming.
+ * 90 °C is the developer's limit; under an all-core and GPU load it held the
+ * prime cores at 86-88 °C (devices169).
+ */
+#define KAANAPALI_CPU_PASSIVE_MC 90000
 #include "kaanapali.dtsi"
 
 #include "pm8010-kaanapali.dtsi"     /* SPMI1: SID-12/13   */

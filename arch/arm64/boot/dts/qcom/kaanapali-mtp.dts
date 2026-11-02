@@ -9,6 +9,12 @@
 #include <dt-bindings/input/linux-event-codes.h>
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+/*
+ * CPU throttle temperature for kaanapali-cpu-cooling.dtsi, not tuned on
+ * this reference board: 105 °C is the thermal HAL trip on these zones in
+ * the stock Android device tree of a QRD-derived phone (RedMagic 11 Pro).
+ */
+#define KAANAPALI_CPU_PASSIVE_MC 105000
 #include "kaanapali.dtsi"
 
 #include "pm8010-kaanapali.dtsi"     /* SPMI1: SID-12/13   */
