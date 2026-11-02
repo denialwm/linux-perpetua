@@ -131,6 +131,7 @@ enum qcom_battmgr_variant {
 #define OPLUS_USB_OTG_VBUS_REGULATOR_ENABLE		19
 #define OPLUS_USB_OTG_BOOST_CURRENT			59
 #define OPLUS_CHG_EN					70
+#define OPLUS_SET_PDO					71
 
 struct qcom_battmgr_enable_request {
 	struct pmic_glink_hdr hdr;
@@ -2154,6 +2155,59 @@ static const u32 qcom_battmgr_oplus_input_steps_ma[] = {
 	500, 900, 1200, 1350, 1500, 1750, 2000, 2500, 3000,
 };
 
+/* Stock limits a PD source to 13.5 W and calls VBUS above 7.5 V raised. */
+#define OPLUS_PD_9V_LIMIT_MA		1500
+#define OPLUS_PD_9V_MIN_UV		7500000
+
+/*
+ * A PD source stays at 5 V until the host asks for more, and the firmware
+ * then holds the input near 0.9 A. Ask for the fixed 9 V PDO as the stock
+ * kernel does: input at 500 mA, request 9 V, wait for VBUS to rise. A source
+ * without 9 V stays at 5 V. Returns whether VBUS is at 9 V.
+ */
+static bool qcom_battmgr_oplus_pd_9v(struct qcom_battmgr *battmgr)
+{
+	bool raised = false;
+	unsigned int i;
+	int ret;
+
+	mutex_lock(&battmgr->lock);
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET, USB_VOLT_NOW, 0);
+	if (ret || battmgr->oplus.input_suspended)
+		goto out;
+	/* A repeated plug event finds the contract already raised. */
+	raised = battmgr->usb.voltage_now >= OPLUS_PD_9V_MIN_UV;
+	if (raised)
+		goto out;
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET,
+					    OPLUS_USB_INPUT_CURRENT_LIMIT, 500000);
+	if (!ret)
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET,
+						    OPLUS_SET_PDO, 9000);
+	mutex_unlock(&battmgr->lock);
+	if (ret)
+		return false;
+
+	for (i = 0; i < 10 && !raised; i++) {
+		msleep(100);
+		mutex_lock(&battmgr->lock);
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET,
+						    USB_VOLT_NOW, 0);
+		raised = !ret && battmgr->usb.voltage_now >= OPLUS_PD_9V_MIN_UV;
+		mutex_unlock(&battmgr->lock);
+	}
+	if (raised)
+		return true;
+
+	dev_info(battmgr->dev, "PD source stayed at %u uV, keeping 5 V\n",
+		 battmgr->usb.voltage_now);
+	mutex_lock(&battmgr->lock);
+	qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET, OPLUS_SET_PDO, 5000);
+out:
+	mutex_unlock(&battmgr->lock);
+	return raised;
+}
+
 /*
  * The firmware holds every source at 500 mA until the host raises the
  * limit. Ramp to the limit of the charger type as the stock kernel does:
@@ -2184,6 +2238,18 @@ static int qcom_battmgr_oplus_ramp_input(struct qcom_battmgr *battmgr)
 	mutex_unlock(&battmgr->lock);
 
 	limit_ma = qcom_battmgr_oplus_input_limit_ma(type);
+	switch (qcom_battmgr_oplus_usb_type(type)) {
+	case POWER_SUPPLY_USB_TYPE_PD:
+	case POWER_SUPPLY_USB_TYPE_PD_DRP:
+	case POWER_SUPPLY_USB_TYPE_PD_PPS:
+		if (qcom_battmgr_oplus_pd_9v(battmgr)) {
+			limit_ma = OPLUS_PD_9V_LIMIT_MA;
+			min_uv = OPLUS_PD_9V_MIN_UV;
+		}
+		break;
+	default:
+		break;
+	}
 	for (i = 0; i < ARRAY_SIZE(qcom_battmgr_oplus_input_steps_ma) &&
 		    steps[i] <= limit_ma; i++) {
 		mutex_lock(&battmgr->lock);
