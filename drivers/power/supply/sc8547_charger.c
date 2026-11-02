@@ -196,20 +196,16 @@ static int sc8547_fault_health(unsigned int status, unsigned int protection,
  */
 static int sc8547_check_locked(struct sc8547 *cp, bool *switching)
 {
-	u8 regs[SC8547_PROTECTION + 1 - SC8547_STATUS];
 	unsigned int status, protection, mode;
 	int health, ret;
 
-	/*
-	 * One transfer, so the bus stays free for VOOC PHY replies. Reading
-	 * the control register in it services the watchdog.
-	 */
-	ret = regmap_bulk_read(cp->regmap, SC8547_STATUS, regs, sizeof(regs));
+	ret = regmap_read(cp->regmap, SC8547_STATUS, &status);
+	if (!ret)
+		ret = regmap_read(cp->regmap, SC8547_PROTECTION, &protection);
+	if (!ret)
+		ret = regmap_read(cp->regmap, SC8547_MODE, &mode);
 	if (ret)
 		return ret;
-	status = regs[0];
-	mode = regs[SC8547_MODE - SC8547_STATUS];
-	protection = regs[SC8547_PROTECTION - SC8547_STATUS];
 	if (switching)
 		*switching = status & SC8547_STATUS_SWITCHING;
 	health = sc8547_fault_health(status, protection, mode);
@@ -236,12 +232,11 @@ static int sc8547_read_adc_locked(struct sc8547 *cp, struct sc8547_sample *s)
 	u8 adc[SC8547_ADC_TDIE + 2 - SC8547_ADC_IBUS];
 	int ret, thaw;
 
-	/* A prepared pump's ADC control holds only the enable bit. */
-	ret = regmap_write(cp->regmap, SC8547_ADC_CTRL, SC8547_ADC_EN | SC8547_ADC_FREEZE);
+	ret = regmap_set_bits(cp->regmap, SC8547_ADC_CTRL, SC8547_ADC_FREEZE);
 	if (ret)
 		return ret;
 	ret = regmap_bulk_read(cp->regmap, SC8547_ADC_IBUS, adc, sizeof(adc));
-	thaw = regmap_write(cp->regmap, SC8547_ADC_CTRL, SC8547_ADC_EN);
+	thaw = regmap_clear_bits(cp->regmap, SC8547_ADC_CTRL, SC8547_ADC_FREEZE);
 	if (ret)
 		return ret;
 	if (thaw)
@@ -401,6 +396,7 @@ EXPORT_SYMBOL_GPL(sc8547_disable);
  */
 int sc8547_sample(struct sc8547 *cp, struct sc8547_sample *sample)
 {
+	unsigned int control;
 	int ret;
 
 	/*
@@ -409,6 +405,9 @@ int sc8547_sample(struct sc8547 *cp, struct sc8547_sample *sample)
 	 */
 	mutex_lock(&cp->lock);
 	ret = cp->prepared ? sc8547_check_locked(cp, &sample->switching) : -EINVAL;
+	/* Reading the control register services the watchdog. */
+	if (!ret)
+		ret = regmap_read(cp->regmap, SC8547_CONTROL, &control);
 	sample->health = cp->health;
 	mutex_unlock(&cp->lock);
 	if (ret)
