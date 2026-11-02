@@ -645,6 +645,7 @@ static int msm_dp_display_prepare_link(struct msm_dp_display_private *dp)
 	struct msm_dp *msm_dp_display = &dp->msm_dp_display;
 	int rc = 0;
 	bool force_link_train = false;
+	bool plugged;
 
 	drm_dbg_dp(dp->drm_dev, "sink_count=%d\n", dp->link->sink_count);
 
@@ -658,6 +659,20 @@ static int msm_dp_display_prepare_link(struct msm_dp_display_private *dp)
 	}
 
 	if (dp->link->sink_count == 0)
+		return -ENOTCONN;
+
+	/*
+	 * An HPD pulse's unplug half disables AUX until the plug half runs. A
+	 * modeset in between would train the link over a disabled AUX and fail
+	 * with -ENXIO.
+	 */
+	mutex_lock(&dp->plugged_lock);
+	plugged = dp->plugged;
+	if (plugged)
+		msm_dp_aux_enable_xfers(dp->aux, true);
+	mutex_unlock(&dp->plugged_lock);
+
+	if (!plugged)
 		return -ENOTCONN;
 
 	if (!msm_dp_display->power_on) {
