@@ -31,6 +31,10 @@
 	compatible = "xiaomi,pudding", "qcom,kaanapali";
 	chassis-type = "handset";
 
+	aliases {
+		serial1 = &uart18;
+	};
+
 	chosen {
 		#address-cells = <2>;
 		#size-cells = <2>;
@@ -1359,6 +1363,32 @@
 		function = "gpio";
 		drive-strength = <8>;
 		bias-pull-down;
+	};
+};
+
+&uart18 {
+	status = "okay";
+
+	/* The combo's Bluetooth half, on stock's high-speed UART (SE18) */
+	bluetooth {
+		compatible = "qcom,wcn7860-bt";
+
+		/*
+		 * Xiaomi's Brahma patch and board 0x3e's RF settings, from the
+		 * stock bluetooth partition. The controller reports board 0, and
+		 * the generic brhbtnv20.bin leaves its receiver some 50 dB deaf.
+		 */
+		firmware-name = "brhbtnv20.b3e", "brhbtfw20.tlv";
+
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
+		vddaon-supply = <&vreg_pmu_aon_0p59>;
+		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
+		vddwlmx-supply = <&vreg_pmu_wlmx_0p85>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p8-supply = <&vreg_pmu_rfa_1p8>;
+
+		max-speed = <3200000>;
 	};
 };
 
