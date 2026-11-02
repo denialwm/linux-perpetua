@@ -658,8 +658,13 @@ static int graph_callback(const struct gpr_resp_pkt *data, void *priv, int op)
 
 		break;
 	case DATA_CMD_RSP_RD_SH_MEM_EP_DATA_BUFFER_V2:
+		/*
+		 * Only the status and buffer address are read. Kaanapali's DSP
+		 * sends 56 bytes, short of the metadata fields at the end.
+		 */
 		if (!graph->ar_graph || !data->payload ||
-		    data->payload_size < (int)sizeof(*rd_done))
+		    data->payload_size <
+		    (int)offsetofend(typeof(*rd_done), buf_addr_msw))
 			break;
 		client_event = APM_CLIENT_EVENT_DATA_READ_DONE;
 		mutex_lock(&graph->lock);
