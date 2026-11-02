@@ -233,6 +233,7 @@
 					reg = <2>;
 
 					pmic_glink_sbu: endpoint {
+						remote-endpoint = <&wcd_usbss_sbu_mux>;
 					};
 				};
 			};
@@ -1429,14 +1430,31 @@
 &i2c3 {
 	status = "okay";
 
-	/* Only passes USB 2.0 through */
+	/*
+	 * Passes USB 2.0 through and, in DisplayPort alt mode, routes DP AUX
+	 * to the SBU lines: stock's qcom,dp-aux-switch is this switch.
+	 */
 	wcd_usbss: typec-mux@e {
 		compatible = "qcom,wcd9395-usbss", "qcom,wcd9390-usbss";
 		reg = <0x0e>;
 
 		vdd-supply = <&vreg_l15b_1p8>;
 
+		mode-switch;
 		orientation-switch;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				wcd_usbss_sbu_mux: endpoint {
+					remote-endpoint = <&pmic_glink_sbu>;
+				};
+			};
+		};
 	};
 };
 
@@ -1528,6 +1546,14 @@
 
 &mdss {
 	status = "okay";
+};
+
+&mdss_dp0 {
+	status = "okay";
+};
+
+&mdss_dp0_out {
+	link-frequencies = /bits/ 64 <1620000000 2700000000 5400000000 8100000000>;
 };
 
 &mdss_dsi0 {
