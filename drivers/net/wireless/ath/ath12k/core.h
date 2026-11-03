@@ -1285,6 +1285,7 @@ int ath12k_core_resume(struct ath12k_base *ab);
 int ath12k_core_suspend(struct ath12k_base *ab);
 int ath12k_core_suspend_late(struct ath12k_base *ab);
 bool ath12k_core_wow_suspended(struct ath12k_base *ab);
+extern int ath12k_wow_flags, ath12k_wow_d0; /* DRV-DEBUG */
 void ath12k_core_hw_group_unassign(struct ath12k_base *ab);
 u8 ath12k_get_num_partner_link(struct ath12k *ar);
 

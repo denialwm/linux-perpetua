@@ -1792,7 +1792,8 @@ static __maybe_unused int ath12k_pci_pm_suspend_late(struct device *dev)
 	 * stays in D0 with MHI in M3, as on the vendor stack: saving the state
 	 * keeps the PCI core from putting it and its root port into D3hot.
 	 */
-	if (!ret && ab->suspend_keeps_link && ath12k_core_wow_suspended(ab))
+	if (!ret && (ath12k_wow_d0 >= 0 ? ath12k_wow_d0 : ab->suspend_keeps_link) && /* DRV-DEBUG */
+	    ath12k_core_wow_suspended(ab))
 		pci_save_state(to_pci_dev(dev));
 
 	return ret;

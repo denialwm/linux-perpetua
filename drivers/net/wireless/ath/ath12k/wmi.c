@@ -10876,6 +10876,8 @@ int ath12k_wmi_wow_enable(struct ath12k *ar)
 	if (ar->ab->suspend_keeps_link)
 		cmd->flags = cpu_to_le32(WMI_WOW_FLAG_ENABLE_DRV_PCIE_L1SS_SLEEP |
 					 WMI_WOW_FLAG_SYSTEM_SUSPEND_WOW);
+	if (ath12k_wow_flags >= 0) /* DRV-DEBUG */
+		cmd->flags = cpu_to_le32(ath12k_wow_flags);
 	ath12k_dbg(ar->ab, ATH12K_DBG_WMI, "wmi tlv wow enable flags %#x\n",
 		   le32_to_cpu(cmd->flags));
 

@@ -32,6 +32,14 @@ EXPORT_SYMBOL(ath12k_debug_mask);
 
 bool ath12k_ftm_mode;
 module_param_named(ftm_mode, ath12k_ftm_mode, bool, 0444);
+
+/* DRV-DEBUG: temporary knobs for the PCIe DRV wake bring-up. */
+int ath12k_wow_flags = -1;
+module_param_named(wow_flags, ath12k_wow_flags, int, 0644);
+EXPORT_SYMBOL(ath12k_wow_flags);
+int ath12k_wow_d0 = -1;
+module_param_named(wow_d0, ath12k_wow_d0, int, 0644);
+EXPORT_SYMBOL(ath12k_wow_d0);
 MODULE_PARM_DESC(ftm_mode, "Boots up in factory test mode");
 EXPORT_SYMBOL(ath12k_ftm_mode);
 
