@@ -129,3 +129,11 @@ not imported because they exist there, and vendor stacks are not imported
 at all. .claude/skills/add-device/SKILL.md describes the procedure and its
 checks in full, and record.md next to it is the record kept for each
 device.
+
+
+Installing a userspace
+---------------------
+
+arch-linux-arm.md describes installing generic AArch64 Arch Linux ARM on
+an existing partition, preserving the device boot chain, and setting up
+persistent USB SSH. Device-specific commands live in Phonewave.
