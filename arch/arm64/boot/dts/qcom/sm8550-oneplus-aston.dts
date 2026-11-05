@@ -1126,7 +1126,8 @@
 };
 
 &gpu_zap_shader {
-	firmware-name = "qcom/sm8550/aston/a740_zap.mbn";
+	/* The vendor partition, inside super, holds it: the boot tail carries it. */
+	firmware-name = "qcom/sm8550/oneplus/aston-vendor/a740_zap.mbn";
 };
 
 &i2c6 {
@@ -1185,13 +1186,14 @@
 };
 
 &ipa {
-	firmware-name = "qcom/sm8550/aston/ipa_fws.mbn";
+	firmware-name = "qcom/sm8550/oneplus/aston/ipa_fws.mdt";
 
 	status = "okay";
 };
 
 &iris {
-	firmware-name = "qcom/sm8550/aston/vpu30_4v.mbn";
+	/* In vendor too, beside the zap shader. */
+	firmware-name = "qcom/sm8550/oneplus/aston-vendor/vpu30_4v.mbn";
 
 	status = "okay";
 };
@@ -1407,22 +1409,23 @@
 };
 
 &remoteproc_adsp {
-	firmware-name = "qcom/sm8550/aston/adsp.mbn",
-			"qcom/sm8550/aston/adsp_dtb.mbn";
+	/* The stock split images, as modem_b's image folder holds them. */
+	firmware-name = "qcom/sm8550/oneplus/aston/adsp.mdt",
+			"qcom/sm8550/oneplus/aston/adsp_dtb.mdt";
 
 	status = "okay";
 };
 
 &remoteproc_cdsp {
-	firmware-name = "qcom/sm8550/aston/cdsp.mbn",
-			"qcom/sm8550/aston/cdsp_dtb.mbn";
+	firmware-name = "qcom/sm8550/oneplus/aston/cdsp.mdt",
+			"qcom/sm8550/oneplus/aston/cdsp_dtb.mdt";
 
 	status = "okay";
 };
 
 &remoteproc_mpss {
-	firmware-name = "qcom/sm8550/aston/modem.mbn",
-			"qcom/sm8550/aston/modem_dtb.mbn";
+	firmware-name = "qcom/sm8550/oneplus/aston/modem.mdt",
+			"qcom/sm8550/oneplus/aston/modem_dtb.mdt";
 
 	status = "okay";
 };
