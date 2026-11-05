@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Goodix ultrasonic fingerprint platform control. QTEE owns the SPI bus.
- * Reset timing and IRQ polarity follow NX809J's zte_fingerprint module.
+/* Power, reset and interrupt control for fingerprint sensors whose SPI bus
+ * QTEE owns: /dev/tee_fp. The sensor's trusted application does the rest.
+ * Reset timing and IRQ polarity follow each sensor's stock module: the
+ * NX809J's zte_fingerprint for the Goodix GUM5228, the Edge 70's
+ * anc_fps_mmi for the JIIOV JV0307. They differ only in how long the sensor
+ * settles after reset.
  */
 #include <linux/atomic.h>
 #include <linux/delay.h>
 #include <linux/fs.h>
-#include <linux/goodix_tee_fp.h>
+#include <linux/tee_fp.h>
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/kref.h>
@@ -15,12 +19,14 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/poll.h>
+#include <linux/property.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 
-struct goodix_fp {
+struct tee_fp {
 	struct miscdevice misc;
+	unsigned int settle_us; /* After reset is released. */
 	struct mutex lock; /* Serializes control, close and removal. */
 	struct kref ref;
 	struct gpio_desc *reset, *interrupt;
@@ -32,22 +38,22 @@ struct goodix_fp {
 	bool opened, powered, removed;
 };
 
-static void goodix_fp_free(struct kref *ref)
+static void tee_fp_free(struct kref *ref)
 {
-	kfree(container_of(ref, struct goodix_fp, ref));
+	kfree(container_of(ref, struct tee_fp, ref));
 }
 
-static void goodix_fp_reset(struct goodix_fp *fp)
+static void tee_fp_reset(struct tee_fp *fp)
 {
-	/* Stock gf_hw_reset: physical low for 10 ms, then high for 5 ms. */
+	/* Physical low for 10 ms, then high while the sensor settles. */
 	gpiod_set_value_cansleep(fp->reset, 1);
 	usleep_range(10000, 10100);
 	gpiod_set_value_cansleep(fp->reset, 0);
-	usleep_range(5000, 6000);
+	usleep_range(fp->settle_us, fp->settle_us + 1000);
 	fp->reset_sequence++;
 }
 
-static int goodix_fp_power_on(struct goodix_fp *fp)
+static int tee_fp_power_on(struct tee_fp *fp)
 {
 	int ret;
 
@@ -56,13 +62,13 @@ static int goodix_fp_power_on(struct goodix_fp *fp)
 	ret = regulator_enable(fp->vdd);
 	if (ret)
 		return ret;
-	goodix_fp_reset(fp);
+	tee_fp_reset(fp);
 	fp->powered = true;
 	enable_irq(fp->irq);
 	return 0;
 }
 
-static int goodix_fp_power_off(struct goodix_fp *fp)
+static int tee_fp_power_off(struct tee_fp *fp)
 {
 	int ret;
 
@@ -79,19 +85,19 @@ static int goodix_fp_power_off(struct goodix_fp *fp)
 	return 0;
 }
 
-static irqreturn_t goodix_fp_irq(int irq, void *data)
+static irqreturn_t tee_fp_irq(int irq, void *data)
 {
-	struct goodix_fp *fp = data;
+	struct tee_fp *fp = data;
 
 	atomic_inc(&fp->sequence);
 	wake_up_interruptible(&fp->wait);
 	return IRQ_HANDLED;
 }
 
-static int goodix_fp_open(struct inode *inode, struct file *file)
+static int tee_fp_open(struct inode *inode, struct file *file)
 {
-	struct goodix_fp *fp = container_of(file->private_data,
-					   struct goodix_fp, misc);
+	struct tee_fp *fp = container_of(file->private_data,
+					   struct tee_fp, misc);
 	int ret = 0;
 
 	mutex_lock(&fp->lock);
@@ -109,25 +115,25 @@ static int goodix_fp_open(struct inode *inode, struct file *file)
 	return ret ? ret : nonseekable_open(inode, file);
 }
 
-static int goodix_fp_release(struct inode *inode, struct file *file)
+static int tee_fp_release(struct inode *inode, struct file *file)
 {
-	struct goodix_fp *fp = file->private_data;
+	struct tee_fp *fp = file->private_data;
 	int ret = 0;
 
 	mutex_lock(&fp->lock);
 	if (!fp->removed)
-		ret = goodix_fp_power_off(fp);
+		ret = tee_fp_power_off(fp);
 	fp->opened = false;
 	mutex_unlock(&fp->lock);
-	kref_put(&fp->ref, goodix_fp_free);
+	kref_put(&fp->ref, tee_fp_free);
 	return ret;
 }
 
-static long goodix_fp_ioctl(struct file *file, unsigned int cmd,
+static long tee_fp_ioctl(struct file *file, unsigned int cmd,
 			    unsigned long arg)
 {
-	struct goodix_fp *fp = file->private_data;
-	struct goodix_fp_state state;
+	struct tee_fp *fp = file->private_data;
+	struct tee_fp_state state;
 	int ret = 0;
 
 	mutex_lock(&fp->lock);
@@ -136,20 +142,20 @@ static long goodix_fp_ioctl(struct file *file, unsigned int cmd,
 		goto out;
 	}
 	switch (cmd) {
-	case GOODIX_FP_IOC_ENABLE_POWER:
-		ret = goodix_fp_power_on(fp);
+	case TEE_FP_IOC_ENABLE_POWER:
+		ret = tee_fp_power_on(fp);
 		break;
-	case GOODIX_FP_IOC_DISABLE_POWER:
-		ret = goodix_fp_power_off(fp);
+	case TEE_FP_IOC_DISABLE_POWER:
+		ret = tee_fp_power_off(fp);
 		break;
-	case GOODIX_FP_IOC_RESET:
+	case TEE_FP_IOC_RESET:
 		if (!fp->powered)
 			ret = -EHOSTDOWN;
 		else
-			goodix_fp_reset(fp);
+			tee_fp_reset(fp);
 		break;
-	case GOODIX_FP_IOC_GET_STATE:
-		state = (struct goodix_fp_state) {
+	case TEE_FP_IOC_GET_STATE:
+		state = (struct tee_fp_state) {
 			.version = 1,
 			.powered = fp->powered,
 			.irq_sequence = atomic_read(&fp->sequence),
@@ -169,10 +175,10 @@ static long goodix_fp_ioctl(struct file *file, unsigned int cmd,
 	return ret;
 }
 
-static ssize_t goodix_fp_read(struct file *file, char __user *buf,
+static ssize_t tee_fp_read(struct file *file, char __user *buf,
 			      size_t count, loff_t *offset)
 {
-	struct goodix_fp *fp = file->private_data;
+	struct tee_fp *fp = file->private_data;
 	u32 sequence;
 	int ret;
 
@@ -198,9 +204,9 @@ static ssize_t goodix_fp_read(struct file *file, char __user *buf,
 	return sizeof(sequence);
 }
 
-static __poll_t goodix_fp_poll(struct file *file, poll_table *wait)
+static __poll_t tee_fp_poll(struct file *file, poll_table *wait)
 {
-	struct goodix_fp *fp = file->private_data;
+	struct tee_fp *fp = file->private_data;
 
 	poll_wait(file, &fp->wait, wait);
 	if (READ_ONCE(fp->removed))
@@ -210,20 +216,20 @@ static __poll_t goodix_fp_poll(struct file *file, poll_table *wait)
 	return 0;
 }
 
-static const struct file_operations goodix_fp_fops = {
+static const struct file_operations tee_fp_fops = {
 	.owner = THIS_MODULE,
-	.open = goodix_fp_open,
-	.release = goodix_fp_release,
-	.unlocked_ioctl = goodix_fp_ioctl,
+	.open = tee_fp_open,
+	.release = tee_fp_release,
+	.unlocked_ioctl = tee_fp_ioctl,
 	.compat_ioctl = compat_ptr_ioctl,
-	.read = goodix_fp_read,
-	.poll = goodix_fp_poll,
+	.read = tee_fp_read,
+	.poll = tee_fp_poll,
 };
 
-static int goodix_fp_probe(struct platform_device *pdev)
+static int tee_fp_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct goodix_fp *fp;
+	struct tee_fp *fp;
 	int ret;
 
 	fp = kzalloc_obj(*fp);
@@ -233,6 +239,7 @@ static int goodix_fp_probe(struct platform_device *pdev)
 	kref_init(&fp->ref);
 	init_waitqueue_head(&fp->wait);
 	atomic_set(&fp->sequence, 0);
+	fp->settle_us = (uintptr_t)device_get_match_data(dev);
 	fp->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(fp->reset)) {
 		ret = PTR_ERR(fp->reset);
@@ -253,16 +260,16 @@ static int goodix_fp_probe(struct platform_device *pdev)
 		ret = fp->irq;
 		goto fail;
 	}
-	/* Stock gf_open requests IRQF_TRIGGER_RISING | IRQF_ONESHOT. */
-	ret = devm_request_irq(dev, fp->irq, goodix_fp_irq,
+	/* Both stock modules request IRQF_TRIGGER_RISING | IRQF_ONESHOT. */
+	ret = devm_request_irq(dev, fp->irq, tee_fp_irq,
 			       IRQF_TRIGGER_RISING | IRQF_NO_AUTOEN,
 			       dev_name(dev), fp);
 	if (ret)
 		goto fail;
 	fp->misc = (struct miscdevice) {
 		.minor = MISC_DYNAMIC_MINOR,
-		.name = "goodix_fp",
-		.fops = &goodix_fp_fops,
+		.name = "tee_fp",
+		.fops = &tee_fp_fops,
 		.parent = dev,
 		.mode = 0600,
 	};
@@ -274,28 +281,28 @@ static int goodix_fp_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, fp);
 	return 0;
  fail:
-	kref_put(&fp->ref, goodix_fp_free);
-	return dev_err_probe(dev, ret, "Goodix platform setup failed\n");
+	kref_put(&fp->ref, tee_fp_free);
+	return dev_err_probe(dev, ret, "fingerprint platform setup failed\n");
 }
 
-static void goodix_fp_remove(struct platform_device *pdev)
+static void tee_fp_remove(struct platform_device *pdev)
 {
-	struct goodix_fp *fp = platform_get_drvdata(pdev);
+	struct tee_fp *fp = platform_get_drvdata(pdev);
 
 	misc_deregister(&fp->misc);
 	mutex_lock(&fp->lock);
 	fp->removed = true;
-	if (goodix_fp_power_off(fp))
+	if (tee_fp_power_off(fp))
 		dev_err(&pdev->dev, "Failed to disable fingerprint supply\n");
 	mutex_unlock(&fp->lock);
 	wake_up_interruptible(&fp->wait);
 	devm_free_irq(&pdev->dev, fp->irq, fp);
-	kref_put(&fp->ref, goodix_fp_free);
+	kref_put(&fp->ref, tee_fp_free);
 }
 
-static int goodix_fp_suspend(struct device *dev)
+static int tee_fp_suspend(struct device *dev)
 {
-	struct goodix_fp *fp = dev_get_drvdata(dev);
+	struct tee_fp *fp = dev_get_drvdata(dev);
 	int ret;
 
 	mutex_lock(&fp->lock);
@@ -305,24 +312,26 @@ static int goodix_fp_suspend(struct device *dev)
 	return ret;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(goodix_fp_pm_ops, goodix_fp_suspend, NULL);
+static DEFINE_SIMPLE_DEV_PM_OPS(tee_fp_pm_ops, tee_fp_suspend, NULL);
 
-static const struct of_device_id goodix_fp_of_match[] = {
-	{ .compatible = "goodix,gum5228" },
+static const struct of_device_id tee_fp_of_match[] = {
+	/* Stock gf_hw_reset settles 5 ms, anc_reset 10 ms. */
+	{ .compatible = "goodix,gum5228", .data = (void *)5000 },
+	{ .compatible = "jiiov,jv0307", .data = (void *)10000 },
 	{ }
 };
-MODULE_DEVICE_TABLE(of, goodix_fp_of_match);
+MODULE_DEVICE_TABLE(of, tee_fp_of_match);
 
-static struct platform_driver goodix_fp_driver = {
-	.probe = goodix_fp_probe,
-	.remove = goodix_fp_remove,
+static struct platform_driver tee_fp_driver = {
+	.probe = tee_fp_probe,
+	.remove = tee_fp_remove,
 	.driver = {
-		.name = "goodix-tee-fp",
-		.of_match_table = goodix_fp_of_match,
-		.pm = pm_sleep_ptr(&goodix_fp_pm_ops),
+		.name = "tee-fp",
+		.of_match_table = tee_fp_of_match,
+		.pm = pm_sleep_ptr(&tee_fp_pm_ops),
 	},
 };
-module_platform_driver(goodix_fp_driver);
+module_platform_driver(tee_fp_driver);
 
-MODULE_DESCRIPTION("Goodix ultrasonic fingerprint platform control");
+MODULE_DESCRIPTION("Fingerprint platform control for QTEE-owned sensors");
 MODULE_LICENSE("GPL");
