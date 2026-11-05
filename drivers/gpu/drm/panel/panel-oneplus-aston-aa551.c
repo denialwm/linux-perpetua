@@ -21,7 +21,7 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/workqueue.h>
-#include <linux/aston_fp_illumination.h>
+#include <linux/fp_illumination.h>
 #include <linux/delay.h>
 #include <linux/ktime.h>
 #include <linux/gpio/consumer.h>
@@ -368,7 +368,7 @@ static int aa551_fp_release(struct inode *inode, struct file *file)
 static long aa551_fp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct aa551_fp *fp = file->private_data;
-	struct aston_fp_illumination_info info = {
+	struct fp_illumination_info info = {
 		.version = 1,
 		.panel_width = 1264,
 		.panel_height = 2780,
@@ -384,13 +384,13 @@ static long aa551_fp_ioctl(struct file *file, unsigned int cmd, unsigned long ar
 		goto out;
 	}
 	switch (cmd) {
-	case ASTON_FP_ILLUMINATION_GET_INFO:
+	case FP_ILLUMINATION_GET_INFO:
 		info.enabled = fp->active;
 		info.panel_on = fp->panel_on;
 		if (copy_to_user((void __user *)arg, &info, sizeof(info)))
 			ret = -EFAULT;
 		break;
-	case ASTON_FP_ILLUMINATION_SET:
+	case FP_ILLUMINATION_SET:
 		if (copy_from_user(&on, (void __user *)arg, sizeof(on)))
 			ret = -EFAULT;
 		else if (on > 1)
@@ -450,7 +450,7 @@ static int aa551_fp_init(struct aa551 *ctx)
 	fp->brightness = AA551_BRIGHTNESS_DEFAULT;
 	fp->misc = (struct miscdevice) {
 		.minor = MISC_DYNAMIC_MINOR,
-		.name = "aston_fp_illumination",
+		.name = "fp_illumination",
 		.fops = &aa551_fp_fops,
 		.parent = &ctx->dsi->dev,
 		.mode = 0600,

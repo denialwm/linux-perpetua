@@ -11,9 +11,16 @@
 
 #include <linux/backlight.h>
 #include <linux/delay.h>
+#include <linux/fp_illumination.h>
+#include <linux/fs.h>
 #include <linux/gpio/consumer.h>
+#include <linux/kref.h>
+#include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/regulator/consumer.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
+#include <linux/workqueue.h>
 
 #include <drm/display/drm_dsc.h>
 #include <drm/display/drm_dsc_helper.h>
@@ -29,8 +36,11 @@
 #define NT37706_BRIGHTNESS_DEFAULT	6426
 #define NT37706_BRIGHTNESS_MAX		16180
 
+struct nt37706_fp;
+
 struct novatek_nt37706 {
 	struct drm_panel panel;
+	struct nt37706_fp *fp;
 	struct mipi_dsi_device *dsi;
 	struct drm_connector *connector;
 	struct drm_dsc_config dsc;
@@ -47,6 +57,8 @@ static inline struct novatek_nt37706 *to_novatek_nt37706(struct drm_panel *panel
 
 #define nt37706_switch_page(dsi_ctx, page) \
 	mipi_dsi_dcs_write_seq_multi((dsi_ctx), 0xf0, 0x55, 0xaa, 0x52, 0x08, (page))
+
+#include "panel-novatek-nt37706-fp.h"
 
 static int novatek_nt37706_power_on(struct novatek_nt37706 *ctx)
 {
@@ -274,6 +286,7 @@ static int novatek_nt37706_prepare(struct drm_panel *panel)
 	}
 
 	ctx->dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+	nt37706_fp_panel(ctx->fp, true);
 	return 0;
 
 err:
@@ -287,6 +300,7 @@ static int novatek_nt37706_unprepare(struct drm_panel *panel)
 	struct novatek_nt37706 *ctx = to_novatek_nt37706(panel);
 	int ret;
 
+	nt37706_fp_panel(ctx->fp, false);
 	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 	ret = novatek_nt37706_off(ctx);
 	if (ret < 0)
@@ -331,10 +345,15 @@ static const struct drm_panel_funcs novatek_nt37706_panel_funcs = {
 static int novatek_nt37706_bl_update_status(struct backlight_device *bl)
 {
 	struct mipi_dsi_device *dsi = bl_get_data(bl);
+	struct novatek_nt37706 *ctx = mipi_dsi_get_drvdata(dsi);
 	u16 brightness = backlight_get_brightness(bl);
+	int ret;
 
 	/* Sent in high-speed mode, big-endian, as the vendor does. */
-	return mipi_dsi_dcs_set_display_brightness_large(dsi, brightness);
+	mutex_lock(&ctx->fp->lock);
+	ret = mipi_dsi_dcs_set_display_brightness_large(dsi, brightness);
+	mutex_unlock(&ctx->fp->lock);
+	return ret;
 }
 
 static int novatek_nt37706_bl_get_brightness(struct backlight_device *bl)
@@ -397,6 +416,11 @@ static int novatek_nt37706_probe(struct mipi_dsi_device *dsi)
 	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_NO_EOT_PACKET |
 			  MIPI_DSI_CLOCK_NON_CONTINUOUS |
 			  MIPI_DSI_MODE_DSC_ALL_SLICES_IN_PKT;
+
+	/* Before the backlight: its writes take the illumination lock. */
+	ret = nt37706_fp_init(ctx);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to register fingerprint illumination\n");
 
 	ctx->panel.prepare_prev_first = true;
 	ctx->panel.backlight = novatek_nt37706_create_backlight(dsi);

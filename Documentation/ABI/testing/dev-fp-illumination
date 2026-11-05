@@ -1,0 +1,41 @@
+What:           /dev/fp_illumination
+Date:           October 2026
+Contact:        Doctor Logix <doctor.logix@gmail.com>
+Description:
+                Exclusive root-only (0600) local fingerprint illumination
+                control, registered by a panel driver whose panel has an
+                optical fingerprint sensor under it. The fd can be passed to
+                a trusted compositor; it does not expose arbitrary DSI
+                commands or biometric data. Its UAPI is declared in
+                linux/fp_illumination.h.
+
+                GET_INFO returns ABI version 1, native panel dimensions, the
+                panel's compatible string, panel-on and illumination-active
+                state, and the driver's independent maximum activation
+                duration. GET_INFO and opening the device do not power the
+                panel or change illumination.
+
+                SET accepts a pointer to a u32 (0 disables, 1 enables).
+                Enabling requires a prepared, enabled, nonzero-brightness
+                panel. Repeated enable cannot extend the activation deadline.
+                The caller must wait for presentation scanout before enabling
+                and for panel settling before fingerprint acquisition.
+
+                Final close, panel power-down and the independent timeout
+                disable local illumination. Failed DSI restoration retains
+                active state and schedules a retry; errors must not be treated
+                as confirmed restoration. A panel power cycle clears the
+                hardware state. The requested normal brightness is restored
+                after successful disable, including concurrent brightness
+                changes. Unbind invalidates outstanding fds safely.
+
+                Each driver uses its panel's factory local-HBM commands and
+                adds no global maximum-brightness fallback:
+
+                oneplus,aston-boe-aa551: factory DBV alpha, OTP-derived gamma
+                and local-HBM icon commands, 30000 ms. Normal brightness is
+                capped at the factory 900-nit DBV threshold only while the
+                region is lit.
+
+                csot,nt37706-v3: the factory local-HBM command set, its
+                brightness-band register and DBV alpha table, 30000 ms.
