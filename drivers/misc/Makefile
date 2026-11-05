@@ -74,3 +74,4 @@ obj-$(CONFIG_INTEL_SSEI)	+= issei/
 
 obj-$(CONFIG_OPLUS_UFF_FP) += oplus-uff-fp.o
 obj-$(CONFIG_GOODIX_TEE_FP) += goodix-tee-fp.o
+obj-$(CONFIG_JIIOV_TEE_FP) += jiiov-tee-fp.o

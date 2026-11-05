@@ -115,6 +115,17 @@
 		};
 	};
 
+	/* JIIOV JV0307 under the panel; its SPI bus belongs to QTEE. */
+	fingerprint {
+		compatible = "jiiov,jv0307";
+		reset-gpios = <&tlmm 56 GPIO_ACTIVE_LOW>;
+		interrupt-gpios = <&tlmm 79 GPIO_ACTIVE_HIGH>;
+		vdd-supply = <&vreg_l13b>;
+
+		pinctrl-0 = <&fingerprint_reset_default>, <&fingerprint_irq_default>;
+		pinctrl-names = "default";
+	};
+
 	gpio-keys {
 		compatible = "gpio-keys";
 
@@ -405,6 +416,14 @@
 		 */
 		vreg_l12b: ldo12 {
 			regulator-name = "vreg_l12b";
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* The fingerprint sensor: stock asks 3.3 V, this LDO's top step. */
+		vreg_l13b: ldo13 {
+			regulator-name = "vreg_l13b";
+			regulator-min-microvolt = <3296000>;
+			regulator-max-microvolt = <3296000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
@@ -745,6 +764,20 @@
 		function = "gpio";
 		drive-strength = <2>;
 		bias-pull-down;
+	};
+
+	fingerprint_reset_default: fingerprint-reset-default-state {
+		pins = "gpio56";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	fingerprint_irq_default: fingerprint-irq-default-state {
+		pins = "gpio79";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
 	};
 
 	/*

@@ -891,6 +891,8 @@ patternProperties:
     description: Jiandangjing Technology Co., Ltd.
   "^jide,.*":
     description: Jide Tech
+  "^jiiov,.*":
+    description: Shanghai JIIOV Technology Co., Ltd.
   "^joz,.*":
     description: JOZ BV
   "^jty,.*":
