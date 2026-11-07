@@ -112,6 +112,18 @@ config INPUT_ATC260X_ONKEY
 	  To compile this driver as a module, choose M here: the
 	  module will be called atc260x-onkey.
 
+config INPUT_AW9620X_KEY
+	tristate "Awinic AW9620x capacitive sensor as a key"
+	depends on I2C
+	depends on OF
+	select REGMAP_I2C
+	help
+	  Say Y here to use an Awinic AW9620x capacitive sensor as a key,
+	  such as the shoulder triggers of the Nubia RedMagic 11 Pro.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called aw9620x-key.
+
 config INPUT_ATMEL_CAPTOUCH
 	tristate "Atmel Capacitive Touch Button Driver"
 	depends on OF
