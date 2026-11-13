@@ -26,7 +26,7 @@
 /delete-node/ &reserved_memory;
 
 / {
-	model = "OnePlus Ace 3";
+	model = "OnePlus 12R";
 	compatible = "oneplus,aston", "qcom,sm8550";
 	chassis-type = "handset";
 
