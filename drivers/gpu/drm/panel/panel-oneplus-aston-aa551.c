@@ -53,6 +53,8 @@
 #define IRIS_ONE_WIRE_END_US		227
 #define IRIS_FORCE_ABYP_PULSES		6
 #define IRIS_ABYP_POLL_COUNT		50
+/* Off time of the one power cycle after the bootloader's splash. */
+#define AA551_SPLASH_OFF_MS		500
 
 struct aa551;
 
@@ -86,6 +88,8 @@ struct aa551 {
 	struct gpio_desc *iris_wakeup_gpio;
 	struct gpio_desc *iris_abyp_ready_gpio;
 	bool powered, standby_enabled, retained, iris_confirmed, shutting_down;
+	/* The bootloader's splash still runs the panel and the Iris7P. */
+	bool splash;
 	/* At the 1 Hz refresh floor for the always-on display. */
 	bool idle;
 	u32 cold_wakes, retained_wakes;
@@ -562,6 +566,25 @@ static int aa551_power_on(struct aa551 *ctx)
 
 	if (ctx->powered)
 		return 0;
+	/*
+	 * Lit straight from the splash, a quarter second after the bootloader,
+	 * the panel answered its first command with garbage and stayed dark;
+	 * after a real power-off it starts as from cold. Its rails are its own.
+	 */
+	if (ctx->splash) {
+		ctx->splash = false;
+		ret = regulator_enable(ctx->vddio);
+		if (!ret) {
+			ret = regulator_enable(ctx->vci);
+			if (!ret)
+				regulator_disable(ctx->vci);
+			aa551_iris_power_off(ctx);
+			regulator_disable(ctx->vddio);
+		}
+		if (ret)
+			dev_warn(dev, "Failed to power-cycle after the splash: %d\n", ret);
+		msleep(AA551_SPLASH_OFF_MS);
+	}
 	/* vddio comes first: it also feeds the Iris7P 1.8 V rail. */
 	ret = regulator_enable(ctx->vddio);
 	if (ret) {
@@ -1314,6 +1337,7 @@ static int aa551_probe(struct mipi_dsi_device *dsi)
 	if (IS_ERR(ctx->vci))
 		return dev_err_probe(dev, PTR_ERR(ctx->vci),
 				     "Failed to get vci regulator\n");
+	ctx->splash = true;
 
 	ctx->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
 	if (IS_ERR(ctx->reset_gpio))
