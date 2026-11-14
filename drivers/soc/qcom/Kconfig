@@ -213,6 +213,14 @@ config QCOM_SMSM
 	  Say yes here to support the Qualcomm Shared Memory State Machine.
 	  The state machine is represented by bits in shared memory.
 
+config QCOM_OPLUS_PROJECT
+	tristate "OnePlus project information"
+	depends on QCOM_SMEM
+	help
+	  Say yes here to read the project number, PCB version and RF variant
+	  that OnePlus bootloaders leave in SMEM, for the modem's storage
+	  service.
+
 config QCOM_SOCINFO
 	tristate "Qualcomm socinfo driver"
 	depends on QCOM_SMEM
