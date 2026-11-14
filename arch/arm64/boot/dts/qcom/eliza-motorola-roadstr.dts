@@ -37,8 +37,11 @@
 		#size-cells = <2>;
 		ranges;
 
-		/* A panic reboots, so an unattended phone comes back. */
-		bootargs = "rdinit=/init panic=10 loglevel=7 log_buf_len=2M clk_ignore_unused pd_ignore_unused";
+		/*
+		 * A panic reboots, so an unattended phone comes back. bootconfig:
+		 * the bootloader's androidboot properties, the slot among them.
+		 */
+		bootargs = "rdinit=/init panic=10 loglevel=7 log_buf_len=2M clk_ignore_unused pd_ignore_unused bootconfig";
 
 		/*
 		 * The bootloader passes the vendor_boot ramdisk followed by the
