@@ -85,8 +85,10 @@ struct tfa9865_priv {
 	struct gpio_desc *reset_gpio;
 };
 
+/* A mask of 0 writes the whole register. */
 struct tfa9865_reg_data {
 	u8 reg;
+	u16 mask;
 	u16 val;
 };
 
@@ -98,6 +100,8 @@ struct tfa9865_device_config {
 struct tfa9865_static_config {
 	unsigned int dev_count;
 	const struct tfa9865_device_config *dev_config;
+	/* Sample formats the board's slot setup takes, 0 for any */
+	u64 formats;
 };
 
 static const struct tfa9865_reg_data tfa9865_iceland_regs_0__34_36[] = {
@@ -206,6 +210,128 @@ static const struct tfa9865_device_config tfa9865_iceland_devices[] = {
 static const struct tfa9865_static_config tfa9865_iceland_config = {
 	.dev_count = ARRAY_SIZE(tfa9865_iceland_devices),
 	.dev_config = tfa9865_iceland_devices,
+};
+
+/*
+ * Motorola Edge 70: two TFA9864 on 32-bit I2S slots, 0x34 in the left slot
+ * and 0x35 in the right, set up as the stock container's speaker profile.
+ */
+static const struct tfa9865_reg_data tfa9864_roadstr_regs_34[] = {
+	{ .reg = 0x20, .mask = 0xf000, .val = 0x2000 },
+	{ .reg = 0x20, .mask = 0x0300, .val = 0x0300 },
+	{ .reg = 0x20, .mask = 0x0c00, .val = 0x0c00 },
+	{ .reg = 0x20, .mask = 0x00c0, .val = 0x0000 },
+	{ .reg = 0x21, .mask = 0x0010, .val = 0x0010 },
+	{ .reg = 0x21, .mask = 0x0f00, .val = 0x0000 },
+	{ .reg = 0x21, .mask = 0x0008, .val = 0x0008 },
+	{ .reg = 0x21, .mask = 0xf000, .val = 0x1000 },
+	{ .reg = 0x22, .mask = 0x000f, .val = 0x0000 },
+	{ .reg = 0x68, .mask = 0x0007, .val = 0x0004 },
+	{ .reg = 0x68, .mask = 0x0070, .val = 0x0010 },
+	{ .reg = 0x68, .mask = 0x0380, .val = 0x0100 },
+	{ .reg = 0x87, .mask = 0x0200, .val = 0x0000 },
+	{ .reg = 0x5f, .mask = 0x03e0, .val = 0x0100 },
+	{ .reg = 0x67, .mask = 0x003f, .val = 0x002e },
+	{ .reg = 0x67, .mask = 0x0fc0, .val = 0x0300 },
+	{ .reg = 0x61, .mask = 0x003f, .val = 0x0002 },
+	{ .reg = 0x61, .mask = 0x0fc0, .val = 0x0600 },
+	{ .reg = 0x7c, .mask = 0x003f, .val = 0x0032 },
+	{ .reg = 0x7c, .mask = 0x0fc0, .val = 0x0300 },
+	{ .reg = 0x63, .mask = 0x3000, .val = 0x0000 },
+	{ .reg = 0x66, .mask = 0xc000, .val = 0x0000 },
+	{ .reg = 0x62, .mask = 0x3800, .val = 0x3000 },
+	{ .reg = 0x62, .mask = 0x00f0, .val = 0x0040 },
+	{ .reg = 0x65, .mask = 0x0800, .val = 0x0000 },
+	{ .reg = 0x68, .mask = 0x0c00, .val = 0x0800 },
+	{ .reg = 0xce, .mask = 0x0008, .val = 0x0000 },
+	{ .reg = 0x5a, .mask = 0x001e, .val = 0x0014 },
+	{ .reg = 0x75, .mask = 0x03ff, .val = 0x01cc },
+	{ .reg = 0x75, .mask = 0x7c00, .val = 0x3c00 },
+	{ .reg = 0x74, .mask = 0x007c, .val = 0x0028 },
+	{ .reg = 0x76, .mask = 0xff00, .val = 0xbe00 },
+	{ .reg = 0x08, .mask = 0x00f8, .val = 0x0098 },
+	{ .reg = 0x50, .mask = 0x8000, .val = 0x8000 },
+	{ .reg = 0x5b, .mask = 0x0030, .val = 0x0010 },
+	{ .reg = 0x5b, .mask = 0x01c0, .val = 0x0080 },
+	{ .reg = 0x5a, .mask = 0x01e0, .val = 0x0180 },
+	{ .reg = 0x5a, .mask = 0x0600, .val = 0x0400 },
+	{ .reg = 0x5b, .mask = 0x000f, .val = 0x0005 },
+	{ .reg = 0x5a, .mask = 0x7800, .val = 0x1000 },
+	{ .reg = 0x5c, .mask = 0x0300, .val = 0x0300 },
+	{ .reg = 0x5b, .mask = 0x1e00, .val = 0x0000 },
+	{ .reg = 0x5c, .mask = 0x00f0, .val = 0x0000 },
+	{ .reg = 0x02, .mask = 0x000f, .val = 0x0008 },
+	{ .reg = 0x00, .mask = 0x0010, .val = 0x0010 },
+	{ .reg = 0x7c, .mask = 0xc000, .val = 0x4000 },
+	{ .reg = 0x02, .mask = 0x0fe0, .val = 0x0c20 },
+};
+
+static const struct tfa9865_reg_data tfa9864_roadstr_regs_35[] = {
+	{ .reg = 0x20, .mask = 0xf000, .val = 0x2000 },
+	{ .reg = 0x20, .mask = 0x0300, .val = 0x0300 },
+	{ .reg = 0x20, .mask = 0x0c00, .val = 0x0c00 },
+	{ .reg = 0x20, .mask = 0x00c0, .val = 0x0000 },
+	{ .reg = 0x21, .mask = 0x0010, .val = 0x0010 },
+	{ .reg = 0x21, .mask = 0x0f00, .val = 0x0100 },
+	{ .reg = 0x21, .mask = 0x0008, .val = 0x0008 },
+	{ .reg = 0x21, .mask = 0xf000, .val = 0x0000 },
+	{ .reg = 0x22, .mask = 0x000f, .val = 0x0001 },
+	{ .reg = 0x68, .mask = 0x0007, .val = 0x0004 },
+	{ .reg = 0x68, .mask = 0x0070, .val = 0x0010 },
+	{ .reg = 0x68, .mask = 0x0380, .val = 0x0100 },
+	{ .reg = 0x87, .mask = 0x0200, .val = 0x0000 },
+	{ .reg = 0x5f, .mask = 0x03e0, .val = 0x0100 },
+	{ .reg = 0x67, .mask = 0x003f, .val = 0x002e },
+	{ .reg = 0x67, .mask = 0x0fc0, .val = 0x0300 },
+	{ .reg = 0x61, .mask = 0x003f, .val = 0x0002 },
+	{ .reg = 0x61, .mask = 0x0fc0, .val = 0x0600 },
+	{ .reg = 0x7c, .mask = 0x003f, .val = 0x0032 },
+	{ .reg = 0x7c, .mask = 0x0fc0, .val = 0x0300 },
+	{ .reg = 0x63, .mask = 0x3000, .val = 0x0000 },
+	{ .reg = 0x66, .mask = 0xc000, .val = 0x0000 },
+	{ .reg = 0x62, .mask = 0x3800, .val = 0x3000 },
+	{ .reg = 0x62, .mask = 0x00f0, .val = 0x0040 },
+	{ .reg = 0x65, .mask = 0x0800, .val = 0x0000 },
+	{ .reg = 0x68, .mask = 0x0c00, .val = 0x0800 },
+	{ .reg = 0xce, .mask = 0x0008, .val = 0x0000 },
+	{ .reg = 0x5a, .mask = 0x001e, .val = 0x0014 },
+	{ .reg = 0x75, .mask = 0x03ff, .val = 0x01cc },
+	{ .reg = 0x75, .mask = 0x7c00, .val = 0x3c00 },
+	{ .reg = 0x74, .mask = 0x007c, .val = 0x0028 },
+	{ .reg = 0x76, .mask = 0xff00, .val = 0xbe00 },
+	{ .reg = 0x67, .mask = 0x003f, .val = 0x0026 },
+	{ .reg = 0x08, .mask = 0x00f8, .val = 0x0098 },
+	{ .reg = 0x50, .mask = 0x8000, .val = 0x8000 },
+	{ .reg = 0x5b, .mask = 0x0030, .val = 0x0010 },
+	{ .reg = 0x5b, .mask = 0x01c0, .val = 0x0080 },
+	{ .reg = 0x5a, .mask = 0x01e0, .val = 0x0180 },
+	{ .reg = 0x5a, .mask = 0x0600, .val = 0x0400 },
+	{ .reg = 0x5b, .mask = 0x000f, .val = 0x0005 },
+	{ .reg = 0x5a, .mask = 0x7800, .val = 0x1000 },
+	{ .reg = 0x5c, .mask = 0x0300, .val = 0x0300 },
+	{ .reg = 0x5b, .mask = 0x1e00, .val = 0x0000 },
+	{ .reg = 0x5c, .mask = 0x00f0, .val = 0x0000 },
+	{ .reg = 0x02, .mask = 0x000f, .val = 0x0008 },
+	{ .reg = 0x00, .mask = 0x0010, .val = 0x0010 },
+	{ .reg = 0x7c, .mask = 0xc000, .val = 0x4000 },
+	{ .reg = 0x02, .mask = 0x0fe0, .val = 0x0c20 },
+};
+
+static const struct tfa9865_device_config tfa9864_roadstr_devices[] = {
+	{
+		.reg_count = ARRAY_SIZE(tfa9864_roadstr_regs_34),
+		.reg_data = tfa9864_roadstr_regs_34,
+	},
+	{
+		.reg_count = ARRAY_SIZE(tfa9864_roadstr_regs_35),
+		.reg_data = tfa9864_roadstr_regs_35,
+	},
+};
+
+static const struct tfa9865_static_config tfa9864_roadstr_config = {
+	.dev_count = ARRAY_SIZE(tfa9864_roadstr_devices),
+	.dev_config = tfa9864_roadstr_devices,
+	.formats = SNDRV_PCM_FMTBIT_S32_LE,
 };
 
 static int tfa9865_hw_params(struct snd_pcm_substream *substream,
@@ -471,6 +597,30 @@ static int tfa9865_init(struct tfa9865_priv *tfa9865)
 		regmap_write(tfa9865->regmap, 0xcf, 0x2cd7);
 		regmap_write(tfa9865->regmap, 0xd7, 0x1000);
 		regmap_write(tfa9865->regmap, 0xdd, 0x0036);
+	} else if (product == 0x9864 && version == 0x05) {
+		/* Revision B0, type 2: the same settings for N2B0 and MN2B0 */
+		dev_info(tfa9865->dev, "Found TFA9864 %s2B0\n", variant == MN ? "MN" : "N");
+		regmap_write(tfa9865->regmap, 0x00, 0xf241);
+		regmap_write(tfa9865->regmap, 0x02, 0x0c28);
+		regmap_write(tfa9865->regmap, 0x08, 0x009a);
+		regmap_write(tfa9865->regmap, 0x50, 0xc000);
+		regmap_write(tfa9865->regmap, 0x54, 0x10e0);
+		regmap_write(tfa9865->regmap, 0x5a, 0x5f5e);
+		regmap_write(tfa9865->regmap, 0x5b, 0x74e2);
+		regmap_write(tfa9865->regmap, 0x5c, 0xb02b);
+		regmap_write(tfa9865->regmap, 0x5f, 0x00a0);
+		regmap_write(tfa9865->regmap, 0x62, 0x06c4);
+		regmap_write(tfa9865->regmap, 0x63, 0x80d4);
+		regmap_write(tfa9865->regmap, 0x65, 0x0c58);
+		regmap_write(tfa9865->regmap, 0x67, 0x006e);
+		regmap_write(tfa9865->regmap, 0x68, 0x0820);
+		regmap_write(tfa9865->regmap, 0x69, 0x0119);
+		regmap_write(tfa9865->regmap, 0x74, 0x6028);
+		regmap_write(tfa9865->regmap, 0x75, 0x1daa);
+		regmap_write(tfa9865->regmap, 0x76, 0xbe00);
+		regmap_write(tfa9865->regmap, 0x78, 0x0001);
+		regmap_write(tfa9865->regmap, 0x7c, 0x10f2);
+		regmap_write(tfa9865->regmap, 0xdd, 0x01b6);
 	} else {
 		dev_warn(tfa9865->dev, "Unknown TFA986x version, no optimal settings applied\n");
 	}
@@ -493,6 +643,7 @@ static int tfa9865_init(struct tfa9865_priv *tfa9865)
 static int tfa9865_i2c_probe(struct i2c_client *i2c)
 {
 	const struct tfa9865_static_config *config;
+	struct snd_soc_dai_driver *dai;
 	struct tfa9865_priv *tfa9865;
 	u32 devindex = 0;
 	int ret, i;
@@ -540,7 +691,12 @@ static int tfa9865_i2c_probe(struct i2c_client *i2c)
 		for (i = 0; i < config->dev_config[devindex].reg_count; i++) {
 			const struct tfa9865_reg_data *reg_data =
 				&config->dev_config[devindex].reg_data[i];
-			ret = regmap_write(tfa9865->regmap, reg_data->reg, reg_data->val);
+			if (reg_data->mask)
+				ret = regmap_update_bits(tfa9865->regmap, reg_data->reg,
+							 reg_data->mask, reg_data->val);
+			else
+				ret = regmap_write(tfa9865->regmap, reg_data->reg,
+						   reg_data->val);
 			if (ret) {
 				dev_err(tfa9865->dev,
 					"failed to write reg 0x%x val 0x%x ret=%d\n",
@@ -550,8 +706,16 @@ static int tfa9865_i2c_probe(struct i2c_client *i2c)
 		}
 	}
 
+	dai = &tfa9865_dai;
+	if (config && config->formats) {
+		dai = devm_kmemdup(tfa9865->dev, &tfa9865_dai, sizeof(*dai), GFP_KERNEL);
+		if (!dai)
+			return -ENOMEM;
+		dai->playback.formats = config->formats;
+	}
+
 	return devm_snd_soc_register_component(tfa9865->dev, &tfa9865_component,
-					       &tfa9865_dai, 1);
+					       dai, 1);
 
 	return 0;
 }
@@ -566,6 +730,10 @@ static const struct of_device_id tfa9865_of_match[] = {
 	{
 		.compatible = "goodix,tfa9865-iceland",
 		.data = &tfa9865_iceland_config,
+	},
+	{
+		.compatible = "goodix,tfa9864-roadstr",
+		.data = &tfa9864_roadstr_config,
 	},
 	{ }
 };
