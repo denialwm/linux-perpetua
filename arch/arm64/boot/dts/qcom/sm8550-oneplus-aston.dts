@@ -390,32 +390,8 @@
 		};
 	};
 
-	/* Bit-banged bus on the LPI pins */
-	spi-2 {
-		compatible = "spi-gpio";
-		#address-cells = <1>;
-		#size-cells = <0>;
-
-		miso-gpios = <&tlmm 192 GPIO_ACTIVE_HIGH>;
-		mosi-gpios = <&tlmm 193 GPIO_ACTIVE_HIGH>;
-		sck-gpios = <&tlmm 194 GPIO_ACTIVE_HIGH>;
-		cs-gpios = <&tlmm 195 GPIO_ACTIVE_HIGH>;
-		num-chipselects = <1>;
-
-		pinctrl-0 = <&lpi_spi2_default>;
-		pinctrl-names = "default";
-
-		imu@0 {
-			compatible = "bosch,bmi260";
-			reg = <0>;
-			spi-max-frequency = <9600000>;
-
-			interrupt-parent = <&tlmm>;
-			interrupts = <84 IRQ_TYPE_LEVEL_HIGH>;
-
-			vdd-supply = <&vreg_l1b_1p8>;
-			vddio-supply = <&vreg_l1b_1p8>;
-		};
+	project-info {
+		compatible = "oneplus,project-info";
 	};
 
 	wcn7850-pmu {
@@ -1600,12 +1576,6 @@
 			drive-strength = <8>;
 			bias-disable;
 		};
-	};
-
-	lpi_spi2_default: lpi-spi2-default-state {
-		/* MISO, MOSI, CLK, CS */
-		pins = "gpio192", "gpio193", "gpio194", "gpio195";
-		function = "gpio";
 	};
 
 	sde_dsi_active: sde-dsi-active-state {
