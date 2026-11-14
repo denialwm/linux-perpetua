@@ -561,6 +561,12 @@
 	};
 };
 
+&ipa {
+	firmware-name = "qcom/eliza/motorola/roadstr/ipa_fws.mdt";
+
+	status = "okay";
+};
+
 &mdss {
 	status = "okay";
 };
