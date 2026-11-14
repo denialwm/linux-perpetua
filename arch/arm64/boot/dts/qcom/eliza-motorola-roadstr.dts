@@ -10,6 +10,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/firmware/qcom,scm.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
@@ -198,6 +199,21 @@
 			record-size = <0x20000>;
 			console-size = <0x40000>;
 			no-map;
+		};
+
+		/*
+		 * The modem's file system buffer for rmtfs: stock allocates
+		 * 4 MiB anywhere the modem can reach, below 4 GiB.
+		 */
+		rmtfs_mem: rmtfs-region {
+			compatible = "qcom,rmtfs-mem";
+			size = <0x0 0x400000>;
+			alignment = <0x0 0x100000>;
+			alloc-ranges = <0x0 0x80000000 0x0 0x80000000>;
+			no-map;
+
+			qcom,client-id = <1>;
+			qcom,vmid = <QCOM_SCM_VMID_MSS_MSA>;
 		};
 
 		/* Unmapped so simple-framebuffer can ioremap it. */
@@ -720,6 +736,13 @@
 &remoteproc_adsp {
 	firmware-name = "qcom/eliza/motorola/roadstr/adsp.mdt",
 			"qcom/eliza/motorola/roadstr/adsp_dtb.mdt";
+
+	status = "okay";
+};
+
+&remoteproc_mpss {
+	firmware-name = "qcom/eliza/motorola/roadstr/modem.mdt",
+			"qcom/eliza/motorola/roadstr/modem_dtb.mdt";
 
 	status = "okay";
 };

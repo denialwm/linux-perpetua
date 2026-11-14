@@ -48,6 +48,9 @@ properties:
           - const: qcom,sm8750-cdsp-pas
           - const: qcom,sm8650-cdsp-pas
       - items:
+          - const: qcom,eliza-mpss-pas
+          - const: qcom,sm8550-mpss-pas
+      - items:
           - const: qcom,kaanapali-mpss-pas
           - const: qcom,sm8750-mpss-pas
 
