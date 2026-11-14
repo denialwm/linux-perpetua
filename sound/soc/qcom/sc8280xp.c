@@ -239,6 +239,9 @@ static int sc8280xp_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 		channels->min = 1;
 		break;
 	case PRIMARY_MI2S_RX:
+	case SECONDARY_MI2S_RX:
+	case TERTIARY_MI2S_RX:
+	case QUATERNARY_MI2S_RX:
 		if (!(codec_dai->driver->playback.formats & SNDRV_PCM_FMTBIT_S16_LE)) {
 			snd_mask_none(fmt);
 			snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S32_LE);
@@ -517,6 +520,7 @@ static const struct qcom_snd_soc_common eliza_priv_data = {
 	.driver_name = "eliza",
 	.dapm_widgets = sc8280xp_dapm_widgets,
 	.num_dapm_widgets = ARRAY_SIZE(sc8280xp_dapm_widgets),
+	.mi2s_bclk_enable = true,
 	.wcd_jack = true,
 };
 
