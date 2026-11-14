@@ -223,6 +223,51 @@
 		};
 	};
 
+	sound {
+		compatible = "qcom,eliza-sndcard";
+		pinctrl-0 = <&lpi_i2s0_default>;
+		pinctrl-names = "default";
+
+		model = "Motorola-Edge70";
+		audio-routing = "VA DMIC0", "vdd-micb",
+				"VA DMIC1", "vdd-micb",
+				"VA DMIC2", "vdd-micb",
+				"VA DMIC3", "vdd-micb";
+
+		/* The island's I2S, which stock calls the RX/TX interface's primary */
+		quaternary-i2s-dai-link {
+			link-name = "Quaternary MI2S Playback";
+
+			cpu {
+				sound-dai = <&q6apmbedai QUATERNARY_MI2S_RX>;
+			};
+
+			codec {
+				sound-dai = <&speaker_top>, <&speaker_bottom>;
+			};
+
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+
+		va-dai-link {
+			link-name = "VA Capture";
+
+			cpu {
+				sound-dai = <&q6apmbedai VA_CODEC_DMA_TX_0>;
+			};
+
+			codec {
+				sound-dai = <&lpass_vamacro 0>;
+			};
+
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+	};
+
 	/*
 	 * Motorola's estimate of the back cover temperature, BACK_TEMP in the
 	 * stock thermal-engine-roadstr.conf: a weighted average of the board
@@ -349,6 +394,20 @@
 };
 
 &apps_rsc {
+	/* The microphones' supply, an external LDO behind a PMIC GPIO */
+	vreg_dmic: regulator-dmic {
+		compatible = "regulator-fixed";
+		regulator-name = "vreg_dmic";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+
+		gpio = <&pm7550_gpios 8 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&dmic_power_default>;
+		pinctrl-names = "default";
+	};
+
 	regulators-0 {
 		compatible = "qcom,pm7550-rpmh-regulators";
 		qcom,pmic-id = "b";
@@ -548,6 +607,25 @@
 
 	status = "okay";
 
+	/* Stock's receiver amplifier: the top speaker, also the earpiece */
+	speaker_top: amplifier@34 {
+		compatible = "goodix,tfa9864-roadstr";
+		reg = <0x34>;
+		reset-gpios = <&tlmm 148 GPIO_ACTIVE_LOW>;
+		tfa,devindex = <0>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "Top";
+	};
+
+	speaker_bottom: amplifier@35 {
+		compatible = "goodix,tfa9864-roadstr";
+		reg = <0x35>;
+		reset-gpios = <&tlmm 156 GPIO_ACTIVE_LOW>;
+		tfa,devindex = <1>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "Bottom";
+	};
+
 	/* Downstream "aw8693x"; the stock driver reads chip ID 0x9380. */
 	haptics@5a {
 		compatible = "awinic,aw86938", "awinic,aw86927";
@@ -565,6 +643,42 @@
 	firmware-name = "qcom/eliza/motorola/roadstr/ipa_fws.mdt";
 
 	status = "okay";
+};
+
+&lpass_tlmm {
+	lpi_i2s0_default: lpi-i2s0-default-state {
+		clk-pins {
+			pins = "gpio0";
+			function = "i2s0_clk";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+
+		ws-pins {
+			pins = "gpio1";
+			function = "i2s0_ws";
+			drive-strength = <8>;
+			bias-disable;
+			output-high;
+		};
+
+		data-pins {
+			pins = "gpio2";
+			function = "i2s0_data";
+			drive-strength = <8>;
+			bias-pull-down;
+			output-high;
+		};
+	};
+};
+
+&lpass_vamacro {
+	pinctrl-0 = <&dmic01_default>, <&dmic23_default>;
+	pinctrl-names = "default";
+
+	vdd-micb-supply = <&vreg_dmic>;
+	qcom,dmic-sample-rate = <2400000>;
 };
 
 &mdss {
@@ -614,6 +728,13 @@
 		pins = "gpio7";
 		function = "normal";
 		bias-high-impedance;
+	};
+
+	dmic_power_default: dmic-power-default-state {
+		pins = "gpio8";
+		function = "normal";
+		power-source = <1>;
+		output-low;
 	};
 
 	key_vol_up_default: key-vol-up-default-state {
@@ -729,6 +850,17 @@
 	linux,code = <KEY_VOLUMEDOWN>;
 
 	status = "okay";
+};
+
+&q6apmbedai {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	dai@22 {
+		reg = <QUATERNARY_MI2S_RX>;
+		clocks = <&q6prmcc LPASS_CLK_ID_QUAD_MI2S_IBIT LPASS_CLK_ATTRIBUTE_COUPLE_NO>;
+		clock-names = "bclk";
+	};
 };
 
 &qupv3_1 {
