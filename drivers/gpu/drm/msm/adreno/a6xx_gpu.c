@@ -1030,14 +1030,22 @@ static bool a6xx_ucode_check_version(struct a6xx_gpu *a6xx_gpu,
 			"a630 SQE ucode is too old. Have version %x need at least %x\n",
 			buf[0] & 0xfff, 0x190);
 	} else if (!strcmp(sqe_name, "a650_sqe.fw")) {
-		if ((buf[0] & 0xfff) >= 0x095) {
+		/*
+		 * The Pixel 5a (a620) ships the a650 SQE ucode at version
+		 * v93, which runs on the a620. The v95 requirement is for the
+		 * a650 family; accepting v93 for the a620 keeps the stock
+		 * firmware booting.
+		 */
+		unsigned int min_version = adreno_is_a620(adreno_gpu) ? 0x093 : 0x095;
+
+		if ((buf[0] & 0xfff) >= min_version) {
 			ret = true;
 			goto out;
 		}
 
 		DRM_DEV_ERROR(&gpu->pdev->dev,
 			"a650 SQE ucode is too old. Have version %x need at least %x\n",
-			buf[0] & 0xfff, 0x095);
+			buf[0] & 0xfff, min_version);
 	} else if (!strcmp(sqe_name, "a660_sqe.fw")) {
 		ret = true;
 	} else {
