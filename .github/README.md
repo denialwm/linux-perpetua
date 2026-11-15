@@ -89,4 +89,5 @@ it, boot it as is, then fix only what that boot shows broken. Fixes from the
 device's own kernel are not imported because they exist there.
 [devices/README](../devices/README) summarises the procedure, and
 [the add-device skill](../.claude/skills/add-device/SKILL.md) describes it in
-full, with its checks.
+full, with its checks. [CONTRIBUTING.md](CONTRIBUTING.md) says how to send a
+device as a pull request.
