@@ -323,6 +323,8 @@ static int __maybe_unused ak7375_vcm_resume(struct device *dev)
 			       cdef->mode_active, 1);
 	if (ret) {
 		dev_err(dev, "%s I2C failure: %d\n", __func__, ret);
+		regulator_bulk_disable(ARRAY_SIZE(ak7375_supply_names),
+				       ak7375_dev->supplies);
 		return ret;
 	}
 
