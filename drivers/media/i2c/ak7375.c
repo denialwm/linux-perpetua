@@ -354,7 +354,7 @@ static const struct of_device_id ak7375_of_table[] = {
 MODULE_DEVICE_TABLE(of, ak7375_of_table);
 
 static const struct dev_pm_ops ak7375_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(ak7375_vcm_suspend, ak7375_vcm_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 	SET_RUNTIME_PM_OPS(ak7375_vcm_suspend, ak7375_vcm_resume, NULL)
 };
 
