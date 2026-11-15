@@ -5783,6 +5783,16 @@ static int camss_genpd_notify(struct notifier_block *nb, unsigned long action,
 	return NOTIFY_OK;
 }
 
+/* Drop the interconnect votes only once the TITAN_TOP domain of @pd is off */
+static void camss_follow_genpd(struct camss *camss, struct device *pd)
+{
+	camss->genpd_nb.notifier_call = camss_genpd_notify;
+	if (!dev_pm_genpd_add_notifier(pd, &camss->genpd_nb))
+		camss->icc_follows_genpd = true;
+	else
+		dev_warn(camss->dev, "interconnect votes follow runtime PM\n");
+}
+
 static int camss_configure_pd(struct camss *camss)
 {
 	const struct camss_resources *res = camss->res;
@@ -5803,9 +5813,12 @@ static int camss_configure_pd(struct camss *camss)
 	 * If a platform device has just one power domain, then it is attached
 	 * at platform_probe() level, thus there shall be no need and even no
 	 * option to attach it again, this is the case for CAMSS on MSM8916.
+	 * That one domain is TITAN_TOP where the CCI shares it.
 	 */
-	if (camss->genpd_num == 1)
+	if (camss->genpd_num == 1) {
+		camss_follow_genpd(camss, dev);
 		return 0;
+	}
 
 	/* count the # of VFEs which have flagged power-domain */
 	for (vfepd_num = i = 0; i < camss->res->vfe_num; i++) {
@@ -5854,11 +5867,7 @@ static int camss_configure_pd(struct camss *camss)
 		goto fail_pm;
 	}
 
-	camss->genpd_nb.notifier_call = camss_genpd_notify;
-	if (!dev_pm_genpd_add_notifier(camss->genpd, &camss->genpd_nb))
-		camss->icc_follows_genpd = true;
-	else
-		dev_warn(dev, "interconnect votes follow runtime PM\n");
+	camss_follow_genpd(camss, camss->genpd);
 
 	return 0;
 
@@ -5895,8 +5904,11 @@ static void camss_genpd_subdevice_cleanup(struct camss *camss)
 
 static void camss_genpd_cleanup(struct camss *camss)
 {
-	if (camss->genpd_num == 1)
+	if (camss->genpd_num == 1) {
+		if (camss->icc_follows_genpd)
+			dev_pm_genpd_remove_notifier(camss->dev);
 		return;
+	}
 
 	camss_genpd_subdevice_cleanup(camss);
 
