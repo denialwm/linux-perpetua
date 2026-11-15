@@ -38,6 +38,29 @@
 #define NT37706_BRIGHTNESS_DEFAULT	6426
 #define NT37706_BRIGHTNESS_MAX		16180
 
+/*
+ * Always-on display, set by the compositor while its lock screen shows the
+ * always-on picture. Blanking then puts the panel in DCS idle mode at
+ * ambient_brightness, as stock's command mode switch does, instead of
+ * turning it off: it keeps showing the last frame from its own memory while
+ * the host powers down, and an unblank keeps idle mode, since the host only
+ * woke to draw a new frame. Clearing it leaves idle mode, at once on a lit
+ * panel or else at the next unblank. The backlight writes nothing while
+ * ambient blanks or idle mode holds, so the switch shows no dark frame.
+ */
+static bool ambient;
+static int nt37706_set_ambient(const char *val, const struct kernel_param *kp);
+static const struct kernel_param_ops nt37706_ambient_ops = {
+	.set = nt37706_set_ambient,
+	.get = param_get_bool,
+};
+module_param_cb(ambient, &nt37706_ambient_ops, &ambient, 0644);
+MODULE_PARM_DESC(ambient, "Blank into idle mode, keeping the last frame lit");
+
+static uint ambient_brightness = 0x0554;
+module_param(ambient_brightness, uint, 0644);
+MODULE_PARM_DESC(ambient_brightness, "Idle mode brightness code (stock 0x0554)");
+
 struct nt37706_fp;
 
 struct novatek_nt37706 {
@@ -50,7 +73,14 @@ struct novatek_nt37706 {
 	struct regulator *vddio;
 	struct regulator *vdd;
 	struct regulator *vci;
+	/* The rate code the panel runs; it outlives a retained blank. */
+	u8 rate;
+	/* Kept powered through a blank; lit (enable to disable); idle mode. */
+	bool retained, enabled, idle;
 };
+
+/* The one panel, for the ambient parameter. */
+static struct novatek_nt37706 *nt37706_panel;
 
 static inline struct novatek_nt37706 *to_novatek_nt37706(struct drm_panel *panel)
 {
@@ -61,6 +91,58 @@ static inline struct novatek_nt37706 *to_novatek_nt37706(struct drm_panel *panel
 	mipi_dsi_dcs_write_seq_multi((dsi_ctx), 0xf0, 0x55, 0xaa, 0x52, 0x08, (page))
 
 #include "panel-novatek-nt37706-fp.h"
+
+/* Stock cmd-mode-switch-in: the idle level (second 0x51 register), idle on. */
+static int nt37706_idle_on(struct novatek_nt37706 *ctx)
+{
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
+	u16 level = min_t(uint, ambient_brightness, NT37706_BRIGHTNESS_MAX);
+	u8 set_level[] = { MIPI_DCS_SET_DISPLAY_BRIGHTNESS, level >> 8, level & 0xff };
+
+	mutex_lock(&ctx->fp->lock);
+	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x6f, 0x04);
+	mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, set_level, sizeof(set_level));
+	mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, (u8[]){ MIPI_DCS_ENTER_IDLE_MODE }, 1);
+	mutex_unlock(&ctx->fp->lock);
+
+	return dsi_ctx.accum_err;
+}
+
+/* Stock cmd-mode-switch-out: the backlight's level, then idle off. */
+static int nt37706_idle_off(struct novatek_nt37706 *ctx)
+{
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
+	u16 level = min_t(u32, ctx->panel.backlight->props.brightness,
+			  NT37706_BRIGHTNESS_MAX);
+	u8 set_level[] = { MIPI_DCS_SET_DISPLAY_BRIGHTNESS, level >> 8, level & 0xff };
+
+	mutex_lock(&ctx->fp->lock);
+	mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, set_level, sizeof(set_level));
+	mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, (u8[]){ MIPI_DCS_EXIT_IDLE_MODE }, 1);
+	mutex_unlock(&ctx->fp->lock);
+
+	return dsi_ctx.accum_err;
+}
+
+static int nt37706_set_ambient(const char *val, const struct kernel_param *kp)
+{
+	struct novatek_nt37706 *ctx = READ_ONCE(nt37706_panel);
+	bool on;
+	int ret;
+
+	ret = kstrtobool(val, &on);
+	if (ret)
+		return ret;
+	WRITE_ONCE(ambient, on);
+	if (on || !ctx || !ctx->enabled || !ctx->idle)
+		return 0;
+
+	ret = nt37706_idle_off(ctx);
+	if (ret)
+		return ret;
+	ctx->idle = false;
+	return 0;
+}
 
 static int novatek_nt37706_power_on(struct novatek_nt37706 *ctx)
 {
@@ -264,7 +346,20 @@ static int novatek_nt37706_prepare(struct drm_panel *panel)
 	struct novatek_nt37706 *ctx = to_novatek_nt37706(panel);
 	struct device *dev = &ctx->dsi->dev;
 	struct drm_dsc_picture_parameter_set pps;
+	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
+	u8 rate = novatek_nt37706_rate(ctx);
 	int ret;
+
+	/* Still initialized: only a new refresh rate goes out. */
+	if (ctx->retained) {
+		if (rate != ctx->rate) {
+			mipi_dsi_dcs_write_buffer_multi(&dsi_ctx, (u8[]){ 0x2f, rate }, 2);
+			if (!dsi_ctx.accum_err)
+				ctx->rate = rate;
+		}
+		nt37706_fp_panel(ctx->fp, true);
+		return 0;
+	}
 
 	ret = novatek_nt37706_power_on(ctx);
 	if (ret)
@@ -281,13 +376,15 @@ static int novatek_nt37706_prepare(struct drm_panel *panel)
 		goto err;
 	}
 
-	ret = novatek_nt37706_on(ctx, novatek_nt37706_rate(ctx));
+	ret = novatek_nt37706_on(ctx, rate);
 	if (ret < 0) {
 		dev_err(dev, "failed to initialise panel: %d\n", ret);
 		goto err;
 	}
 
 	ctx->dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+	ctx->rate = rate;
+	ctx->idle = false;
 	nt37706_fp_panel(ctx->fp, true);
 	return 0;
 
@@ -297,12 +394,57 @@ err:
 	return ret;
 }
 
+static int novatek_nt37706_enable(struct drm_panel *panel)
+{
+	struct novatek_nt37706 *ctx = to_novatek_nt37706(panel);
+	int ret;
+
+	/* While ambient stays set the host only woke to draw. */
+	if (ctx->retained) {
+		ctx->retained = false;
+		if (ctx->idle && !READ_ONCE(ambient)) {
+			ret = nt37706_idle_off(ctx);
+			if (ret)
+				dev_err(&ctx->dsi->dev, "failed to leave idle mode: %d\n", ret);
+			else
+				ctx->idle = false;
+		}
+	}
+
+	ctx->enabled = true;
+	return 0;
+}
+
+static int novatek_nt37706_disable(struct drm_panel *panel)
+{
+	struct novatek_nt37706 *ctx = to_novatek_nt37706(panel);
+	int ret;
+
+	ctx->enabled = false;
+	if (!READ_ONCE(ambient))
+		return 0;
+
+	if (!ctx->idle) {
+		ret = nt37706_idle_on(ctx);
+		if (ret) {
+			dev_err(&ctx->dsi->dev, "failed to enter idle mode: %d\n", ret);
+			return 0;
+		}
+		ctx->idle = true;
+	}
+	ctx->retained = true;
+	return 0;
+}
+
 static int novatek_nt37706_unprepare(struct drm_panel *panel)
 {
 	struct novatek_nt37706 *ctx = to_novatek_nt37706(panel);
 	int ret;
 
 	nt37706_fp_panel(ctx->fp, false);
+	if (ctx->retained)
+		return 0;
+
 	ctx->dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 	ret = novatek_nt37706_off(ctx);
 	if (ret < 0)
@@ -340,6 +482,8 @@ static int novatek_nt37706_get_modes(struct drm_panel *panel,
 
 static const struct drm_panel_funcs novatek_nt37706_panel_funcs = {
 	.prepare = novatek_nt37706_prepare,
+	.enable = novatek_nt37706_enable,
+	.disable = novatek_nt37706_disable,
 	.unprepare = novatek_nt37706_unprepare,
 	.get_modes = novatek_nt37706_get_modes,
 };
@@ -353,6 +497,10 @@ static int novatek_nt37706_bl_update_status(struct backlight_device *bl)
 
 	/* The link is down while the panel is off; enabling it sends this. */
 	if (!ctx->panel.prepared)
+		return 0;
+
+	/* Idle mode keeps its own level; leaving it restores this one. */
+	if (ctx->idle || (READ_ONCE(ambient) && backlight_is_blank(bl)))
 		return 0;
 
 	/* Sent in high-speed mode, big-endian, as the vendor does. */
@@ -438,6 +586,7 @@ static int novatek_nt37706_probe(struct mipi_dsi_device *dsi)
 				     "failed to create backlight\n");
 
 	drm_panel_add(&ctx->panel);
+	WRITE_ONCE(nt37706_panel, ctx);
 
 	dsi->dsc = &ctx->dsc;
 	ctx->dsc.dsc_version_major = 1;
@@ -467,6 +616,7 @@ static void novatek_nt37706_remove(struct mipi_dsi_device *dsi)
 	if (ret < 0)
 		dev_err(&dsi->dev, "failed to detach from DSI host: %d\n", ret);
 
+	WRITE_ONCE(nt37706_panel, NULL);
 	drm_panel_remove(&ctx->panel);
 }
 
