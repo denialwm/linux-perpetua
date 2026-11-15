@@ -431,6 +431,43 @@ static u8 *ath11k_hw_qcn9074_rx_desc_get_hdr_status(struct hal_rx_desc *desc)
 	return desc->u.qcn9074.hdr_status;
 }
 
+/* Rebuild the security header of a frame from its MPDU start */
+static void ath11k_hw_qcn9074_rx_desc_get_crypto_header(struct hal_rx_desc *desc,
+							 u8 *crypto_hdr,
+							 enum hal_encrypt_type enctype)
+{
+	struct rx_mpdu_start_qcn9074 *mpdu_start = &desc->u.qcn9074.mpdu_start;
+	u32 pn0 = __le32_to_cpu(mpdu_start->pn[0]);
+	u32 pn1 = __le32_to_cpu(mpdu_start->pn[1]);
+	u8 key_id = FIELD_GET(RX_MPDU_START_INFO12_KEY_ID,
+			      __le32_to_cpu(mpdu_start->info12));
+
+	switch (enctype) {
+	case HAL_ENCRYPT_TYPE_TKIP_NO_MIC:
+	case HAL_ENCRYPT_TYPE_TKIP_MIC:
+		crypto_hdr[0] = pn0 >> 8;
+		crypto_hdr[1] = 0;
+		crypto_hdr[2] = pn0;
+		break;
+	case HAL_ENCRYPT_TYPE_CCMP_128:
+	case HAL_ENCRYPT_TYPE_CCMP_256:
+	case HAL_ENCRYPT_TYPE_GCMP_128:
+	case HAL_ENCRYPT_TYPE_AES_GCMP_256:
+		crypto_hdr[0] = pn0;
+		crypto_hdr[1] = pn0 >> 8;
+		crypto_hdr[2] = 0;
+		break;
+	default:
+		return;
+	}
+
+	crypto_hdr[3] = 0x20 | (key_id << 6);	/* Ext IV */
+	crypto_hdr[4] = pn0 >> 16;
+	crypto_hdr[5] = pn0 >> 24;
+	crypto_hdr[6] = pn1;
+	crypto_hdr[7] = pn1 >> 8;
+}
+
 static bool ath11k_hw_qcn9074_rx_desc_encrypt_valid(struct hal_rx_desc *desc)
 {
 	return __le32_to_cpu(desc->u.qcn9074.mpdu_start.info11) &
@@ -1110,6 +1147,8 @@ const struct ath11k_hw_ops wcn6750_ops = {
 	.rx_desc_get_last_msdu = ath11k_hw_qcn9074_rx_desc_get_last_msdu,
 	.rx_desc_get_l3_pad_bytes = ath11k_hw_qcn9074_rx_desc_get_l3_pad_bytes,
 	.rx_desc_get_hdr_status = ath11k_hw_qcn9074_rx_desc_get_hdr_status,
+	/* Its firmware saves the MAC header alone in hdr_status */
+	.rx_desc_get_crypto_header = ath11k_hw_qcn9074_rx_desc_get_crypto_header,
 	.rx_desc_encrypt_valid = ath11k_hw_qcn9074_rx_desc_encrypt_valid,
 	.rx_desc_get_encrypt_type = ath11k_hw_qcn9074_rx_desc_get_encrypt_type,
 	.rx_desc_get_decap_type = ath11k_hw_qcn9074_rx_desc_get_decap_type,

@@ -245,6 +245,9 @@ struct ath11k_hw_ops {
 	bool (*rx_desc_get_last_msdu)(struct hal_rx_desc *desc);
 	u8 (*rx_desc_get_l3_pad_bytes)(struct hal_rx_desc *desc);
 	u8 *(*rx_desc_get_hdr_status)(struct hal_rx_desc *desc);
+	void (*rx_desc_get_crypto_header)(struct hal_rx_desc *desc,
+					  u8 *crypto_hdr,
+					  enum hal_encrypt_type enctype);
 	bool (*rx_desc_encrypt_valid)(struct hal_rx_desc *desc);
 	u32 (*rx_desc_get_encrypt_type)(struct hal_rx_desc *desc);
 	u8 (*rx_desc_get_decap_type)(struct hal_rx_desc *desc);

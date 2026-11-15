@@ -1948,6 +1948,25 @@ static int ath11k_dp_rx_crypto_icv_len(struct ath11k *ar,
 	return 0;
 }
 
+/* The security header follows the MAC header the hardware saved, unless the
+ * chip rebuilds it from the descriptor
+ */
+static void ath11k_dp_rx_h_push_crypto_header(struct ath11k *ar,
+					      struct sk_buff *msdu,
+					      u8 *saved,
+					      enum hal_encrypt_type enctype)
+{
+	struct ath11k_skb_rxcb *rxcb = ATH11K_SKB_RXCB(msdu);
+	const struct ath11k_hw_ops *ops = ar->ab->hw_params.hw_ops;
+	int len = ath11k_dp_rx_crypto_param_len(ar, enctype);
+	u8 *crypto_hdr = skb_push(msdu, len);
+
+	if (ops->rx_desc_get_crypto_header)
+		ops->rx_desc_get_crypto_header(rxcb->rx_desc, crypto_hdr, enctype);
+	else
+		memcpy(crypto_hdr, saved, len);
+}
+
 static void ath11k_dp_rx_h_undecap_nwifi(struct ath11k *ar,
 					 struct sk_buff *msdu,
 					 u8 *first_hdr,
@@ -2002,12 +2021,9 @@ static void ath11k_dp_rx_h_undecap_nwifi(struct ath11k *ar,
 		memcpy(decap_hdr, (uint8_t *)hdr, hdr_len);
 	}
 
-	if (!(status->flag & RX_FLAG_IV_STRIPPED)) {
-		memcpy(skb_push(msdu,
-				ath11k_dp_rx_crypto_param_len(ar, enctype)),
-		       (void *)hdr + hdr_len,
-		       ath11k_dp_rx_crypto_param_len(ar, enctype));
-	}
+	if (!(status->flag & RX_FLAG_IV_STRIPPED))
+		ath11k_dp_rx_h_push_crypto_header(ar, msdu, (u8 *)hdr + hdr_len,
+						  enctype);
 
 	if (!rxcb->is_first_msdu) {
 		memcpy(skb_push(msdu,
@@ -2144,12 +2160,9 @@ static void ath11k_dp_rx_h_undecap_eth(struct ath11k *ar,
 	hdr = (struct ieee80211_hdr *)first_hdr;
 	hdr_len = ieee80211_hdrlen(hdr->frame_control);
 
-	if (!(status->flag & RX_FLAG_IV_STRIPPED)) {
-		memcpy(skb_push(msdu,
-				ath11k_dp_rx_crypto_param_len(ar, enctype)),
-		       (void *)hdr + hdr_len,
-		       ath11k_dp_rx_crypto_param_len(ar, enctype));
-	}
+	if (!(status->flag & RX_FLAG_IV_STRIPPED))
+		ath11k_dp_rx_h_push_crypto_header(ar, msdu, (u8 *)hdr + hdr_len,
+						  enctype);
 
 	memcpy(skb_push(msdu, hdr_len), hdr, hdr_len);
 
