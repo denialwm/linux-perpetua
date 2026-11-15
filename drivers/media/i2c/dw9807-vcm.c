@@ -203,9 +203,8 @@ static int dw9807_probe(struct i2c_client *client)
 	if (rval < 0)
 		goto err_cleanup;
 
-	pm_runtime_set_active(&client->dev);
+	/* The motor may be unpowered here: its first open powers it */
 	pm_runtime_enable(&client->dev);
-	pm_runtime_idle(&client->dev);
 
 	return 0;
 
@@ -300,7 +299,7 @@ static const struct of_device_id dw9807_of_table[] = {
 MODULE_DEVICE_TABLE(of, dw9807_of_table);
 
 static const struct dev_pm_ops dw9807_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(dw9807_vcm_suspend, dw9807_vcm_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 	SET_RUNTIME_PM_OPS(dw9807_vcm_suspend, dw9807_vcm_resume, NULL)
 };
 
