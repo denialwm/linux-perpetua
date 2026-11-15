@@ -7,6 +7,7 @@
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
+#include <linux/property.h>
 #include <linux/regulator/consumer.h>
 #include <linux/units.h>
 #include <media/v4l2-cci.h>
@@ -21,6 +22,7 @@
 /* Register map is similar to MIPI CCS compliant camera sensors */
 #define S5KJN1_REG_CHIP_ID		CCI_REG16(0x0000)
 #define S5KJN1_CHIP_ID			0x38e1
+#define S5KJNS_CHIP_ID			0x38ee
 
 #define S5KJN1_REG_CTRL_MODE		CCI_REG8(0x0100)
 #define S5KJN1_MODE_STREAMING		BIT(0)
@@ -112,6 +114,7 @@ struct s5kjn1 {
 	struct v4l2_ctrl *hflip;
 
 	const struct s5kjn1_mode *mode;
+	u16 chip_id;
 };
 
 static const struct cci_reg_sequence init_array_setting[] = {
@@ -906,7 +909,7 @@ static int s5kjn1_enable_streams(struct v4l2_subdev *sd,
 
 	/* Set version */
 	cci_write(s5kjn1->regmap, CCI_REG16(0x0000), 0x0003, &ret);
-	cci_write(s5kjn1->regmap, CCI_REG16(0x0000), S5KJN1_CHIP_ID, &ret);
+	cci_write(s5kjn1->regmap, CCI_REG16(0x0000), s5kjn1->chip_id, &ret);
 	cci_write(s5kjn1->regmap, CCI_REG16(0x001e), 0x0007, &ret);
 	cci_write(s5kjn1->regmap, CCI_REG16(0x6028), 0x4000, &ret);
 	cci_write(s5kjn1->regmap, CCI_REG16(0x6010), 0x0001, &ret);
@@ -1145,9 +1148,9 @@ static int s5kjn1_identify_sensor(struct s5kjn1 *s5kjn1)
 		return ret;
 	}
 
-	if (val != S5KJN1_CHIP_ID) {
+	if (val != s5kjn1->chip_id) {
 		dev_err(s5kjn1->dev, "chip id mismatch: %x!=%llx\n",
-			S5KJN1_CHIP_ID, val);
+			s5kjn1->chip_id, val);
 		return -ENODEV;
 	}
 
@@ -1298,6 +1301,7 @@ static int s5kjn1_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	s5kjn1->dev = &client->dev;
+	s5kjn1->chip_id = (uintptr_t)device_get_match_data(&client->dev);
 	v4l2_i2c_subdev_init(&s5kjn1->sd, client, &s5kjn1_subdev_ops);
 
 	s5kjn1->regmap = devm_cci_regmap_init_i2c(client, 16);
@@ -1465,7 +1469,8 @@ static const struct dev_pm_ops s5kjn1_pm_ops = {
 };
 
 static const struct of_device_id s5kjn1_of_match[] = {
-	{ .compatible = "samsung,s5kjn1" },
+	{ .compatible = "samsung,s5kjn1", .data = (void *)S5KJN1_CHIP_ID },
+	{ .compatible = "samsung,s5kjns", .data = (void *)S5KJNS_CHIP_ID },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, s5kjn1_of_match);

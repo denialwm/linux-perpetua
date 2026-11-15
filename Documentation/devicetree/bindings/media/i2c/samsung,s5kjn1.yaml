@@ -11,7 +11,7 @@ description:
   The sensor is controlled over a serial camera control bus protocol,
   the widest supported output image frame size is 8160x6144 at 10 frames
   per second, data output format is RAW10 transferred over 4-lane
-  MIPI D-PHY interface.
+  MIPI D-PHY interface. The S5KJNS is a variant with its own chip ID.
 
 maintainers:
   - Vladimir Zapolskiy <vladimir.zapolskiy@linaro.org>
@@ -21,7 +21,9 @@ allOf:
 
 properties:
   compatible:
-    const: samsung,s5kjn1
+    enum:
+      - samsung,s5kjn1
+      - samsung,s5kjns
 
   reg:
     maxItems: 1
