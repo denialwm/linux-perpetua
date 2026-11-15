@@ -47,6 +47,10 @@
 
 #define IS_CSID_690(csid)	((csid->camss->res->version == CAMSS_8775P) \
 				 || (csid->camss->res->version == CAMSS_8300))
+#define IS_CSID_LITE_970(csid)	(csid_is_lite(csid) && \
+				 csid->camss->res->version == CAMSS_ELIZA)
+#define		TOP_IRQ_RDI_970(rdi)		(BIT(8) << (rdi))
+#define		TOP_IRQ_BUF_DONE_970		BIT(13)
 #define CSID_BUF_DONE_IRQ_STATUS	0x8C
 #define BUF_DONE_IRQ_STATUS_RDI_OFFSET  (csid_is_lite(csid) ? \
 						((IS_CSID_690(csid) ? 0 : 1)) : \
@@ -58,6 +62,7 @@
 #define CSID_CSI2_RDIN_IRQ_STATUS(rdi)	(0xEC + 0x10 * (rdi))
 #define		RUP_DONE_IRQ_STATUS		BIT(23)
 
+#define CSID_CSI2_RDIN_IRQ_MASK(rdi)	(0xF0 + 0x10 * (rdi))
 #define CSID_CSI2_RDIN_IRQ_CLEAR(rdi)	(0xF4 + 0x10 * (rdi))
 #define CSID_CSI2_RDIN_IRQ_SET(rdi)	(0xF8 + 0x10 * (rdi))
 
@@ -197,13 +202,30 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	writel(val, csid->base + CSID_RDI_CFG0(port));
 
 	val = RDI_CFG1_PACKING_FORMAT_MIPI;
-	val |= RDI_CFG1_PIX_STORE;
-	val |= RDI_CFG1_DROP_H_EN;
-	val |= RDI_CFG1_DROP_V_EN;
-	val |= RDI_CFG1_CROP_H_EN;
-	val |= RDI_CFG1_CROP_V_EN;
+	/*
+	 * The 970 lite comes out of reset with empty crop windows and no pixel
+	 * store: drop and crop would discard every line.
+	 */
+	if (!IS_CSID_LITE_970(csid)) {
+		val |= RDI_CFG1_PIX_STORE;
+		val |= RDI_CFG1_DROP_H_EN;
+		val |= RDI_CFG1_DROP_V_EN;
+		val |= RDI_CFG1_CROP_H_EN;
+		val |= RDI_CFG1_CROP_V_EN;
+	}
 
 	writel(val, csid->base + CSID_RDI_CFG1(port));
+
+	/*
+	 * The 970 lite only raises its line for top level bits that are
+	 * unmasked: buf done and the RDI summary carrying RUP done.
+	 */
+	if (IS_CSID_LITE_970(csid) && enable) {
+		writel(RUP_DONE_IRQ_STATUS, csid->base + CSID_CSI2_RDIN_IRQ_MASK(port));
+		val = readl(csid->base + CSID_TOP_IRQ_MASK);
+		val |= TOP_IRQ_BUF_DONE_970 | TOP_IRQ_RDI_970(port);
+		writel(val, csid->base + CSID_TOP_IRQ_MASK);
+	}
 
 	val = 0;
 	writel(val, csid->base + CSID_RDI_IRQ_SUBSAMPLE_PERIOD(port));

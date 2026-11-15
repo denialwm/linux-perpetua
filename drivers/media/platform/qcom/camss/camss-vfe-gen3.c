@@ -23,14 +23,22 @@
 #define BUS_REG_BASE \
 	    (IS_VFE_690(vfe) ? BUS_REG_BASE_690 : BUS_REG_BASE_780)
 
+/* VFE lite 970 keeps the 780 bus base, with its clients further in */
+#define IS_VFE_LITE_970(vfe) \
+	    (vfe_is_lite(vfe) && vfe->camss->res->version == CAMSS_ELIZA)
+#define BUS_WM_BASE \
+	    (BUS_REG_BASE + (IS_VFE_LITE_970(vfe) ? 0x500 : 0x200))
+
 #define VFE_TOP_CORE_CFG (0x24)
 #define VFE_DISABLE_DSCALING_DS4  BIT(21)
 #define VFE_DISABLE_DSCALING_DS16 BIT(22)
 
 #define VFE_BUS_WM_TEST_BUS_CTRL_690 (BUS_REG_BASE + 0xFC)
 #define VFE_BUS_WM_TEST_BUS_CTRL_780 (BUS_REG_BASE + 0xDC)
+#define VFE_BUS_WM_TEST_BUS_CTRL_970 (BUS_REG_BASE + 0x128)
 #define VFE_BUS_WM_TEST_BUS_CTRL \
 	    (IS_VFE_690(vfe) ? VFE_BUS_WM_TEST_BUS_CTRL_690 \
+	     : IS_VFE_LITE_970(vfe) ? VFE_BUS_WM_TEST_BUS_CTRL_970 \
 	     : VFE_BUS_WM_TEST_BUS_CTRL_780)
 /*
  * Bus client mapping:
@@ -50,25 +58,25 @@
 #define VFE_BUS_WM_CGC_OVERRIDE		(BUS_REG_BASE + 0x08)
 #define		WM_CGC_OVERRIDE_ALL		(0x7FFFFFF)
 
-#define VFE_BUS_WM_CFG(n)		(BUS_REG_BASE + 0x200 + (n) * 0x100)
+#define VFE_BUS_WM_CFG(n)		(BUS_WM_BASE + 0x00 + (n) * 0x100)
 #define		WM_CFG_EN			BIT(0)
 #define		WM_VIR_FRM_EN			BIT(1)
 #define		WM_CFG_MODE			BIT(16)
-#define VFE_BUS_WM_IMAGE_ADDR(n)	(BUS_REG_BASE + 0x204 + (n) * 0x100)
-#define VFE_BUS_WM_FRAME_INCR(n)	(BUS_REG_BASE + 0x208 + (n) * 0x100)
-#define VFE_BUS_WM_IMAGE_CFG_0(n)	(BUS_REG_BASE + 0x20c + (n) * 0x100)
+#define VFE_BUS_WM_IMAGE_ADDR(n)	(BUS_WM_BASE + 0x04 + (n) * 0x100)
+#define VFE_BUS_WM_FRAME_INCR(n)	(BUS_WM_BASE + 0x08 + (n) * 0x100)
+#define VFE_BUS_WM_IMAGE_CFG_0(n)	(BUS_WM_BASE + 0x0c + (n) * 0x100)
 #define		WM_IMAGE_CFG_0_DEFAULT_WIDTH	(0xFFFF)
-#define VFE_BUS_WM_IMAGE_CFG_2(n)	(BUS_REG_BASE + 0x214 + (n) * 0x100)
+#define VFE_BUS_WM_IMAGE_CFG_2(n)	(BUS_WM_BASE + 0x14 + (n) * 0x100)
 #define		WM_IMAGE_CFG_2_DEFAULT_STRIDE	(0xFFFF)
-#define VFE_BUS_WM_PACKER_CFG(n)	(BUS_REG_BASE + 0x218 + (n) * 0x100)
+#define VFE_BUS_WM_PACKER_CFG(n)	(BUS_WM_BASE + 0x18 + (n) * 0x100)
 
-#define VFE_BUS_WM_IRQ_SUBSAMPLE_PERIOD(n)	(BUS_REG_BASE + 0x230 + (n) * 0x100)
-#define VFE_BUS_WM_IRQ_SUBSAMPLE_PATTERN(n)	(BUS_REG_BASE + 0x234 + (n) * 0x100)
-#define VFE_BUS_WM_FRAMEDROP_PERIOD(n)		(BUS_REG_BASE + 0x238 + (n) * 0x100)
-#define VFE_BUS_WM_FRAMEDROP_PATTERN(n)		(BUS_REG_BASE + 0x23c + (n) * 0x100)
+#define VFE_BUS_WM_IRQ_SUBSAMPLE_PERIOD(n)	(BUS_WM_BASE + 0x30 + (n) * 0x100)
+#define VFE_BUS_WM_IRQ_SUBSAMPLE_PATTERN(n)	(BUS_WM_BASE + 0x34 + (n) * 0x100)
+#define VFE_BUS_WM_FRAMEDROP_PERIOD(n)		(BUS_WM_BASE + 0x38 + (n) * 0x100)
+#define VFE_BUS_WM_FRAMEDROP_PATTERN(n)		(BUS_WM_BASE + 0x3c + (n) * 0x100)
 
-#define VFE_BUS_WM_MMU_PREFETCH_CFG(n)		(BUS_REG_BASE + 0x260 + (n) * 0x100)
-#define VFE_BUS_WM_MMU_PREFETCH_MAX_OFFSET(n)	(BUS_REG_BASE + 0x264 + (n) * 0x100)
+#define VFE_BUS_WM_MMU_PREFETCH_CFG(n)		(BUS_WM_BASE + 0x60 + (n) * 0x100)
+#define VFE_BUS_WM_MMU_PREFETCH_MAX_OFFSET(n)	(BUS_WM_BASE + 0x64 + (n) * 0x100)
 
 static void vfe_wm_start(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 {

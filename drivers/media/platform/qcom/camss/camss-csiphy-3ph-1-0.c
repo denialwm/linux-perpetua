@@ -1426,6 +1426,7 @@ static bool csiphy_is_gen2(u32 version)
 	case CAMSS_8550:
 	case CAMSS_8650:
 	case CAMSS_8775P:
+	case CAMSS_ELIZA:
 	case CAMSS_X1E80100:
 		ret = true;
 		break;
@@ -1514,6 +1515,7 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 		}
 		break;
 	case CAMSS_8650:
+	case CAMSS_ELIZA:
 		if (c->phy_cfg == V4L2_MBUS_CSI2_DPHY) {
 			regs->lane_regs = &lane_regs_sm8650[0];
 			regs->lane_array_size = ARRAY_SIZE(lane_regs_sm8650);
@@ -1602,6 +1604,7 @@ static int csiphy_init(struct csiphy_device *csiphy)
 	case CAMSS_X1E80100:
 	case CAMSS_8550:
 	case CAMSS_8650:
+	case CAMSS_ELIZA:
 		regs->offset = 0x1000;
 		break;
 	default:

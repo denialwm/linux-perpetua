@@ -42,6 +42,141 @@
 
 static const struct parent_dev_ops vfe_parent_dev_ops;
 
+/*
+ * Eliza: only the lite path. Its full CSIDs and TFEs are a newer family the
+ * driver does not support; CSID lite 970 matches the gen3 lite registers.
+ */
+static const struct camss_subdev_resources csiphy_res_eliza[] = {
+	/* CSIPHY0 */
+	{
+		.regulators = {
+			{ .supply = "vdd-csiphy-0p9", .init_load_uA = 82290 },
+			{ .supply = "vdd-csiphy-1p2", .init_load_uA = 7810 },
+		},
+		.clock = { "csiphy0", "csiphy0_timer" },
+		.clock_rate = { { 400000000 },
+				{ 400000000 } },
+		.reg = { "csiphy0" },
+		.interrupt = { "csiphy0" },
+		.csiphy = {
+			.id = 0,
+			.hw_ops = &csiphy_ops_3ph_1_0,
+			.formats = &csiphy_formats_sdm845,
+		},
+	},
+	/* CSIPHY1 */
+	{
+		.regulators = {
+			{ .supply = "vdd-csiphy-0p9", .init_load_uA = 82290 },
+			{ .supply = "vdd-csiphy-1p2", .init_load_uA = 7810 },
+		},
+		.clock = { "csiphy1", "csiphy1_timer" },
+		.clock_rate = { { 400000000 },
+				{ 400000000 } },
+		.reg = { "csiphy1" },
+		.interrupt = { "csiphy1" },
+		.csiphy = {
+			.id = 1,
+			.hw_ops = &csiphy_ops_3ph_1_0,
+			.formats = &csiphy_formats_sdm845,
+		},
+	},
+	/* CSIPHY2 */
+	{
+		.regulators = {
+			{ .supply = "vdd-csiphy-0p9", .init_load_uA = 82290 },
+			{ .supply = "vdd-csiphy-1p2", .init_load_uA = 7810 },
+		},
+		.clock = { "csiphy2", "csiphy2_timer" },
+		.clock_rate = { { 400000000 },
+				{ 400000000 } },
+		.reg = { "csiphy2" },
+		.interrupt = { "csiphy2" },
+		.csiphy = {
+			.id = 2,
+			.hw_ops = &csiphy_ops_3ph_1_0,
+			.formats = &csiphy_formats_sdm845,
+		},
+	},
+	/* CSIPHY3 */
+	{
+		.regulators = {
+			{ .supply = "vdd-csiphy-0p9", .init_load_uA = 82290 },
+			{ .supply = "vdd-csiphy-1p2", .init_load_uA = 7810 },
+		},
+		.clock = { "csiphy3", "csiphy3_timer" },
+		.clock_rate = { { 400000000 },
+				{ 400000000 } },
+		.reg = { "csiphy3" },
+		.interrupt = { "csiphy3" },
+		.csiphy = {
+			.id = 3,
+			.hw_ops = &csiphy_ops_3ph_1_0,
+			.formats = &csiphy_formats_sdm845,
+		},
+	},
+};
+
+static const struct camss_subdev_resources csid_res_eliza[] = {
+	/* CSID lite */
+	{
+		.regulators = { },
+		.clock = { "vfe_lite_ahb", "vfe_lite_csid", "vfe_lite_cphy_rx" },
+		.clock_rate = { { 0 },
+				{ 400000000, 480000000 },
+				{ 0 } },
+		.reg = { "csid_lite0" },
+		.interrupt = { "csid_lite0" },
+		.csid = {
+			.is_lite = true,
+			.parent_dev_ops = &vfe_parent_dev_ops,
+			.hw_ops = &csid_ops_gen3,
+			.formats = &csid_formats_gen2,
+		},
+	},
+};
+
+static const struct camss_subdev_resources vfe_res_eliza[] = {
+	/* VFE lite */
+	{
+		.regulators = { },
+		.clock = { "gcc_axi_hf", "cpas_ahb", "cpas_fast_ahb",
+			   "camnoc_rt_axi", "camnoc_nrt_axi", "cpas_vfe_lite",
+			   "vfe_lite_ahb", "vfe_lite", "qdss_debug_xo" },
+		.clock_rate = { { 0 },
+				{ 80000000 },
+				{ 300000000 },
+				{ 300000000, 400000000 },
+				{ 0 },
+				{ 0 },
+				{ 0 },
+				{ 400000000, 480000000 },
+				{ 0 } },
+		.reg = { "vfe_lite0" },
+		.interrupt = { "vfe_lite0" },
+		.vfe = {
+			.line_num = 4,
+			.is_lite = true,
+			.hw_ops = &vfe_ops_gen3,
+			.formats_rdi = &vfe_formats_rdi_845,
+			.formats_pix = &vfe_formats_pix_845,
+		},
+	},
+};
+
+static const struct resources_icc icc_res_eliza[] = {
+	{
+		.name = "ahb",
+		.icc_bw_tbl.avg = 38400,
+		.icc_bw_tbl.peak = 76800,
+	},
+	{
+		.name = "hf_mnoc",
+		.icc_bw_tbl.avg = 2097152,
+		.icc_bw_tbl.peak = 2097152,
+	},
+};
+
 static const struct camss_subdev_resources csiphy_res_kaanapali[] = {
 	/* CSIPHY0 */
 	{
@@ -3271,7 +3406,7 @@ static const struct camss_subdev_resources csiphy_res_8550[] = {
 			{ .supply = "vdda-pll", .init_load_uA = 18000 }
 		},
 		.clock = { "csiphy0", "csiphy0_timer" },
-		.clock_rate = { { 400000000, 480000000 },
+		.clock_rate = { { 400000000 },
 				{ 400000000 } },
 		.reg = { "csiphy0" },
 		.interrupt = { "csiphy0" },
@@ -3288,7 +3423,7 @@ static const struct camss_subdev_resources csiphy_res_8550[] = {
 			{ .supply = "vdda-pll", .init_load_uA = 18000 }
 		},
 		.clock = { "csiphy1", "csiphy1_timer" },
-		.clock_rate = { { 400000000, 480000000 },
+		.clock_rate = { { 400000000 },
 				{ 400000000 } },
 		.reg = { "csiphy1" },
 		.interrupt = { "csiphy1" },
@@ -3305,7 +3440,7 @@ static const struct camss_subdev_resources csiphy_res_8550[] = {
 			{ .supply = "vdda-pll", .init_load_uA = 18000 }
 		},
 		.clock = { "csiphy2", "csiphy2_timer" },
-		.clock_rate = { { 400000000, 480000000 },
+		.clock_rate = { { 400000000 },
 				{ 400000000 } },
 		.reg = { "csiphy2" },
 		.interrupt = { "csiphy2" },
@@ -3322,7 +3457,7 @@ static const struct camss_subdev_resources csiphy_res_8550[] = {
 			{ .supply = "vdda-pll", .init_load_uA = 18000 }
 		},
 		.clock = { "csiphy3", "csiphy3_timer" },
-		.clock_rate = { { 400000000, 480000000 },
+		.clock_rate = { { 400000000 },
 				{ 400000000 } },
 		.reg = { "csiphy3" },
 		.interrupt = { "csiphy3" },
@@ -3339,7 +3474,7 @@ static const struct camss_subdev_resources csiphy_res_8550[] = {
 			{ .supply = "vdda-pll", .init_load_uA = 18600 }
 		},
 		.clock = { "csiphy4", "csiphy4_timer" },
-		.clock_rate = { { 400000000, 480000000 },
+		.clock_rate = { { 400000000 },
 				{ 400000000 } },
 		.reg = { "csiphy4" },
 		.interrupt = { "csiphy4" },
@@ -3356,7 +3491,7 @@ static const struct camss_subdev_resources csiphy_res_8550[] = {
 			{ .supply = "vdda-pll", .init_load_uA = 18000 }
 		},
 		.clock = { "csiphy5", "csiphy5_timer" },
-		.clock_rate = { { 400000000, 480000000 },
+		.clock_rate = { { 400000000 },
 				{ 400000000 } },
 		.reg = { "csiphy5" },
 		.interrupt = { "csiphy5" },
@@ -3373,7 +3508,7 @@ static const struct camss_subdev_resources csiphy_res_8550[] = {
 			{ .supply = "vdda-pll", .init_load_uA = 18600 }
 		},
 		.clock = { "csiphy6", "csiphy6_timer" },
-		.clock_rate = { { 400000000, 480000000 },
+		.clock_rate = { { 400000000 },
 				{ 400000000 } },
 		.reg = { "csiphy6" },
 		.interrupt = { "csiphy6" },
@@ -3390,7 +3525,7 @@ static const struct camss_subdev_resources csiphy_res_8550[] = {
 			{ .supply = "vdda-pll", .init_load_uA = 18000 }
 		},
 		.clock = { "csiphy7", "csiphy7_timer" },
-		.clock_rate = { { 400000000, 480000000 },
+		.clock_rate = { { 400000000 },
 				{ 400000000 } },
 		.reg = { "csiphy7" },
 		.interrupt = { "csiphy7" },
@@ -5935,6 +6070,18 @@ static void camss_remove(struct platform_device *pdev)
 	camss_genpd_cleanup(camss);
 }
 
+static const struct camss_resources eliza_resources = {
+	.version = CAMSS_ELIZA,
+	.csiphy_res = csiphy_res_eliza,
+	.csid_res = csid_res_eliza,
+	.vfe_res = vfe_res_eliza,
+	.icc_res = icc_res_eliza,
+	.icc_path_num = ARRAY_SIZE(icc_res_eliza),
+	.csiphy_num = ARRAY_SIZE(csiphy_res_eliza),
+	.csid_num = ARRAY_SIZE(csid_res_eliza),
+	.vfe_num = ARRAY_SIZE(vfe_res_eliza),
+};
+
 static const struct camss_resources kaanapali_resources = {
 	.version = CAMSS_KAANAPALI,
 	.pd_name = "top",
@@ -6183,6 +6330,7 @@ static const struct camss_resources x1e80100_resources = {
 };
 
 static const struct of_device_id camss_dt_match[] = {
+	{ .compatible = "qcom,eliza-camss", .data = &eliza_resources },
 	{ .compatible = "qcom,kaanapali-camss", .data = &kaanapali_resources },
 	{ .compatible = "qcom,msm8916-camss", .data = &msm8916_resources },
 	{ .compatible = "qcom,msm8939-camss", .data = &msm8939_resources },
