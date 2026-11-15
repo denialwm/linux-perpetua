@@ -762,6 +762,8 @@
 		pinctrl-0 = <&cam_mclk1_default>;
 		pinctrl-names = "default";
 
+		lens-focus = <&camera_main_lens>;
+
 		orientation = <1>;
 		/* The driver keeps the module's own readout, flipped both ways */
 		rotation = <270>;
@@ -774,6 +776,14 @@
 				remote-endpoint = <&camss_csiphy2_ep>;
 			};
 		};
+	};
+
+	camera_main_lens: camera-lens@c {
+		compatible = "asahi-kasei,ak7377";
+		reg = <0x0c>;
+
+		vdd-supply = <&vreg_cam_ldo3>;
+		vio-supply = <&vreg_cam_iovdd>;
 	};
 };
 
