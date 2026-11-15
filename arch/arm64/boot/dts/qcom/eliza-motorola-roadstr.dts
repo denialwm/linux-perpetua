@@ -265,6 +265,21 @@
 		pinctrl-names = "default";
 	};
 
+	/* Main camera module's second supply; its sensor stops at start without it */
+	vreg_cam_vdd_2p33: regulator-cam-vdd-2p33 {
+		compatible = "regulator-fixed";
+		regulator-name = "cam_vdd_2p33";
+		regulator-min-microvolt = <2330000>;
+		regulator-max-microvolt = <2330000>;
+		regulator-enable-ramp-delay = <233>;
+
+		gpio = <&tlmm 59 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		pinctrl-0 = <&cam_vdd_2p33_en_default>;
+		pinctrl-names = "default";
+	};
+
 	reserved-memory {
 		ramoops@ae000000 {
 			compatible = "ramoops";
@@ -671,6 +686,14 @@
 			};
 		};
 
+		port@2 {
+			camss_csiphy2_ep: endpoint {
+				data-lanes = <0 1 2>;
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+				remote-endpoint = <&camera_main_ep>;
+			};
+		};
+
 		port@3 {
 			camss_csiphy3_ep: endpoint {
 				data-lanes = <0 1 2 3>;
@@ -712,6 +735,43 @@
 				data-lanes = <1 2 3 4>;
 				link-frequencies = /bits/ 64 <700000000>;
 				remote-endpoint = <&camss_csiphy1_ep>;
+			};
+		};
+	};
+};
+
+&cci0_i2c1 {
+	/* Main S5KGNJ */
+	camera_main: camera@10 {
+		compatible = "samsung,s5kgnj";
+		reg = <0x10>;
+
+		clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK1_CLK>;
+		assigned-clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK1_CLK>;
+		assigned-clock-rates = <24000000>;
+		/* The MCLK branch stays off without it */
+		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
+
+		reset-gpios = <&tlmm 124 GPIO_ACTIVE_LOW>;
+
+		vdda-supply = <&vreg_cam_avdd_main>;
+		vdda2-supply = <&vreg_cam_vdd_2p33>;
+		vddd-supply = <&vreg_cam_ldo1>;
+		vddio-supply = <&vreg_cam_iovdd>;
+
+		pinctrl-0 = <&cam_mclk1_default>;
+		pinctrl-names = "default";
+
+		orientation = <1>;
+		/* The driver keeps the module's own readout, flipped both ways */
+		rotation = <270>;
+
+		port {
+			camera_main_ep: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+				data-lanes = <0 1 2>;
+				link-frequencies = /bits/ 64 <1428420000>;
+				remote-endpoint = <&camss_csiphy2_ep>;
 			};
 		};
 	};
@@ -1156,6 +1216,13 @@
 
 	cam_iovdd_en_default: cam-iovdd-en-default-state {
 		pins = "gpio176";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	cam_vdd_2p33_en_default: cam-vdd-2p33-en-default-state {
+		pins = "gpio59";
 		function = "gpio";
 		drive-strength = <2>;
 		bias-pull-down;
