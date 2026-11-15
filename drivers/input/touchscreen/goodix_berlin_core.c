@@ -19,21 +19,26 @@
  * - Firmware update/flashing
  * - "Config" update/flashing
  * - Stylus Events
- * - Gesture Events
+ * - Gesture Events other than double tap
  * - Support for revision B
  */
 
 #include <linux/bitfield.h>
+#include <linux/devm-helpers.h>
 #include <linux/export.h>
 #include <linux/gpio/consumer.h>
 #include <linux/input.h>
 #include <linux/input/mt.h>
 #include <linux/input/touchscreen.h>
+#include <linux/pm_wakeup.h>
 #include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sizes.h>
 #include <linux/unaligned.h>
+#include <linux/workqueue.h>
+
+#include <drm/drm_panel.h>
 
 #include "goodix_berlin.h"
 
@@ -43,9 +48,26 @@
 
 #define GOODIX_BERLIN_TOUCH_EVENT		BIT(7)
 #define GOODIX_BERLIN_REQUEST_EVENT		BIT(6)
+#define GOODIX_BERLIN_GESTURE_EVENT		BIT(5)
 #define GOODIX_BERLIN_TOUCH_COUNT_MASK		GENMASK(3, 0)
 
 #define GOODIX_BERLIN_REQUEST_CODE_RESET	3
+
+#define GOODIX_BERLIN_GESTURE_DOUBLE_TAP	0xCC
+
+/*
+ * Host commands as the stock driver sends them to a Berlin D (GT9916): the
+ * gesture command's mask enables a gesture by clearing its bit, double tap
+ * is bit 7.
+ */
+#define GOODIX_BERLIN_CMD_LEN			16
+#define GOODIX_BERLIN_CMD_RETRY			6
+#define GOODIX_BERLIN_CMD_ACK_BUSY		0x02
+#define GOODIX_BERLIN_CMD_ACK_BUFFER_OVERFLOW	0x03
+#define GOODIX_BERLIN_CMD_ACK_OK		0x80
+#define GOODIX_BERLIN_CMD_GESTURE		0xA6
+#define GOODIX_BERLIN_GESTURE_MASK_NONE		0xFFFF
+#define GOODIX_BERLIN_GESTURE_MASK_DOUBLE_TAP	0xFF7F
 
 #define GOODIX_BERLIN_POINT_TYPE_MASK		GENMASK(3, 0)
 #define GOODIX_BERLIN_POINT_TYPE_STYLUS_HOVER	1
@@ -149,7 +171,9 @@ struct goodix_berlin_header {
 	u8 status;
 	u8 reserved1;
 	u8 request_type;
-	u8 reserved2[3];
+	u8 reserved2;
+	u8 gesture_type;
+	u8 reserved3;
 	__le16 checksum;
 };
 #define GOODIX_BERLIN_HEADER_SIZE	sizeof(struct goodix_berlin_header)
@@ -174,6 +198,14 @@ struct goodix_berlin_core {
 
 	/* Runtime parameters extracted from IC_INFO buffer  */
 	u32 touch_data_addr;
+	u32 cmd_addr;
+
+	/* Screen off: the controller reports a double tap only. */
+	struct drm_panel_follower panel_follower;
+	struct input_dev *gesture_input;
+	struct work_struct wake_work;
+	bool gesture;
+	bool irq_wake;
 
 	const struct goodix_berlin_ic_data *ic_data;
 
@@ -349,6 +381,7 @@ static int goodix_berlin_parse_ic_info(struct goodix_berlin_core *cd,
 
 	misc = (struct goodix_berlin_ic_info_misc *)&data[offset];
 	cd->touch_data_addr = le32_to_cpu(misc->touch_data_addr);
+	cd->cmd_addr = le32_to_cpu(misc->cmd_addr);
 
 	return 0;
 
@@ -503,6 +536,68 @@ static void goodix_berlin_touch_handler(struct goodix_berlin_core *cd)
 	goodix_berlin_report_state(cd, touch_num);
 }
 
+/* Send a host command and wait until the firmware has taken it. */
+static int goodix_berlin_send_cmd(struct goodix_berlin_core *cd, u8 cmd,
+				  u16 data)
+{
+	u8 buf[GOODIX_BERLIN_CMD_LEN] = { 0, 0, 6, cmd, data & 0xff, data >> 8 };
+	u8 reply[GOODIX_BERLIN_CMD_LEN] = {};
+	int retry, i;
+	int error;
+
+	put_unaligned_le16(buf[2] + buf[3] + buf[4] + buf[5], &buf[6]);
+
+	for (retry = 0; retry < GOODIX_BERLIN_CMD_RETRY; retry++) {
+		error = regmap_raw_write(cd->regmap, cd->cmd_addr,
+					 buf, sizeof(buf));
+		if (error)
+			return error;
+
+		for (i = 0; i < GOODIX_BERLIN_CMD_RETRY; i++) {
+			error = regmap_raw_read(cd->regmap, cd->cmd_addr,
+						reply, sizeof(reply));
+			if (error)
+				return error;
+
+			if (reply[1] == GOODIX_BERLIN_CMD_ACK_OK) {
+				usleep_range(2000, 2100);
+				return 0;
+			}
+
+			if (reply[1] != GOODIX_BERLIN_CMD_ACK_BUSY &&
+			    reply[1] != 0)
+				break;
+
+			usleep_range(1000, 1100);
+		}
+
+		if (reply[1] == GOODIX_BERLIN_CMD_ACK_BUFFER_OVERFLOW)
+			usleep_range(10000, 11000);
+		usleep_range(1000, 1100);
+	}
+
+	dev_err(cd->dev, "command 0x%02x not taken, ack 0x%02x\n",
+		cmd, reply[1]);
+	return -EIO;
+}
+
+static void goodix_berlin_gesture_handler(struct goodix_berlin_core *cd)
+{
+	if (cd->event.hdr.status & GOODIX_BERLIN_GESTURE_EVENT &&
+	    cd->event.hdr.gesture_type == GOODIX_BERLIN_GESTURE_DOUBLE_TAP) {
+		pm_wakeup_event(cd->dev, 500);
+		input_report_key(cd->gesture_input, KEY_WAKEUP, 1);
+		input_sync(cd->gesture_input);
+		input_report_key(cd->gesture_input, KEY_WAKEUP, 0);
+		input_sync(cd->gesture_input);
+		return;
+	}
+
+	/* As stock, any other event sends the gesture mask again. */
+	goodix_berlin_send_cmd(cd, GOODIX_BERLIN_CMD_GESTURE,
+			       GOODIX_BERLIN_GESTURE_MASK_DOUBLE_TAP);
+}
+
 static int goodix_berlin_request_handle_reset(struct goodix_berlin_core *cd)
 {
 	gpiod_set_value_cansleep(cd->reset_gpio, 1);
@@ -574,6 +669,11 @@ static irqreturn_t goodix_berlin_irq(int irq, void *data)
 				     "touch head checksum error: %*ph\n",
 				     (int)GOODIX_BERLIN_HEADER_SIZE,
 				     &cd->event.hdr);
+		goto out_clear;
+	}
+
+	if (cd->gesture) {
+		goodix_berlin_gesture_handler(cd);
 		goto out_clear;
 	}
 
@@ -652,6 +752,13 @@ static int goodix_berlin_suspend(struct device *dev)
 {
 	struct goodix_berlin_core *cd = dev_get_drvdata(dev);
 
+	/* In gesture mode the controller stays powered to wake the system. */
+	if (cd->gesture) {
+		cd->irq_wake = device_may_wakeup(dev) &&
+			       !enable_irq_wake(cd->irq);
+		return 0;
+	}
+
 	disable_irq(cd->irq);
 	goodix_berlin_power_off(cd);
 
@@ -662,6 +769,14 @@ static int goodix_berlin_resume(struct device *dev)
 {
 	struct goodix_berlin_core *cd = dev_get_drvdata(dev);
 	int error;
+
+	if (cd->irq_wake) {
+		disable_irq_wake(cd->irq);
+		cd->irq_wake = false;
+	}
+
+	if (cd->gesture)
+		return 0;
 
 	error = goodix_berlin_power_on(cd);
 	if (error)
@@ -674,6 +789,94 @@ static int goodix_berlin_resume(struct device *dev)
 
 EXPORT_GPL_SIMPLE_DEV_PM_OPS(goodix_berlin_pm_ops,
 			     goodix_berlin_suspend, goodix_berlin_resume);
+
+/*
+ * Before the display turns off, the controller enters gesture mode, as the
+ * stock driver does at that point. The panel powers off, the controller
+ * keeps its own supplies.
+ */
+static int goodix_berlin_panel_disabling(struct drm_panel_follower *follower)
+{
+	struct goodix_berlin_core *cd =
+		container_of(follower, struct goodix_berlin_core, panel_follower);
+	int error;
+
+	flush_work(&cd->wake_work);
+	disable_irq(cd->irq);
+
+	/* Lift a finger still down as the screen goes off. */
+	goodix_berlin_report_state(cd, 0);
+
+	error = goodix_berlin_send_cmd(cd, GOODIX_BERLIN_CMD_GESTURE,
+				       GOODIX_BERLIN_GESTURE_MASK_NONE);
+	if (!error)
+		error = goodix_berlin_send_cmd(cd, GOODIX_BERLIN_CMD_GESTURE,
+					       GOODIX_BERLIN_GESTURE_MASK_DOUBLE_TAP);
+	cd->gesture = !error;
+
+	/* Stock waits 16 ms before it takes interrupts again. */
+	msleep(16);
+	enable_irq(cd->irq);
+
+	return 0;
+}
+
+/* A reset leaves gesture mode; touch is back once the firmware has booted. */
+static void goodix_berlin_wake_work(struct work_struct *work)
+{
+	struct goodix_berlin_core *cd =
+		container_of(work, struct goodix_berlin_core, wake_work);
+
+	disable_irq(cd->irq);
+	cd->gesture = false;
+	goodix_berlin_request_handle_reset(cd);
+	enable_irq(cd->irq);
+}
+
+static int goodix_berlin_panel_enabled(struct drm_panel_follower *follower)
+{
+	struct goodix_berlin_core *cd =
+		container_of(follower, struct goodix_berlin_core, panel_follower);
+
+	if (cd->gesture)
+		schedule_work(&cd->wake_work);
+
+	return 0;
+}
+
+static const struct drm_panel_follower_funcs goodix_berlin_panel_follower_funcs = {
+	.panel_disabling = goodix_berlin_panel_disabling,
+	.panel_enabled = goodix_berlin_panel_enabled,
+};
+
+static int goodix_berlin_gesture_init(struct goodix_berlin_core *cd,
+				      const struct input_id *id)
+{
+	int error;
+
+	cd->gesture_input = devm_input_allocate_device(cd->dev);
+	if (!cd->gesture_input)
+		return -ENOMEM;
+
+	cd->gesture_input->name = "Goodix Berlin Gesture";
+	cd->gesture_input->phys = "input/gesture";
+	cd->gesture_input->id = *id;
+	input_set_capability(cd->gesture_input, EV_KEY, KEY_WAKEUP);
+
+	error = input_register_device(cd->gesture_input);
+	if (error)
+		return error;
+
+	error = devm_work_autocancel(cd->dev, &cd->wake_work,
+				     goodix_berlin_wake_work);
+	if (error)
+		return error;
+
+	device_init_wakeup(cd->dev, true);
+
+	cd->panel_follower.funcs = &goodix_berlin_panel_follower_funcs;
+	return devm_drm_panel_add_follower(cd->dev, &cd->panel_follower);
+}
 
 static void goodix_berlin_power_off_act(void *data)
 {
@@ -797,6 +1000,13 @@ int goodix_berlin_probe(struct device *dev, int irq, const struct input_id *id,
 	}
 
 	dev_set_drvdata(dev, cd);
+
+	if (drm_is_panel_follower(dev)) {
+		error = goodix_berlin_gesture_init(cd, id);
+		if (error)
+			return dev_err_probe(dev, error,
+					     "failed to follow the panel\n");
+	}
 
 	dev_dbg(dev, "Goodix Berlin %s Touchscreen Controller",
 		cd->fw_version.patch_pid);
