@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Novatek NT37706 AMOLED DSI panel, as fitted by CSOT to the Motorola
- * Edge 70 (roadstr): 1220x2712, command mode, DSC 1.1 at 10 bits per
+ * Edge 70 (roadstr): 1220x2712, video mode, DSC 1.1 at 10 bits per
  * component.
  *
  * The initialisation sequence is the vendor's "v3" table for this panel.
- * The vendor's video and command mode tables differ only in what follows
- * it, so the panel takes either link; in command mode it keeps the last
- * frame in its own memory. Its AOD blocks are kept: the panel was
- * validated with them, and they only take effect in AOD.
+ * Its AOD and command-mode blocks are kept: the panel was validated with
+ * them, and they only take effect once the panel enters those modes.
  */
 
 #include <linux/backlight.h>
@@ -566,11 +564,8 @@ static int novatek_nt37706_probe(struct mipi_dsi_device *dsi)
 
 	dsi->lanes = 4;
 	dsi->format = MIPI_DSI_FMT_RGB101010;
-	/*
-	 * Command mode, paced by the panel's tearing signal; both DSC slices
-	 * of a line in one packet.
-	 */
-	dsi->mode_flags = MIPI_DSI_MODE_NO_EOT_PACKET |
+	/* Non-burst with sync events; both DSC slices of a line in one packet. */
+	dsi->mode_flags = MIPI_DSI_MODE_VIDEO | MIPI_DSI_MODE_NO_EOT_PACKET |
 			  MIPI_DSI_CLOCK_NON_CONTINUOUS |
 			  MIPI_DSI_MODE_DSC_ALL_SLICES_IN_PKT;
 
