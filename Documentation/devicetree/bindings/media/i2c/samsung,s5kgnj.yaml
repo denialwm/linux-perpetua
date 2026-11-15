@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/samsung,s5kgnj.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung S5KGNJ Image Sensor
+
+description:
+  Samsung S5KGNJ (ISOCELL GNJ) is a 50MP image sensor. The sensor is
+  controlled over a serial camera control bus protocol, the widest output
+  image frame size is 8192x6144 at 15 frames per second, data output
+  format is RAW10 transferred over a 3-trio MIPI C-PHY interface.
+
+maintainers:
+  - Doctor Logix <doctor.logix@gmail.com>
+
+allOf:
+  - $ref: /schemas/media/video-interface-devices.yaml#
+
+properties:
+  compatible:
+    const: samsung,s5kgnj
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    description: MCLK supply clock.
+    maxItems: 1
+
+  reset-gpios:
+    description: Active low GPIO connected to RESET pad of the sensor.
+    maxItems: 1
+
+  power-domains:
+    description: The domain its clock comes from, where it is gated.
+    maxItems: 1
+
+  vdda-supply:
+    description: Analogue voltage supply.
+
+  vdda2-supply:
+    description:
+      Second module supply, 2.33 volts, enabled after the I/O supply. The
+      sensor answers without it, but stops when it starts its internal
+      firmware.
+
+  vddd-supply:
+    description: Digital core voltage supply.
+
+  vddio-supply:
+    description: Digital I/O voltage supply, 1.8 volts.
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    additionalProperties: false
+
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
+
+        properties:
+          bus-type:
+            const: 1 # MEDIA_BUS_TYPE_CSI2_CPHY
+
+          data-lanes:
+            minItems: 3
+            maxItems: 3
+
+        required:
+          - bus-type
+          - data-lanes
+          - link-frequencies
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - reset-gpios
+  - vdda-supply
+  - vdda2-supply
+  - vddd-supply
+  - vddio-supply
+  - port
+
+unevaluatedProperties: false
+
+examples:
+  - |
+      #include <dt-bindings/gpio/gpio.h>
+      #include <dt-bindings/media/video-interfaces.h>
+
+      i2c {
+          #address-cells = <1>;
+          #size-cells = <0>;
+
+          camera@10 {
+              compatible = "samsung,s5kgnj";
+              reg = <0x10>;
+              clocks = <&camera_mclk 1>;
+              assigned-clocks = <&camera_mclk 1>;
+              assigned-clock-rates = <24000000>;
+              reset-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
+              vdda-supply = <&vreg_2p2>;
+              vdda2-supply = <&vreg_2p33>;
+              vddd-supply = <&vreg_1p0>;
+              vddio-supply = <&vreg_1p8>;
+
+              port {
+                  endpoint {
+                      bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+                      data-lanes = <0 1 2>;
+                      link-frequencies = /bits/ 64 <1428420000>;
+                      remote-endpoint = <&csiphy_ep>;
+                  };
+              };
+          };
+      };
+...
