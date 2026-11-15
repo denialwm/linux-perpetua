@@ -717,15 +717,20 @@
 		clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK0_CLK>;
 		assigned-clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK0_CLK>;
 		assigned-clock-rates = <24000000>;
+		/* The MCLK branch stays off without it */
+		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
 
 		reset-gpios = <&tlmm 123 GPIO_ACTIVE_LOW>;
 
+		afvdd-supply = <&vreg_cam_ldo4>;
 		vdda-supply = <&vreg_cam_avdd_uw>;
 		vddd-supply = <&vreg_cam_dvdd_uw>;
 		vddio-supply = <&vreg_cam_iovdd>;
 
 		pinctrl-0 = <&cam_mclk0_default>;
 		pinctrl-names = "default";
+
+		lens-focus = <&camera_uw_lens>;
 
 		orientation = <1>;
 		rotation = <90>;
@@ -737,6 +742,12 @@
 				remote-endpoint = <&camss_csiphy1_ep>;
 			};
 		};
+	};
+
+	/* DW9800S, the DW9807's registers */
+	camera_uw_lens: camera-lens@c {
+		compatible = "dongwoon,dw9807-vcm";
+		reg = <0x0c>;
 	};
 };
 
@@ -800,6 +811,8 @@
 		clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK3_CLK>;
 		assigned-clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK3_CLK>;
 		assigned-clock-rates = <24000000>;
+		/* The MCLK branch stays off without it */
+		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
 
 		reset-gpios = <&tlmm 126 GPIO_ACTIVE_LOW>;
 
