@@ -264,6 +264,9 @@ static const struct tfa9865_reg_data tfa9864_roadstr_regs_34[] = {
 	{ .reg = 0x00, .mask = 0x0010, .val = 0x0010 },
 	{ .reg = 0x7c, .mask = 0xc000, .val = 0x4000 },
 	{ .reg = 0x02, .mask = 0x0fe0, .val = 0x0c20 },
+	/* MANSCONF: I2C settings configured; without it the device manager
+	 * stays in state 1 (wait for source settings) and never locks to BCK */
+	{ .reg = 0x01, .mask = 0x0004, .val = 0x0004 },
 };
 
 static const struct tfa9865_reg_data tfa9864_roadstr_regs_35[] = {
@@ -315,6 +318,9 @@ static const struct tfa9865_reg_data tfa9864_roadstr_regs_35[] = {
 	{ .reg = 0x00, .mask = 0x0010, .val = 0x0010 },
 	{ .reg = 0x7c, .mask = 0xc000, .val = 0x4000 },
 	{ .reg = 0x02, .mask = 0x0fe0, .val = 0x0c20 },
+	/* MANSCONF: I2C settings configured; without it the device manager
+	 * stays in state 1 (wait for source settings) and never locks to BCK */
+	{ .reg = 0x01, .mask = 0x0004, .val = 0x0004 },
 };
 
 static const struct tfa9865_device_config tfa9864_roadstr_devices[] = {
