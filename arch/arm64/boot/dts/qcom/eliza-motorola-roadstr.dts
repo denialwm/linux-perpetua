@@ -13,6 +13,7 @@
 #include <dt-bindings/firmware/qcom,scm.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/media/video-interfaces.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 #include "eliza.dtsi"
 
@@ -655,19 +656,39 @@
 };
 
 /* Channels 0 and 5 belong to another execution environment (stock gpii-mask). */
-/*
- * The three Samsung sensors, bound to the S5KJN1 driver for now: its probe
- * powers the sensor and reads the chip ID. Each sits at both addresses the
- * Samsung parts answer on; only the right one finds it.
- */
+&camss {
+	vdd-csiphy-0p9-supply = <&vreg_l2b>;
+	vdd-csiphy-1p2-supply = <&vreg_l4b>;
+
+	status = "okay";
+
+	ports {
+		port@1 {
+			camss_csiphy1_ep: endpoint {
+				data-lanes = <0 1 2 3>;
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				remote-endpoint = <&camera_uw_ep>;
+			};
+		};
+
+		port@3 {
+			camss_csiphy3_ep: endpoint {
+				data-lanes = <0 1 2 3>;
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				remote-endpoint = <&camera_front_ep>;
+			};
+		};
+	};
+};
+
 &cci0 {
 	status = "okay";
 };
 
 &cci0_i2c0 {
-	/* Ultrawide S5KJNS, CSIPHY 1 */
-	camera@10 {
-		compatible = "samsung,s5kjn1";
+	/* Ultrawide S5KJNS */
+	camera_uw: camera@10 {
+		compatible = "samsung,s5kjns";
 		reg = <0x10>;
 
 		clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK0_CLK>;
@@ -683,88 +704,14 @@
 		pinctrl-0 = <&cam_mclk0_default>;
 		pinctrl-names = "default";
 
-		port {
-			endpoint {
-				data-lanes = <1 2 3 4>;
-				link-frequencies = /bits/ 64 <700000000>;
-			};
-		};
-	};
-
-	camera@2d {
-		compatible = "samsung,s5kjn1";
-		reg = <0x2d>;
-
-		clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK0_CLK>;
-		assigned-clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK0_CLK>;
-		assigned-clock-rates = <24000000>;
-
-		reset-gpios = <&tlmm 123 GPIO_ACTIVE_LOW>;
-
-		vdda-supply = <&vreg_cam_avdd_uw>;
-		vddd-supply = <&vreg_cam_dvdd_uw>;
-		vddio-supply = <&vreg_cam_iovdd>;
-
-		pinctrl-0 = <&cam_mclk0_default>;
-		pinctrl-names = "default";
+		orientation = <1>;
+		rotation = <90>;
 
 		port {
-			endpoint {
+			camera_uw_ep: endpoint {
 				data-lanes = <1 2 3 4>;
 				link-frequencies = /bits/ 64 <700000000>;
-			};
-		};
-	};
-};
-
-&cci0_i2c1 {
-	/* Main S5KGNJ, CSIPHY 2 */
-	camera@10 {
-		compatible = "samsung,s5kjn1";
-		reg = <0x10>;
-
-		clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK1_CLK>;
-		assigned-clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK1_CLK>;
-		assigned-clock-rates = <24000000>;
-
-		reset-gpios = <&tlmm 124 GPIO_ACTIVE_LOW>;
-
-		vdda-supply = <&vreg_cam_avdd_main>;
-		vddd-supply = <&vreg_cam_ldo1>;
-		vddio-supply = <&vreg_cam_iovdd>;
-
-		pinctrl-0 = <&cam_mclk1_default>;
-		pinctrl-names = "default";
-
-		port {
-			endpoint {
-				data-lanes = <1 2 3 4>;
-				link-frequencies = /bits/ 64 <700000000>;
-			};
-		};
-	};
-
-	camera@2d {
-		compatible = "samsung,s5kjn1";
-		reg = <0x2d>;
-
-		clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK1_CLK>;
-		assigned-clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK1_CLK>;
-		assigned-clock-rates = <24000000>;
-
-		reset-gpios = <&tlmm 124 GPIO_ACTIVE_LOW>;
-
-		vdda-supply = <&vreg_cam_avdd_main>;
-		vddd-supply = <&vreg_cam_ldo1>;
-		vddio-supply = <&vreg_cam_iovdd>;
-
-		pinctrl-0 = <&cam_mclk1_default>;
-		pinctrl-names = "default";
-
-		port {
-			endpoint {
-				data-lanes = <1 2 3 4>;
-				link-frequencies = /bits/ 64 <700000000>;
+				remote-endpoint = <&camss_csiphy1_ep>;
 			};
 		};
 	};
@@ -775,9 +722,9 @@
 };
 
 &cci1_i2c1 {
-	/* Front S5KJNS, CSIPHY 3 */
-	camera@10 {
-		compatible = "samsung,s5kjn1";
+	/* Front S5KJNS */
+	camera_front: camera@10 {
+		compatible = "samsung,s5kjns";
 		reg = <0x10>;
 
 		clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK3_CLK>;
@@ -793,35 +740,14 @@
 		pinctrl-0 = <&cam_mclk3_default>;
 		pinctrl-names = "default";
 
-		port {
-			endpoint {
-				data-lanes = <1 2 3 4>;
-				link-frequencies = /bits/ 64 <700000000>;
-			};
-		};
-	};
-
-	camera@2d {
-		compatible = "samsung,s5kjn1";
-		reg = <0x2d>;
-
-		clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK3_CLK>;
-		assigned-clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK3_CLK>;
-		assigned-clock-rates = <24000000>;
-
-		reset-gpios = <&tlmm 126 GPIO_ACTIVE_LOW>;
-
-		vdda-supply = <&vreg_cam_avdd_front>;
-		vddd-supply = <&vreg_cam_ldo2>;
-		vddio-supply = <&vreg_cam_iovdd>;
-
-		pinctrl-0 = <&cam_mclk3_default>;
-		pinctrl-names = "default";
+		orientation = <0>;
+		rotation = <270>;
 
 		port {
-			endpoint {
+			camera_front_ep: endpoint {
 				data-lanes = <1 2 3 4>;
 				link-frequencies = /bits/ 64 <700000000>;
+				remote-endpoint = <&camss_csiphy3_ep>;
 			};
 		};
 	};
