@@ -970,8 +970,8 @@
 		vdd-supply = <&vreg_l1g>;
 		vddio-supply = <&vreg_l8b>;
 
-		pinctrl-0 = <&disp0_reset_n_active>;
-		pinctrl-1 = <&disp0_reset_n_suspend>;
+		pinctrl-0 = <&disp0_reset_n_active>, <&disp0_te_active>;
+		pinctrl-1 = <&disp0_reset_n_suspend>, <&disp0_te_suspend>;
 		pinctrl-names = "default", "sleep";
 
 		port {
@@ -1241,6 +1241,21 @@
 	disp0_reset_n_suspend: disp0-reset-n-suspend-state {
 		pins = "gpio12";
 		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	/* The panel's tearing signal, stock sde_te_active and sde_te_suspend. */
+	disp0_te_active: disp0-te-active-state {
+		pins = "gpio17";
+		function = "mdp_vsync";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	disp0_te_suspend: disp0-te-suspend-state {
+		pins = "gpio17";
+		function = "mdp_vsync";
 		drive-strength = <2>;
 		bias-pull-down;
 	};
