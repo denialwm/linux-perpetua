@@ -328,15 +328,16 @@ static int __maybe_unused ak7375_vcm_resume(struct device *dev)
 		return ret;
 	}
 
+	/* The AK7377 refuses a position written right after the mode */
 	for (val = ak7375_dev->focus->val % cdef->ctrl_steps;
 	     val <= ak7375_dev->focus->val;
 	     val += cdef->ctrl_steps) {
+		usleep_range(cdef->ctrl_delay_us, cdef->ctrl_delay_us + 10);
 		ret = ak7375_i2c_write(ak7375_dev, cdef->reg_position,
 				       val << cdef->shift_pos, 2);
 		if (ret)
 			dev_err_ratelimited(dev, "%s I2C failure: %d\n",
 						__func__, ret);
-		usleep_range(cdef->ctrl_delay_us, cdef->ctrl_delay_us + 10);
 	}
 
 	ak7375_dev->active = true;
