@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/regulator/willsemi,wl2866d.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Will Semiconductor WL2866D camera LDOs
+
+maintainers:
+  - Doctor Logix <doctor.logix@gmail.com>
+
+description:
+  Four I2C programmable low dropout regulators for camera modules. LDO1 and
+  LDO2 run from VIN1, LDO3 and LDO4 from VIN2.
+
+properties:
+  compatible:
+    const: willsemi,wl2866d
+
+  reg:
+    maxItems: 1
+
+  vin1-supply:
+    description: Input of LDO1 and LDO2
+
+  vin2-supply:
+    description: Input of LDO3 and LDO4
+
+  regulators:
+    type: object
+    additionalProperties: false
+
+    patternProperties:
+      "^ldo[1-4]$":
+        type: object
+        $ref: regulator.yaml#
+        unevaluatedProperties: false
+
+required:
+  - compatible
+  - reg
+  - regulators
+
+additionalProperties: false
+
+examples:
+  - |
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        regulator@28 {
+            compatible = "willsemi,wl2866d";
+            reg = <0x28>;
+
+            regulators {
+                ldo1 {
+                    regulator-min-microvolt = <1000000>;
+                    regulator-max-microvolt = <1000000>;
+                };
+            };
+        };
+    };
+...

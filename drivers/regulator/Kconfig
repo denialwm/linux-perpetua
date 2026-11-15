@@ -1866,6 +1866,15 @@ config REGULATOR_VQMMC_IPQ4019
 	  This driver provides support for the VQMMC LDO I/0
 	  voltage regulator of the IPQ4019 SD/EMMC controller.
 
+config REGULATOR_WL2866D
+	tristate "Will Semiconductor WL2866D camera LDOs"
+	depends on I2C && OF
+	select REGMAP_I2C
+	help
+	  This driver supports the four LDOs of the Will Semiconductor
+	  WL2866D, which power camera modules on phones such as the
+	  Motorola Edge 70.
+
 config REGULATOR_WM831X
 	tristate "Wolfson Microelectronics WM831x PMIC regulators"
 	depends on MFD_WM831X
