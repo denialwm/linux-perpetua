@@ -960,7 +960,7 @@
 
 	status = "okay";
 
-	panel@0 {
+	panel: panel@0 {
 		compatible = "csot,nt37706-v3", "novatek,nt37706";
 		reg = <0>;
 
@@ -1173,6 +1173,9 @@
 
 		avdd-supply = <&vreg_l22b>;
 		vddio-supply = <&vreg_l23b>;
+
+		/* Waits in gesture mode for a double tap while the panel is off. */
+		panel = <&panel>;
 
 		spi-max-frequency = <15000000>;
 
