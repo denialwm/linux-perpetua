@@ -115,6 +115,8 @@ struct s5kjn1 {
 
 	const struct s5kjn1_mode *mode;
 	u16 chip_id;
+
+	struct device_link *lens_link;	/* The lens is powered after us */
 };
 
 static const struct cci_reg_sequence init_array_setting[] = {
@@ -1290,6 +1292,34 @@ static int s5kjn1_power_off(struct device *dev)
 	return 0;
 }
 
+/*
+ * A focus motor on the sensor's bus and on its afvdd supply answers only
+ * while the sensor is powered: with the sensor off, an access to it stalls
+ * the bus. Power the sensor whenever the lens is.
+ */
+static void s5kjn1_link_lens(struct s5kjn1 *s5kjn1)
+{
+	struct fwnode_handle *fwnode;
+	struct i2c_client *lens;
+
+	fwnode = fwnode_find_reference(dev_fwnode(s5kjn1->dev), "lens-focus", 0);
+	if (IS_ERR(fwnode))
+		return;
+
+	lens = i2c_find_device_by_fwnode(fwnode);
+	fwnode_handle_put(fwnode);
+	if (!lens)
+		return;
+
+	s5kjn1->lens_link = device_link_add(&lens->dev, s5kjn1->dev,
+					    DL_FLAG_STATELESS |
+					    DL_FLAG_PM_RUNTIME);
+	if (!s5kjn1->lens_link)
+		dev_warn(s5kjn1->dev, "failed to link the lens\n");
+
+	put_device(&lens->dev);
+}
+
 static int s5kjn1_probe(struct i2c_client *client)
 {
 	struct s5kjn1 *s5kjn1;
@@ -1417,6 +1447,8 @@ static int s5kjn1_probe(struct i2c_client *client)
 	pm_runtime_set_active(s5kjn1->dev);
 	pm_runtime_enable(s5kjn1->dev);
 
+	s5kjn1_link_lens(s5kjn1);
+
 	ret = v4l2_async_register_subdev_sensor(&s5kjn1->sd);
 	if (ret < 0) {
 		dev_err_probe(s5kjn1->dev, ret,
@@ -1431,6 +1463,8 @@ static int s5kjn1_probe(struct i2c_client *client)
 	return 0;
 
 subdev_cleanup:
+	if (s5kjn1->lens_link)
+		device_link_del(s5kjn1->lens_link);
 	v4l2_subdev_cleanup(&s5kjn1->sd);
 	pm_runtime_disable(s5kjn1->dev);
 	pm_runtime_set_suspended(s5kjn1->dev);
@@ -1453,6 +1487,8 @@ static void s5kjn1_remove(struct i2c_client *client)
 	struct s5kjn1 *s5kjn1 = to_s5kjn1(sd);
 
 	v4l2_async_unregister_subdev(sd);
+	if (s5kjn1->lens_link)
+		device_link_del(s5kjn1->lens_link);
 	v4l2_subdev_cleanup(sd);
 	media_entity_cleanup(&sd->entity);
 	v4l2_ctrl_handler_free(sd->ctrl_handler);

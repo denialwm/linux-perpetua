@@ -36,6 +36,10 @@ properties:
     description: Active low GPIO connected to RESET pad of the sensor.
     maxItems: 1
 
+  power-domains:
+    description: The domain its clock comes from, where it is gated.
+    maxItems: 1
+
   afvdd-supply:
     description: Autofocus actuator voltage supply, 2.8-3.0 volts.
 
