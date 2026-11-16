@@ -254,6 +254,7 @@ struct qca_serdev {
 	u32 oper_speed;
 	bool bdaddr_property_broken;
 	bool disable_ibs;
+	bool use_firmware_bdaddr;
 	bool support_hfp_hw_offload;
 	const char *firmware_name[2];
 };
@@ -2248,6 +2249,8 @@ retry:
 		clear_bit(QCA_IBS_DISABLED, &qca->flags);
 		if (qcadev && qcadev->disable_ibs)
 			set_bit(QCA_IBS_DISABLED, &qca->flags);
+		if (qcadev && qcadev->use_firmware_bdaddr)
+			hci_clear_quirk(hdev, HCI_QUIRK_USE_BDADDR_PROPERTY);
 		qca_debugfs_init(hdev);
 		hu->hdev->hw_error = qca_hw_error;
 		hu->hdev->reset = qca_reset;
@@ -2651,6 +2654,8 @@ static int qca_serdev_probe(struct serdev_device *serdev)
 			"qcom,local-bd-address-broken");
 	qcadev->disable_ibs = device_property_read_bool(&serdev->dev,
 			"qcom,disable-ibs");
+	qcadev->use_firmware_bdaddr = device_property_read_bool(&serdev->dev,
+			"qcom,use-firmware-bdaddr");
 
 	if (data)
 		qcadev->btsoc_type = data->soc_type;
