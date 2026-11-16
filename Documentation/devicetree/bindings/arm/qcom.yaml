@@ -1089,6 +1089,11 @@ properties:
 
       - items:
           - enum:
+              - google,barbet
+          - const: qcom,sm7250
+
+      - items:
+          - enum:
               - motorola,dubai
               - nothing,spacewar
               - xiaomi,taoyao
