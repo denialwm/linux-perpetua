@@ -1245,3 +1245,11 @@ config MACSMC_POWER
 	  Say Y or M here if you have an Apple Silicon based Mac.
 
 endif # POWER_SUPPLY
+
+config BATTERY_BARBET
+	tristate "Google Pixel 5a battery gauge"
+	depends on IIO
+	help
+	  Say Y to report the Pixel 5a battery voltage and a voltage-derived
+	  state of charge from the PM7250B VADC.
+
