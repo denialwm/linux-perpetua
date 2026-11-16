@@ -62,7 +62,7 @@
 				samsung,ext-control = <S2MPG10_EXTCTRL_TCXO_ON>;
 			};
 
-			ldo31m {
+			s2mpg10_ldo31m: ldo31m {
 				/*
 				 * Also the panel's VDDI (L31M_DISP_VDDI). The
 				 * bootloader leaves the panel running from it,
@@ -82,6 +82,26 @@
 	reg = <0x0 0xfac00000 (1080 * 2400 * 4)>;
 
 	status = "okay";
+};
+
+&decon0 {
+	status = "okay";
+};
+
+&dpp0 {
+	status = "okay";
+};
+
+&dsim0 {
+	status = "okay";
+
+	panel@0 {
+		compatible = "samsung,s6e3fc3";
+		reg = <0>;
+		reset-gpios = <&gpp24 1 GPIO_ACTIVE_LOW>;
+		vci-supply = <&s2mpg10_ldo22m>;
+		vddi-supply = <&s2mpg10_ldo31m>;
+	};
 };
 
 &framebuffer0 {
