@@ -2333,6 +2333,16 @@ config SND_SOC_TFA987X
 	  TFA9874 speaker amplifiers. They have no DSP; the driver plays
 	  one I2S slot without speaker protection.
 
+config SND_SOC_TFA9874
+	tristate "NXP/Goodix TFA9874 (TFA2) amplifier"
+	depends on I2C
+	select REGMAP_I2C
+	help
+	  Enable support for the NXP (now Goodix) TFA9874 speaker amplifier.
+	  The driver bypasses the built-in "CoolFlux DSP", so there is no
+	  speaker protection beyond the hardware limits, and only a capped
+	  coarse gain control is provided.
+
 config SND_SOC_TFA989X
 	tristate "NXP/Goodix TFA989X (TFA1) amplifiers"
 	depends on I2C
