@@ -100,6 +100,12 @@ patternProperties:
             0 = MSB
             1 = LSB
 
+      qcom,tdm-clk-no-invert:
+        type: boolean
+        description:
+          Request the TDM bit clocks of this port without the inverted
+          clock attribute, for DSPs that refuse it on this port.
+
     required:
       - reg
 
