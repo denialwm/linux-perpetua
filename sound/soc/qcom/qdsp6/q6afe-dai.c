@@ -265,6 +265,21 @@ static int q6tdm_set_channel_map(struct snd_soc_dai *dai,
 	return rc;
 }
 
+static int tdm_sync_mode = 1;
+module_param(tdm_sync_mode, int, 0644);
+static int tdm_sync_src = -1;
+module_param(tdm_sync_src, int, 0644);
+static int tdm_data_out = -1;
+module_param(tdm_data_out, int, 0644);
+static int tdm_invert_sync = -1;
+module_param(tdm_invert_sync, int, 0644);
+static int tdm_data_delay = -1;
+module_param(tdm_data_delay, int, 0644);
+static int tdm_data_align = -1;
+module_param(tdm_data_align, int, 0644);
+static int tdm_clk_attr = -1;
+module_param(tdm_clk_attr, int, 0644);
+
 static int q6tdm_hw_params(struct snd_pcm_substream *substream,
 			   struct snd_pcm_hw_params *params,
 			   struct snd_soc_dai *dai)
@@ -275,9 +290,21 @@ static int q6tdm_hw_params(struct snd_pcm_substream *substream,
 	tdm->bit_width = params_width(params);
 	tdm->sample_rate = params_rate(params);
 	tdm->num_channels = params_channels(params);
-	tdm->data_align_type = dai_data->priv[dai->id].data_align;
-	tdm->sync_src = dai_data->priv[dai->id].sync_src;
-	tdm->sync_mode = dai_data->priv[dai->id].sync_mode;
+	dev_info(dai->dev, "tdm hw_params: id=%d rate=%u ch=%u width=%u\n",
+		 dai->id, params_rate(params), params_channels(params),
+		 params_width(params));
+	tdm->data_align_type = tdm_data_align >= 0 ? tdm_data_align :
+		dai_data->priv[dai->id].data_align;
+	tdm->data_out_enable = tdm_data_out >= 0 ? tdm_data_out :
+		dai_data->priv[dai->id].data_out_enable;
+	tdm->invert_sync = tdm_invert_sync >= 0 ? tdm_invert_sync :
+		dai_data->priv[dai->id].invert_sync;
+	tdm->sync_data_delay = tdm_data_delay >= 0 ? tdm_data_delay :
+		dai_data->priv[dai->id].data_delay;
+	tdm->sync_src = tdm_sync_src >= 0 ? tdm_sync_src :
+		dai_data->priv[dai->id].sync_src;
+	tdm->sync_mode = tdm_sync_mode >= 0 ? tdm_sync_mode :
+		dai_data->priv[dai->id].sync_mode;
 
 	return 0;
 }
@@ -510,8 +537,13 @@ static int q6afe_mi2s_set_sysclk(struct snd_soc_dai *dai,
 					     Q6AFE_LPASS_CLK_ROOT_DEFAULT,
 					     freq, dir);
 	case Q6AFE_LPASS_CLK_ID_PRI_TDM_IBIT ... Q6AFE_LPASS_CLK_ID_QUIN_TDM_EBIT:
+		/*
+		 * Which attribute this DSP accepts depends on the rate; expose
+		 * it so it can be swept without rebuilding.
+		 */
 		return q6afe_port_set_sysclk(port, clk_id,
-					     Q6AFE_LPASS_CLK_ATTRIBUTE_INVERT_COUPLE_NO,
+					     tdm_clk_attr >= 0 ? tdm_clk_attr :
+					     Q6AFE_LPASS_CLK_ATTRIBUTE_COUPLE_NO,
 					     Q6AFE_LPASS_CLK_ROOT_DEFAULT,
 					     freq, dir);
 	}

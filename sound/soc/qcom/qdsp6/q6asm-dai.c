@@ -339,6 +339,9 @@ static int q6asm_dai_trigger(struct snd_soc_component *component,
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct q6asm_dai_rtd *prtd = runtime->private_data;
 
+	dev_info(component->dev, "asm trigger: cmd=%d stream=%d\n",
+		 cmd, prtd->stream_id);
+
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
@@ -359,6 +362,7 @@ static int q6asm_dai_trigger(struct snd_soc_component *component,
 		ret = -EINVAL;
 		break;
 	}
+	dev_info(component->dev, "asm trigger: cmd=%d ret=%d\n", cmd, ret);
 
 	return ret;
 }
@@ -1009,6 +1013,9 @@ static int q6asm_dai_compr_trigger(struct snd_soc_component *component,
 	struct q6asm_dai_rtd *prtd = runtime->private_data;
 	int ret = 0;
 
+	dev_info(component->dev, "asm trigger: cmd=%d stream=%d\n",
+		 cmd, prtd->stream_id);
+
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
@@ -1217,8 +1224,13 @@ static const struct snd_soc_dapm_widget q6asm_dapm_widgets[] = {
 	SND_SOC_DAPM_AIF_OUT("MM_UL8", "MultiMedia8 Capture", 0, SND_SOC_NOPM, 0, 0),
 };
 
+static int q6asm_of_xlate_dai_name(struct snd_soc_component *component,
+				   const struct of_phandle_args *args,
+				   const char **dai_name);
+
 static const struct snd_soc_component_driver q6asm_fe_dai_component = {
 	.name			= DRV_NAME,
+	.of_xlate_dai_name	= q6asm_of_xlate_dai_name,
 	.open			= q6asm_dai_open,
 	.hw_params		= q6asm_dai_hw_params,
 	.close			= q6asm_dai_close,
@@ -1243,6 +1255,18 @@ static struct snd_soc_dai_driver q6asm_fe_dais_template[] = {
 	Q6ASM_FEDAI_DRIVER(7),
 	Q6ASM_FEDAI_DRIVER(8),
 };
+
+static int q6asm_of_xlate_dai_name(struct snd_soc_component *component,
+				   const struct of_phandle_args *args,
+				   const char **dai_name)
+{
+	if (args->args_count != 1 ||
+	    args->args[0] >= ARRAY_SIZE(q6asm_fe_dais_template))
+		return -EINVAL;
+
+	*dai_name = q6asm_fe_dais_template[args->args[0]].name;
+	return 0;
+}
 
 static const struct snd_soc_dai_ops q6asm_dai_ops = {
 	.compress_new = snd_soc_new_compress,
