@@ -5,6 +5,7 @@
 
 
 #include <linux/module.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/errno.h>
 #include <linux/device.h>
 #include <linux/i2c.h>
@@ -48,14 +49,21 @@ struct tas2562_data {
 	struct snd_soc_component *component;
 	struct gpio_desc *sdz_gpio;
 	struct regmap *regmap;
+	struct regmap *right_regmap;
 	struct device *dev;
 	struct i2c_client *client;
+	struct gpio_desc *reset_gpio_l;
+	struct gpio_desc *reset_gpio_r;
+	bool paired;
+	u32 right_addr;
+	unsigned int tx_mask;
 	int v_sense_slot;
 	int i_sense_slot;
 	int volume_lvl;
 	int model_id;
 	bool dac_powered;
 	bool unmuted;
+	bool classd_cmp_hyst;
 };
 
 enum tas256x_model {
@@ -63,6 +71,43 @@ enum tas256x_model {
 	TAS2564,
 	TAS2110,
 };
+
+static void tas2562_sync_pair(struct tas2562_data *tas2562)
+{
+	static const unsigned int regs[] = {
+		TAS2562_PWR_CTRL, TAS2562_PB_CFG1, TAS2562_TDM_CFG0,
+		TAS2562_TDM_CFG1, TAS2562_TDM_CFG2,
+		TAS2562_DVC_CFG1, TAS2562_DVC_CFG2,
+		TAS2562_DVC_CFG3, TAS2562_DVC_CFG4,
+	};
+	unsigned int val;
+	int i;
+
+	if (!tas2562->paired || !tas2562->right_regmap)
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(regs); i++) {
+		if (!regmap_read(tas2562->regmap, regs[i], &val))
+			regmap_write(tas2562->right_regmap, regs[i], val);
+	}
+
+	/* Left amp reads slot 0, right amp reads slot 1. */
+	regmap_update_bits(tas2562->regmap, TAS2562_TDM_CFG2,
+			   GENMASK(5, 4), 1 << 4);
+	regmap_update_bits(tas2562->right_regmap, TAS2562_TDM_CFG2,
+			   GENMASK(5, 4), 2 << 4);
+
+	if (tas2562->tx_mask) {
+		unsigned int mask = tas2562->tx_mask << 1;
+		int left = __ffs(mask);
+		int right;
+
+		mask &= ~BIT(left);
+		right = mask ? __ffs(mask) : left;
+		val = (right << TAS2562_RIGHT_SLOT_SHIFT) | left;
+		regmap_write(tas2562->right_regmap, TAS2562_TDM_CFG3, val);
+	}
+}
 
 static int tas2562_set_samplerate(struct tas2562_data *tas2562, int samplerate)
 {
@@ -150,6 +195,8 @@ static int tas2562_set_dai_tdm_slot(struct snd_soc_dai *dai,
 	int slots_cfg;
 	int ret;
 
+	tas2562->tx_mask = tx_mask;
+
 	if (!tx_mask) {
 		dev_err(component->dev, "tx masks must not be 0\n");
 		return -EINVAL;
@@ -220,6 +267,8 @@ static int tas2562_set_dai_tdm_slot(struct snd_soc_dai *dai,
 	if (ret < 0)
 		return ret;
 
+	tas2562_sync_pair(tas2562);
+
 	return 0;
 }
 
@@ -281,6 +330,8 @@ static int tas2562_set_bitwidth(struct tas2562_data *tas2562, int bitwidth)
 	return 0;
 }
 
+static int tas2562_update_pwr_ctrl(struct tas2562_data *tas2562);
+
 static int tas2562_hw_params(struct snd_pcm_substream *substream,
 			     struct snd_pcm_hw_params *params,
 			     struct snd_soc_dai *dai)
@@ -289,6 +340,17 @@ static int tas2562_hw_params(struct snd_pcm_substream *substream,
 	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
 	int ret;
 
+	/*
+	 * The LPASS power-up wipes the LPI pad mux, so the pinctrl applied
+	 * at probe is gone by the time audio starts. Only the paired board
+	 * carries its LPI pads in this node's pinctrl; force sleep->default
+	 * there to reprogram it, and leave the pads alone on the others.
+	 */
+	if (tas2562->paired) {
+		pinctrl_pm_select_sleep_state(tas2562->dev);
+		pinctrl_pm_select_default_state(tas2562->dev);
+	}
+
 	ret = tas2562_set_bitwidth(tas2562, params_format(params));
 	if (ret) {
 		dev_err(tas2562->dev, "set bitwidth failed, %d\n", ret);
@@ -296,8 +358,24 @@ static int tas2562_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	ret = tas2562_set_samplerate(tas2562, params_rate(params));
-	if (ret)
+	if (ret) {
 		dev_err(tas2562->dev, "set sample rate failed, %d\n", ret);
+		return ret;
+	}
+
+	/*
+	 * The class-D comparator hysteresis quietens the idle switching of
+	 * the amp; boards that do not ask for it keep the reset default.
+	 */
+	if (tas2562->classd_cmp_hyst)
+		ret = snd_soc_component_update_bits(component,
+						    TAS2562_MISC_CLASSD,
+						    TAS2562_CMP_HYST_MASK,
+						    TAS2562_CMP_HYST_MASK);
+	else
+		ret = 0;
+
+	tas2562_sync_pair(tas2562);
 
 	return ret;
 }
@@ -349,6 +427,8 @@ static int tas2562_set_dai_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 	if (ret < 0)
 		return ret;
 
+	tas2562_sync_pair(tas2562);
+
 	return 0;
 }
 
@@ -364,10 +444,15 @@ static int tas2562_update_pwr_ctrl(struct tas2562_data *tas2562)
 	else
 		val = TAS2562_SHUTDOWN;
 
+	dev_dbg(tas2562->dev, "pwr: dac=%d unmuted=%d val=%u\n",
+		tas2562->dac_powered, tas2562->unmuted, val);
 	ret = snd_soc_component_update_bits(component, TAS2562_PWR_CTRL,
 					    TAS2562_MODE_MASK, val);
+	dev_dbg(tas2562->dev, "pwr: update_bits ret=%d\n", ret);
 	if (ret < 0)
 		return ret;
+
+	tas2562_sync_pair(tas2562);
 
 	return 0;
 }
@@ -388,6 +473,10 @@ static int tas2562_codec_probe(struct snd_soc_component *component)
 
 	if (tas2562->sdz_gpio)
 		gpiod_set_value_cansleep(tas2562->sdz_gpio, 1);
+	if (tas2562->reset_gpio_l)
+		gpiod_set_value_cansleep(tas2562->reset_gpio_l, 1);
+	if (tas2562->reset_gpio_r)
+		gpiod_set_value_cansleep(tas2562->reset_gpio_r, 1);
 
 	return 0;
 }
@@ -440,6 +529,8 @@ static int tas2562_dac_event(struct snd_soc_dapm_widget *w,
 	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
 	int ret = 0;
 
+	dev_dbg(tas2562->dev, "dac event=%d dac=%d\n", event,
+		tas2562->dac_powered);
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
 		tas2562->dac_powered = true;
@@ -472,7 +563,7 @@ static int tas2562_volume_control_put(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
 	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
-	int ret, index;
+	int ret, index, i;
 	u32 reg_val;
 
 	if (tas2562->volume_lvl == ucontrol->value.integer.value[0])
@@ -507,6 +598,17 @@ static int tas2562_volume_control_put(struct snd_kcontrol *kcontrol,
 				      (reg_val & 0xff));
 	if (ret)
 		return ret;
+
+	/* The paired amp also needs all four bytes, with CFG4 written last. */
+	if (tas2562->paired && tas2562->right_regmap) {
+		for (i = 0; i < 4; i++) {
+			ret = regmap_write(tas2562->right_regmap,
+					   TAS2562_DVC_CFG1 + i,
+					   (reg_val >> (24 - i * 8)) & 0xff);
+			if (ret)
+				return ret;
+		}
+	}
 
 	tas2562->volume_lvl = ucontrol->value.integer.value[0];
 
@@ -674,6 +776,7 @@ static const struct regmap_config tas2562_regmap_config = {
 static int tas2562_parse_dt(struct tas2562_data *tas2562)
 {
 	struct device *dev = tas2562->dev;
+	u32 left_addr, right_addr;
 	int ret = 0;
 
 	tas2562->sdz_gpio = devm_gpiod_get_optional(dev, "shutdown", GPIOD_OUT_HIGH);
@@ -697,6 +800,31 @@ static int tas2562_parse_dt(struct tas2562_data *tas2562)
 
 			tas2562->sdz_gpio = NULL;
 		}
+	}
+
+	if (fwnode_property_read_u32(dev->fwnode, "ti,left-channel",
+				     &left_addr) == 0 &&
+	    fwnode_property_read_u32(dev->fwnode, "ti,right-channel",
+				     &right_addr) == 0 &&
+	    right_addr != left_addr) {
+		tas2562->paired = true;
+		tas2562->right_addr = right_addr;
+	}
+
+	tas2562->reset_gpio_l = devm_gpiod_get_index_optional(dev, "reset",
+							      0, GPIOD_OUT_HIGH);
+	if (IS_ERR(tas2562->reset_gpio_l)) {
+		if (PTR_ERR(tas2562->reset_gpio_l) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		tas2562->reset_gpio_l = NULL;
+	}
+
+	tas2562->reset_gpio_r = devm_gpiod_get_index_optional(dev, "reset",
+							      1, GPIOD_OUT_HIGH);
+	if (IS_ERR(tas2562->reset_gpio_r)) {
+		if (PTR_ERR(tas2562->reset_gpio_r) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		tas2562->reset_gpio_r = NULL;
 	}
 
 	if (tas2562->model_id == TAS2110)
@@ -724,7 +852,10 @@ static int tas2562_parse_dt(struct tas2562_data *tas2562)
 		return -EINVAL;
 	}
 
-	return ret;
+	tas2562->classd_cmp_hyst = fwnode_property_read_bool(dev->fwnode,
+							     "ti,classd-cmp-hyst");
+
+	return 0;
 }
 
 static const struct i2c_device_id tas2562_id[] = {
@@ -751,13 +882,29 @@ static int tas2562_probe(struct i2c_client *client)
 	/* Register default is 0x40400000, this is closest */
 	data->volume_lvl = (ARRAY_SIZE(float_vol_db_lookup) - 1) * 2;
 
-	tas2562_parse_dt(data);
+	ret = tas2562_parse_dt(data);
+	if (ret)
+		return ret;
 
 	data->regmap = devm_regmap_init_i2c(client, &tas2562_regmap_config);
 	if (IS_ERR(data->regmap)) {
 		ret = PTR_ERR(data->regmap);
 		dev_err(dev, "failed to allocate register map: %d\n", ret);
 		return ret;
+	}
+
+	if (data->paired) {
+		struct i2c_client *right;
+
+		right = devm_i2c_new_dummy_device(dev, client->adapter,
+						  data->right_addr);
+		if (IS_ERR(right))
+			return PTR_ERR(right);
+
+		data->right_regmap = devm_regmap_init_i2c(right,
+							  &tas2562_regmap_config);
+		if (IS_ERR(data->right_regmap))
+			return PTR_ERR(data->right_regmap);
 	}
 
 	dev_set_drvdata(&client->dev, data);

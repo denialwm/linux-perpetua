@@ -2,7 +2,9 @@
 // Copyright (c) 2020, Linaro Limited
 
 #include <dt-bindings/sound/qcom,q6afe.h>
+#include <linux/clk.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -15,10 +17,12 @@
 #include "common.h"
 #include "usb_offload_utils.h"
 #include "sdw.h"
+#include "../codecs/rt5514.h"
 
 #define MI2S_BCLK_RATE		1536000
 
 struct sm8250_snd_data {
+	bool is_barbet;
 	bool stream_prepared[AFE_PORT_MAX];
 	struct snd_soc_card *card;
 	struct snd_soc_jack jack;
@@ -27,6 +31,33 @@ struct sm8250_snd_data {
 	struct snd_soc_jack dp_jack;
 	bool jack_setup;
 };
+
+/*
+ * Actual TDM bit clock the codec sees: nslots * slot_width * rate. This is
+ * NOT tdm_clk_rate, which is the LPASS interface clock requested from the DSP.
+ */
+static const int cap_bclk_rate = 12288000;
+static const int tdm_slots = 8;
+static const int tdm_slot_width = 32;
+/*
+ * Slot mask must have one bit per active channel. The capture side carries
+ * one channel (stock: "PRI_TDM_TX_0 Channels" = One), in slot 0. 0xFF (all
+ * eight slots with ch=2) is rejected by the ADSP:
+ * AFE_PORT_CMD_DEVICE_START comes back ADSP_EFAILED (-EINVAL at
+ * snd_soc_dai_prepare).
+ */
+static const int tdm_rx_mask = 0x1;
+/*
+ * The stock machine driver uses four slots, but this mainline clock path
+ * rejects 6.144 MHz. Eight slots at 12.288 MHz have been verified with
+ * live TAS2562 clock status and acoustic tone captures on barbet.
+ */
+static const int quin_tdm_slots = 8;
+static const int quin_clk_id = Q6AFE_LPASS_CLK_ID_QUIN_TDM_IBIT;
+static const int tdm_clk_rate = 12288000;
+/* Stock sets the PRI TDM interface clock through LPAIF_DIG_CLK (clk_id 0 in
+ * the vendor driver), not through the LPASS TDM IBIT clock id. */
+static const int tdm_pri_clk_id = LPAIF_DIG_CLK;
 
 static int sm8250_snd_init(struct snd_soc_pcm_runtime *rtd)
 {
@@ -58,15 +89,36 @@ static void sm8250_snd_exit(struct snd_soc_pcm_runtime *rtd)
 static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 				     struct snd_pcm_hw_params *params)
 {
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
 	struct snd_interval *rate = hw_param_interval(params,
 					SNDRV_PCM_HW_PARAM_RATE);
 	struct snd_interval *channels = hw_param_interval(params,
 					SNDRV_PCM_HW_PARAM_CHANNELS);
 	struct snd_mask *fmt = hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT);
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+	unsigned int format = SNDRV_PCM_FORMAT_S16_LE;
+
+	/*
+	 * Stock barbet feeds the TAS2562 speaker on QUIN TDM RX as S24_LE
+	 * (mixer_paths_bolero_snd.xml: "QUIN_TDM_RX_0 Format" = S24_LE).
+	 * Forcing S16_LE there leaves the amp decoding mostly-zero words.
+	 */
+	if (data->is_barbet && cpu_dai && cpu_dai->id == QUINARY_TDM_RX_0)
+		format = SNDRV_PCM_FORMAT_S24_LE;
 
 	rate->min = rate->max = 48000;
-	channels->min = channels->max = 2;
-	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
+	if (data->is_barbet && cpu_dai && cpu_dai->id == PRIMARY_TDM_TX_0)
+		channels->min = channels->max = 1;
+	else
+		channels->min = channels->max = 2;
+	/*
+	 * snd_mask_set_format() only adds to the allowed set, so the FE's
+	 * format would still win.  Clear the mask to actually force the BE
+	 * format (stock barbet runs QUIN TDM RX as S24_LE).
+	 */
+	if (data->is_barbet)
+		snd_mask_none(fmt);
+	snd_mask_set_format(fmt, format);
 
 	return 0;
 }
@@ -78,6 +130,7 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
 
 	switch (cpu_dai->id) {
 	case PRIMARY_MI2S_RX:
@@ -128,6 +181,107 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 		snd_soc_dai_set_fmt(cpu_dai, fmt);
 		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
 		break;
+	case PRIMARY_TDM_TX_0: {
+		/*
+		 * Barbet's built-in microphones are DMICs on the RT5514P, read
+		 * over PRIMARY_TDM_TX_0. This mirrors the vendor machine driver
+		 * (kona_tdm_be_hw_params): 8 slots of 32 bits, all slots in the
+		 * mask, one capture channel at byte offset 0, the LPASS
+		 * interface clock at rate*width*slots, and the codec in TDM
+		 * (PCM_A) mode with only slot 0 as its own TX channel.
+		 */
+		unsigned int tx_slots[] = { 0 };
+		int ret;
+
+		if (!data->is_barbet)
+			break;
+
+		ret = snd_soc_dai_set_sysclk(cpu_dai, tdm_pri_clk_id, tdm_clk_rate,
+					     SNDRV_PCM_STREAM_CAPTURE);
+		if (ret)
+			return ret;
+		ret = snd_soc_dai_set_tdm_slot(cpu_dai, tdm_rx_mask, 0,
+					       tdm_slots, tdm_slot_width);
+		if (ret)
+			return ret;
+		ret = snd_soc_dai_set_channel_map(cpu_dai, 1, tx_slots, 0, NULL);
+		if (ret)
+			return ret;
+
+		ret = snd_soc_dai_set_tdm_slot(codec_dai, 1, 0,
+					       tdm_slots, tdm_slot_width);
+		if (ret)
+			return ret;
+		ret = snd_soc_dai_set_fmt(codec_dai,
+					  SND_SOC_DAIFMT_DSP_A | SND_SOC_DAIFMT_NB_NF);
+		if (ret)
+			return ret;
+
+		/*
+		 * There is no MCLK wire to the RT5514 on barbet: the codec PLL
+		 * runs from the TDM bit clock, and stock programs it with the
+		 * bit clock as both input and output.
+		 */
+		ret = snd_soc_dai_set_pll(codec_dai, 0, RT5514_PLL_S_BCLK,
+					  cap_bclk_rate, cap_bclk_rate);
+		if (ret)
+			return ret;
+		ret = snd_soc_dai_set_sysclk(codec_dai, RT5514_SCLK_S_PLL,
+					     cap_bclk_rate, SND_SOC_CLOCK_IN);
+		if (ret)
+			return ret;
+		break;
+	}
+
+	case QUINARY_TDM_RX_0: {
+		unsigned int rx_slots[] = { 0, tdm_slot_width / 8 };
+		unsigned int quin_slots = quin_tdm_slots;
+		/* Two channels live in slots 0 and 1 (byte offsets 0 and 4). */
+		unsigned int quin_mask = (1U << 2) - 1;
+		unsigned int quin_rate = quin_slots * tdm_slot_width * 48000;
+		int ret;
+		int i;
+
+		if (!data->is_barbet)
+			break;
+
+		/*
+		 * Barbet speakers: TAS2562 on Quinary TDM RX.  Stock runs
+		 * 4 slots of 32 bits at 48 kHz (6.144 MHz), both channels in
+		 * slots 0 and 1, with DSP_A sync. This clock path requires
+		 * eight slots at 12.288 MHz; keep slots 0 and 1 enabled for
+		 * the paired amplifiers. RX offset 1 is a bit delay, not a
+		 * channel-slot selection.
+		 * Stock's mux/clock is re-applied at stream start in
+		 * tas2562_hw_params(); the LPASS power-up otherwise wipes the
+		 * LPI pad mux.
+		 */
+		ret = snd_soc_dai_set_sysclk(cpu_dai, quin_clk_id, quin_rate,
+					     SNDRV_PCM_STREAM_PLAYBACK);
+		if (ret)
+			return ret;
+		ret = snd_soc_dai_set_tdm_slot(cpu_dai, 0, quin_mask,
+					       quin_slots, tdm_slot_width);
+		if (ret)
+			return ret;
+		ret = snd_soc_dai_set_channel_map(cpu_dai, 0, NULL, 2, rx_slots);
+		if (ret)
+			return ret;
+		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_DSP_A;
+		snd_soc_dai_set_fmt(cpu_dai, fmt);
+		for_each_rtd_codec_dais(rtd, i, codec_dai) {
+			unsigned int mask = 1U << i;
+
+			ret = snd_soc_dai_set_tdm_slot(codec_dai, mask, mask,
+						       quin_slots, tdm_slot_width);
+			if (ret)
+				return ret;
+			ret = snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
+			if (ret)
+				return ret;
+		}
+		break;
+	}
 	default:
 		break;
 	}
@@ -160,8 +314,35 @@ static const struct snd_soc_ops sm8250_be_ops = {
 	.prepare = sm8250_snd_prepare,
 };
 
+/*
+ * Barbet captures through the RT5514P, whose ADC/DSP produces 32 kHz data
+ * while the primary TDM backend runs at 48 kHz. The ADSP only returns usable
+ * samples for a 32 kHz front end; at 48 kHz userspace receives a fixed
+ * bit pattern instead of audio, so pin the capture rate.
+ */
+static int sm8250_fe_startup(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
+
+	if (data->is_barbet &&
+	    substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
+		runtime->hw.rates = SNDRV_PCM_RATE_32000;
+		runtime->hw.rate_min = 32000;
+		runtime->hw.rate_max = 32000;
+	}
+
+	return 0;
+}
+
+static const struct snd_soc_ops sm8250_fe_ops = {
+	.startup = sm8250_fe_startup,
+};
+
 static void sm8250_add_be_ops(struct snd_soc_card *card)
 {
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(card);
 	struct snd_soc_dai_link *link;
 	int i;
 
@@ -171,8 +352,71 @@ static void sm8250_add_be_ops(struct snd_soc_card *card)
 			link->exit = sm8250_snd_exit;
 			link->be_hw_params_fixup = sm8250_be_hw_params_fixup;
 			link->ops = &sm8250_be_ops;
+		} else if (data->is_barbet && !link->ops) {
+			link->ops = &sm8250_fe_ops;
 		}
 	}
+}
+
+static int sm8250_enable_vote_clocks(struct device *dev)
+{
+	struct clk *clk;
+
+	clk = devm_clk_get_optional_enabled(dev, "lpass_audio_hw_vote");
+	if (IS_ERR(clk))
+		return dev_err_probe(dev, PTR_ERR(clk),
+				     "failed to enable LPASS vote clock\n");
+
+	clk = devm_clk_get_optional_enabled(dev, "lpass_dcodec_hw_vote");
+	if (PTR_ERR(clk) == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
+	if (IS_ERR(clk))
+		dev_warn(dev, "failed to enable LPASS dcodec vote: %ld\n",
+			 PTR_ERR(clk));
+
+	return 0;
+}
+
+static void sm8250_disable_tdm_clock(void *data)
+{
+	clk_disable_unprepare(data);
+}
+
+static int sm8250_enable_tdm_clocks(struct device *dev)
+{
+	static const char * const tdm_clk_names[] = {
+		"lpass_pri_tdm_ibit", "lpass_quin_tdm_ibit",
+	};
+	struct clk *tdm_clk;
+	int i, ret;
+
+	/*
+	 * Enabling these makes q6afe issue a global AFE_PARAM_ID_CLOCK_SET for
+	 * the TDM bit clocks, which is what actually starts the LPASS TDM
+	 * clock generators. Do not fail the card if the DSP rejects them.
+	 */
+	for (i = 0; i < ARRAY_SIZE(tdm_clk_names); i++) {
+		tdm_clk = devm_clk_get_optional(dev, tdm_clk_names[i]);
+		if (IS_ERR(tdm_clk)) {
+			if (PTR_ERR(tdm_clk) == -EPROBE_DEFER)
+				return -EPROBE_DEFER;
+			dev_warn(dev, "failed to get %s: %ld\n",
+				 tdm_clk_names[i], PTR_ERR(tdm_clk));
+			continue;
+		}
+		if (!tdm_clk)
+			continue;
+		clk_set_rate(tdm_clk, tdm_clk_rate);
+		ret = clk_prepare_enable(tdm_clk);
+		if (ret)
+			continue;
+		ret = devm_add_action_or_reset(dev, sm8250_disable_tdm_clock,
+					      tdm_clk);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
 }
 
 static int sm8250_platform_probe(struct platform_device *pdev)
@@ -192,9 +436,21 @@ static int sm8250_platform_probe(struct platform_device *pdev)
 	if (!data)
 		return -ENOMEM;
 
+	data->is_barbet = of_device_is_compatible(dev->of_node,
+						"google,barbet-sndcard");
 	card->dev = dev;
 	dev_set_drvdata(dev, card);
 	snd_soc_card_set_drvdata(card, data);
+
+	if (data->is_barbet) {
+		ret = sm8250_enable_vote_clocks(dev);
+		if (ret)
+			return ret;
+		ret = sm8250_enable_tdm_clocks(dev);
+		if (ret)
+			return ret;
+	}
+
 	ret = qcom_snd_parse_of(card);
 	if (ret)
 		return ret;
@@ -205,6 +461,7 @@ static int sm8250_platform_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id snd_sm8250_dt_match[] = {
+	{ .compatible = "google,barbet-sndcard", .data = "sm7250" },
 	{ .compatible = "fairphone,fp4-sndcard", .data = "sm7225" },
 	{ .compatible = "fairphone,fp5-sndcard", .data = "qcm6490" },
 	{ .compatible = "qcom,qrb2210-sndcard", .data = "qcm2290" },
