@@ -5,6 +5,7 @@
 
 #include <linux/acpi.h>
 #include <linux/clk.h>
+#include <linux/dma-mapping.h>
 #include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/devfreq.h>
@@ -2970,8 +2971,28 @@ static int ufs_qcom_tx_eqtr_notify(struct ufs_hba *hba,
  * The variant operations configure the necessary controller and PHY
  * handshake during initialization.
  */
+/*
+ * SM7250: the UFS node has no "iommus" (downstream has none either), so the
+ * descriptors are programmed with raw physical addresses, which can be above
+ * 4 GiB. On this port the host controller then never writes back the OCS or
+ * response UPIU and raises no transfer completion interrupt. Keep all DMA
+ * below 4 GiB, like the SMMU-translated siblings effectively do.
+ */
+static int ufs_qcom_set_dma_mask(struct ufs_hba *hba)
+{
+	const struct ufs_qcom_drvdata *drvdata = of_device_get_match_data(hba->dev);
+
+	if (!(drvdata && drvdata->dma_32bit) &&
+	    (hba->capabilities & MASK_64_ADDRESSING_SUPPORT) &&
+	    !dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(64)))
+		return 0;
+
+	return dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(32));
+}
+
 static const struct ufs_hba_variant_ops ufs_hba_qcom_vops = {
 	.name                   = "qcom",
+	.set_dma_mask		= ufs_qcom_set_dma_mask,
 	.init                   = ufs_qcom_init,
 	.exit                   = ufs_qcom_exit,
 	.get_ufs_hci_version	= ufs_qcom_get_ufs_hci_version,
@@ -3060,12 +3081,17 @@ static const struct ufs_qcom_drvdata ufs_qcom_sm8550_drvdata = {
 	.no_phy_retention = true,
 };
 
+static const struct ufs_qcom_drvdata ufs_qcom_sm7250_drvdata = {
+	.dma_32bit = true,
+};
+
 static const struct ufs_qcom_drvdata ufs_qcom_sa8255p_drvdata = {
 	.vops = &ufs_hba_qcom_sa8255p_vops
 };
 
 static const struct of_device_id ufs_qcom_of_match[] __maybe_unused = {
 	{ .compatible = "qcom,ufshc" },
+	{ .compatible = "qcom,sm7250-ufshc", .data = &ufs_qcom_sm7250_drvdata },
 	{ .compatible = "qcom,sm8550-ufshc", .data = &ufs_qcom_sm8550_drvdata },
 	{ .compatible = "qcom,sm8650-ufshc", .data = &ufs_qcom_sm8550_drvdata },
 	{ .compatible = "qcom,sa8255p-ufshc", .data = &ufs_qcom_sa8255p_drvdata },
