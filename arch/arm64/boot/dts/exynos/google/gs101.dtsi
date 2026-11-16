@@ -1924,6 +1924,68 @@
 			clocks = <&cmu_dpu CLK_GOUT_DPU_SYSREG_DPU_PCLK>;
 		};
 
+		dpp0: dpp@1c0b0000 {
+			compatible = "google,gs101-dpp";
+			reg = <0x1c0b0000 0x1000>, <0x1c0d0000 0x1000>;
+			reg-names = "dma", "dpp";
+			interrupts = <GIC_SPI 354 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 361 IRQ_TYPE_LEVEL_HIGH 0>;
+			interrupt-names = "dma", "dpp";
+			clocks = <&cmu_dpu CLK_GOUT_DPU_PCLK>,
+				 <&cmu_dpu CLK_GOUT_DPU_CLK_DPU_BUSP_CLK>,
+				 <&cmu_dpu CLK_GOUT_DPU_DPUF_ACLK_DMA>,
+				 <&cmu_dpu CLK_GOUT_DPU_DPUF_ACLK_DPP>;
+			clock-names = "pclk", "busp", "aclk_dma", "aclk_dpp";
+
+			status = "disabled";
+		};
+
+		dsim0: dsi@1c2c0000 {
+			compatible = "google,gs101-dsim";
+			reg = <0x1c2c0000 0x300>;
+			interrupts = <GIC_SPI 345 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&cmu_dpu CLK_GOUT_DPU_PCLK>,
+				 <&cmu_dpu CLK_GOUT_DPU_CLK_DPU_BUSP_CLK>;
+			clock-names = "pclk", "busp";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			status = "disabled";
+
+			port {
+				dsim0_in: endpoint {
+					remote-endpoint = <&decon0_out>;
+				};
+			};
+		};
+
+		decon0: display-controller@1c300000 {
+			compatible = "google,gs101-decon";
+			reg = <0x1c300000 0x6000>, <0x1c310000 0x6000>,
+			      <0x1c320000 0x10000>, <0x1c330000 0x6000>;
+			reg-names = "main", "win", "sub", "wincon";
+			interrupts = <GIC_SPI 338 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 337 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 336 IRQ_TYPE_LEVEL_HIGH 0>;
+			interrupt-names = "frame-start", "frame-done", "extra";
+			clocks = <&cmu_dpu CLK_GOUT_DPU_PCLK>,
+				 <&cmu_dpu CLK_GOUT_DPU_CLK_DPU_BUSP_CLK>,
+				 <&cmu_dpu CLK_GOUT_DPU_CLK_DPU_BUSD_CLK>;
+			clock-names = "pclk", "busp", "busd";
+			/* DECON's hardware trigger takes the panel's TE on gpp0-3. */
+			pinctrl-0 = <&disp_te_pri_on>;
+			pinctrl-names = "default";
+			google,dpps = <&dpp0>;
+
+			status = "disabled";
+
+			port {
+				decon0_out: endpoint {
+					remote-endpoint = <&dsim0_in>;
+				};
+			};
+		};
+
 		cmu_top: clock-controller@1e080000 {
 			compatible = "google,gs101-cmu-top";
 			reg = <0x1e080000 0x10000>;
