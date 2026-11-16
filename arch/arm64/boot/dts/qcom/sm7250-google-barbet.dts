@@ -754,19 +754,36 @@
 	};
 };
 
-/* Kept disabled until Bluetooth firmware loading is qualified separately. */
+/*
+ * WCN3990 Bluetooth on QUP1 SE5, TLMM 38-41. The combo chip's BT side is
+ * powered and driven by hci_qca; its NVM and patch files come from the
+ * phone's own vendor partition.
+ */
 &uart5 {
+	status = "okay";
 	pinctrl-0 = <&bt_uart_cts_rx>, <&bt_uart_rts_tx>;
 	pinctrl-1 = <&bt_uart_cts_rx>, <&bt_uart_rts_tx>;
 
 	bluetooth {
-		compatible = "qcom,wcn3990-bt";
+		/*
+		 * The BT ROM answers the version request with a Command
+		 * Complete packet, the WCN3991 form, not the WCN3990 vendor
+		 * event. Use the WCN3991 protocol and firmware naming.
+		 */
+		compatible = "qcom,wcn3991-bt";
 		vddio-supply = <&vreg_s4a_1p8>;
 		vddxo-supply = <&vreg_l14a_1p8>;
 		vddrf-supply = <&vreg_l2c_1p3>;
 		vddch0-supply = <&vreg_l10c_3p3>;
 		swctrl-gpios = <&tlmm 73 GPIO_ACTIVE_HIGH>;
 		max-speed = <3200000>;
+		/*
+		 * This ROM stops answering standard HCI commands once the
+		 * setup leaves the QCA in-band-sleep handshake enabled.
+		 */
+		qcom,disable-ibs;
+		/* The firmware reports a usable public address. */
+		qcom,use-firmware-bdaddr;
 	};
 };
 
