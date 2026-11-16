@@ -12,6 +12,8 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/input.h>
+#include <linux/math.h>
+#include <linux/minmax.h>
 #include <linux/module.h>
 #include <linux/regmap.h>
 #include <linux/workqueue.h>
@@ -29,7 +31,10 @@
 struct drv2624 {
 	struct regmap *regmap;
 	struct input_dev *input;
+	struct work_struct play_work;
 	struct delayed_work stop_work;
+	u8 magnitude;
+	u32 length_ms;
 };
 
 static const struct regmap_config drv2624_regmap_config = {
@@ -46,28 +51,48 @@ static void drv2624_stop_work(struct work_struct *work)
 	regmap_write(h->regmap, DRV2624_REG_GO, 0);
 }
 
-static int drv2624_play(struct input_dev *dev, void *data,
-			struct ff_effect *effect)
+static void drv2624_play_work(struct work_struct *work)
 {
-	struct drv2624 *h = input_get_drvdata(dev);
-	u8 strong = effect->u.rumble.strong_magnitude >> 8;
-	u8 weak = effect->u.rumble.weak_magnitude >> 8;
-	u8 magnitude = max(strong, weak);
+	struct drv2624 *h = container_of(work, struct drv2624, play_work);
+	u8 magnitude = h->magnitude;
 
 	cancel_delayed_work_sync(&h->stop_work);
 
 	if (!magnitude) {
 		regmap_write(h->regmap, DRV2624_REG_GO, 0);
-		return 0;
+		return;
 	}
 
 	regmap_write(h->regmap, DRV2624_REG_MODE, DRV2624_MODE_RTP);
 	regmap_write(h->regmap, DRV2624_REG_RTP_INPUT, magnitude);
 	regmap_write(h->regmap, DRV2624_REG_GO, 1);
 
-	if (effect->replay.length)
+	if (h->length_ms)
 		schedule_delayed_work(&h->stop_work,
-				      msecs_to_jiffies(effect->replay.length));
+				      msecs_to_jiffies(h->length_ms));
+}
+
+static int drv2624_play(struct input_dev *dev, void *data,
+			struct ff_effect *effect)
+{
+	struct drv2624 *h = input_get_drvdata(dev);
+	u8 strong = effect->u.rumble.strong_magnitude >> 8;
+	u8 weak = effect->u.rumble.weak_magnitude >> 8;
+	u32 magnitude = max(strong, weak);
+
+	/*
+	 * The input core calls this with the device event lock held, so it has
+	 * to stay free of I2C traffic. Record the request and let the worker
+	 * program the device.
+	 *
+	 * RTP_INPUT is a signed 8-bit field, 0 to 127; an unscaled u8 puts the
+	 * upper half of the rumble range on the negative side, where a full
+	 * strength effect turns into almost no output.
+	 */
+	h->magnitude = DIV_ROUND_UP(magnitude * 0x7f, 0xff);
+	h->length_ms = effect->replay.length;
+	schedule_work(&h->play_work);
+
 	return 0;
 }
 
@@ -120,6 +145,7 @@ static int drv2624_probe(struct i2c_client *client)
 	input_set_capability(h->input, EV_FF, FF_RUMBLE);
 
 	INIT_DELAYED_WORK(&h->stop_work, drv2624_stop_work);
+	INIT_WORK(&h->play_work, drv2624_play_work);
 
 	ret = input_ff_create_memless(h->input, NULL, drv2624_play);
 	if (ret)
@@ -132,6 +158,7 @@ static void drv2624_remove(struct i2c_client *client)
 {
 	struct drv2624 *h = i2c_get_clientdata(client);
 
+	cancel_work_sync(&h->play_work);
 	cancel_delayed_work_sync(&h->stop_work);
 	regmap_write(h->regmap, DRV2624_REG_GO, 0);
 }
