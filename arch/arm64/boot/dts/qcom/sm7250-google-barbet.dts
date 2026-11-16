@@ -30,7 +30,7 @@
 		 * of the clock and power-domain cleanup that its own nodes would
 		 * otherwise trigger.
 		 */
-		bootargs = "earlycon=qcom_geni,0x888000 keep_bootcon console=ttyMSM0,115200n8 loglevel=7 rdinit=/init panic=15 clk_ignore_unused pd_ignore_unused bootconfig";
+		bootargs = "earlycon=qcom_geni,0x888000 keep_bootcon console=ttyMSM0,115200n8 loglevel=7 rdinit=/init panic=15 bootconfig";
 		stdout-path = "serial0:115200n8";
 
 		/*
