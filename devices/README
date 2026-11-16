@@ -78,11 +78,7 @@ devices/boot holds one tool per boot chain that writes the images:
   android-gki   The GKI layout of Android 13 and later: a boot image with
                 only the kernel and an init_boot image with only the
                 ramdisk. It writes either from the device's own stock
-                image, keeping its header and AVB properties. A device
-                with no init_boot partition (launched with Android 12)
-                gets the ramdisk in boot, after the kernel (--ramdisk),
-                and --lz4 writes the kernel as legacy LZ4 for a
-                bootloader that wants it so.
+                image, keeping its header and AVB properties.
 
 
   android-legacy  Android header version 1: a gzip kernel followed by the
@@ -91,11 +87,16 @@ devices/boot holds one tool per boot chain that writes the images:
                   Usage: TEMPLATE IMAGE RAMDISK OUTPUT [EVIDENCE].
 
 
-  android-v2    Android header version 2, as on Samsung's Galaxy Tab S7 FE:
-                a raw kernel and a ramdisk, with the template's DTB, signer
-                trailer and AVB footer kept. The kept vbmeta no longer
-                matches, so it boots only on an unlocked bootloader.
-                Usage: TEMPLATE IMAGE RAMDISK OUTPUT [EVIDENCE].
+  android-v2    Android header version 2: the kernel, ramdisk and one DTB,
+                page aligned, for devices that keep the ramdisk in the boot
+                partition. Keeps the template's header, addresses, command
+                line, signer trailer and unsigned AVB. An LZ4-frame template
+                kernel is recompressed with the template's settings and its
+                arm64 text_offset adopts the template's; a raw arm64 Image
+                is used as it is. The template's DTB is kept unless --dtb
+                names a replacement.
+                Usage: TEMPLATE IMAGE RAMDISK OUTPUT [--dtb DTB]
+                       [--append-cmdline WORDS] [--evidence DIR] [EVIDENCE].
 
 
   mediatek-lk   MediaTek's LK bootloader with Android 13 and later: a
