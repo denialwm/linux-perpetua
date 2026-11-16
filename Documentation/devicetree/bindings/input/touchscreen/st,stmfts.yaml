@@ -56,6 +56,7 @@ required:
 
 allOf:
   - $ref: touchscreen.yaml#
+  - $ref: /schemas/spi/spi-peripheral-props.yaml#
   - if:
       not:
         properties:

@@ -20,8 +20,9 @@
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
+#include <linux/spi/spi.h>
 
-/* I2C commands */
+/* commands (I2C opcodes; see stmfts_spi_read() for SPI) */
 #define STMFTS_READ_INFO			0x80
 #define STMFTS_READ_STATUS			0x84
 #define STMFTS_READ_ONE_EVENT			0x85
@@ -115,8 +116,17 @@ static const struct regulator_bulk_data stmfts_supplies[] = {
 
 struct stmfts_data {
 	const struct stmfts_chip_ops *ops;
+	const struct stmfts_bus_ops *bus;
 
+	struct device *dev;
+	int irq;
 	struct i2c_client *client;
+	struct spi_device *spi;
+	/* DMA-safe SPI buffers; rx holds the dummy byte + data */
+	u8 *spi_tx;
+	u8 *spi_rx;
+	/* serialises the transfers through spi_tx and spi_rx */
+	struct mutex spi_lock;
 	struct input_dev *input;
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *mode_switch_gpio;
@@ -149,6 +159,11 @@ struct stmfts_data {
 	bool running;
 };
 
+struct stmfts_bus_ops {
+	int (*write)(struct stmfts_data *sdata, const u8 *buf, size_t len);
+	int (*read)(struct stmfts_data *sdata, u8 cmd, u8 *buf, size_t len);
+};
+
 struct stmfts_chip_ops {
 	int  (*configure)(struct stmfts_data *sdata);
 	int  (*setup_input)(struct stmfts_data *sdata);
@@ -171,7 +186,7 @@ static int stmfts_brightness_set(struct led_classdev *led_cdev,
 		} else {
 			err = regulator_enable(sdata->ledvdd);
 			if (err) {
-				dev_warn(&sdata->client->dev,
+				dev_warn(sdata->dev,
 					 "failed to enable ledvdd regulator: %d\n",
 					 err);
 				return err;
@@ -191,33 +206,25 @@ static enum led_brightness stmfts_brightness_get(struct led_classdev *led_cdev)
 	return !!regulator_is_enabled(sdata->ledvdd);
 }
 
-/*
- * We can't simply use i2c_smbus_read_i2c_block_data because we
- * need to read 256 bytes, which exceeds the 255-byte SMBus block limit.
- */
+static int stmfts_write(struct stmfts_data *sdata, const u8 *buf, size_t len)
+{
+	return sdata->bus->write(sdata, buf, len);
+}
+
+static int stmfts_write_byte(struct stmfts_data *sdata, u8 cmd)
+{
+	return stmfts_write(sdata, &cmd, 1);
+}
+
+static int stmfts_read(struct stmfts_data *sdata, u8 cmd, u8 *buf, size_t len)
+{
+	return sdata->bus->read(sdata, cmd, buf, len);
+}
+
 static int stmfts_read_events(struct stmfts_data *sdata)
 {
-	u8 cmd = STMFTS_READ_ALL_EVENT;
-	struct i2c_msg msgs[2] = {
-		{
-			.addr	= sdata->client->addr,
-			.len	= 1,
-			.buf	= &cmd,
-		},
-		{
-			.addr	= sdata->client->addr,
-			.flags	= I2C_M_RD,
-			.len	= STMFTS_DATA_MAX_SIZE,
-			.buf	= sdata->data,
-		},
-	};
-	int ret;
-
-	ret = i2c_transfer(sdata->client->adapter, msgs, ARRAY_SIZE(msgs));
-	if (ret < 0)
-		return ret;
-
-	return ret == ARRAY_SIZE(msgs) ? 0 : -EIO;
+	return stmfts_read(sdata, STMFTS_READ_ALL_EVENT, sdata->data,
+			   STMFTS_DATA_MAX_SIZE);
 }
 
 /* FTS4 event handling functions */
@@ -233,7 +240,7 @@ static void stmfts_report_contact_event(struct stmfts_data *sdata,
 	u8 area = event[7];
 
 	if (slot_id >= STMFTS_MAX_FINGERS) {
-		dev_warn(&sdata->client->dev,
+		dev_warn(sdata->dev,
 			 "invalid slot ID %u\n", slot_id);
 		return;
 	}
@@ -256,7 +263,7 @@ static void stmfts_report_contact_release(struct stmfts_data *sdata,
 	u8 slot_id = (event[0] & STMFTS_MASK_TOUCH_ID) >> 4;
 
 	if (slot_id >= STMFTS_MAX_FINGERS) {
-		dev_warn(&sdata->client->dev,
+		dev_warn(sdata->dev,
 			 "invalid slot ID %u\n", slot_id);
 		return;
 	}
@@ -294,7 +301,7 @@ static void stmfts5_report_contact_event(struct stmfts_data *sdata,
 	unsigned int tool;
 
 	if (touch_id >= STMFTS_MAX_FINGERS) {
-		dev_warn(&sdata->client->dev,
+		dev_warn(sdata->dev,
 			 "invalid slot ID %u\n", touch_id);
 		return;
 	}
@@ -321,7 +328,7 @@ static void stmfts5_report_contact_event(struct stmfts_data *sdata,
 
 	case STMFTS_TOUCH_TYPE_INVALID:
 	default:
-		dev_warn(&sdata->client->dev,
+		dev_warn(sdata->dev,
 			 "invalid touch type %d for slot %d\n",
 			 touch_type, touch_id);
 		return;
@@ -334,7 +341,7 @@ static void stmfts5_report_contact_event(struct stmfts_data *sdata,
 		 * Should not happen for contact events. Set minimum pressure
 		 * to prevent touch from being dropped.
 		 */
-		dev_warn_once(&sdata->client->dev,
+		dev_warn_once(sdata->dev,
 			      "zero pressure on contact event, slot %d\n",
 			      touch_id);
 		area = 1;
@@ -357,7 +364,7 @@ static void stmfts5_report_contact_release(struct stmfts_data *sdata,
 	u8 touch_id = (event[1] & STMFTS_MASK_TOUCH_ID) >> 4;
 
 	if (touch_id >= STMFTS_MAX_FINGERS) {
-		dev_warn(&sdata->client->dev,
+		dev_warn(sdata->dev,
 			 "invalid slot ID %u\n", touch_id);
 		return;
 	}
@@ -396,7 +403,7 @@ static void stmfts_report_key_event(struct stmfts_data *sdata, const u8 event[])
 		break;
 
 	default:
-		dev_warn(&sdata->client->dev,
+		dev_warn(sdata->dev,
 			 "unknown key event: %#02x\n", event[2]);
 		break;
 	}
@@ -446,14 +453,14 @@ static void stmfts_parse_events(struct stmfts_data *sdata)
 			break;
 
 		case STMFTS_EV_ERROR:
-			dev_warn(&sdata->client->dev,
+			dev_warn(sdata->dev,
 				 "error code: 0x%x%x%x%x%x%x",
 				 event[6], event[5], event[4],
 				 event[3], event[2], event[1]);
 			break;
 
 		default:
-			dev_err(&sdata->client->dev,
+			dev_err(sdata->dev,
 				"unknown event %#02x\n", event[0]);
 		}
 	}
@@ -489,14 +496,14 @@ static void stmfts5_parse_events(struct stmfts_data *sdata)
 			break;
 
 		case STMFTS5_EV_ERROR:
-			dev_warn(&sdata->client->dev,
+			dev_warn(sdata->dev,
 				 "error code: 0x%02x%02x%02x%02x%02x%02x\n",
 				 event[6], event[5], event[4],
 				 event[3], event[2], event[1]);
 			break;
 
 		default:
-			dev_err(&sdata->client->dev,
+			dev_err(sdata->dev,
 				"unknown FTS5 event %#02x\n", event[0]);
 		}
 	}
@@ -515,7 +522,7 @@ static irqreturn_t stmfts_irq_handler(int irq, void *dev)
 
 	err = stmfts_read_events(sdata);
 	if (unlikely(err))
-		dev_err(&sdata->client->dev,
+		dev_err(sdata->dev,
 			"failed to read events: %d\n", err);
 	else
 		sdata->ops->parse_events(sdata);
@@ -529,7 +536,7 @@ static int stmfts_command(struct stmfts_data *sdata, const u8 cmd)
 
 	reinit_completion(&sdata->cmd_done);
 
-	err = i2c_smbus_write_byte(sdata->client, cmd);
+	err = stmfts_write_byte(sdata, cmd);
 	if (err)
 		return err;
 
@@ -542,15 +549,13 @@ static int stmfts_command(struct stmfts_data *sdata, const u8 cmd)
 
 static int stmfts_set_scan(struct stmfts_data *sdata, bool enable)
 {
-	return i2c_smbus_write_byte(sdata->client,
-				    enable ? STMFTS_MS_MT_SENSE_ON :
+	return stmfts_write_byte(sdata, enable ? STMFTS_MS_MT_SENSE_ON :
 					     STMFTS_MS_MT_SENSE_OFF);
 }
 
 static int stmfts_set_hover(struct stmfts_data *sdata, bool enable)
 {
-	return i2c_smbus_write_byte(sdata->client,
-				    enable ? STMFTS_SS_HOVER_SENSE_ON :
+	return stmfts_write_byte(sdata, enable ? STMFTS_SS_HOVER_SENSE_ON :
 					     STMFTS_SS_HOVER_SENSE_OFF);
 }
 
@@ -558,14 +563,8 @@ static int stmfts5_set_scan(struct stmfts_data *sdata, bool enable)
 {
 	u8 scan_mode_cmd[3] = { STMFTS5_SET_SCAN_MODE, STMFTS5_SCAN_MODE_ACTIVE,
 				enable ? STMFTS5_SCAN_ACTIVE_MULTI_TOUCH : 0 };
-	int err;
 
-	err = i2c_master_send(sdata->client, scan_mode_cmd,
-			      sizeof(scan_mode_cmd));
-	if (err != sizeof(scan_mode_cmd))
-		return err < 0 ? err : -EIO;
-
-	return 0;
+	return stmfts_write(sdata, scan_mode_cmd, sizeof(scan_mode_cmd));
 }
 
 static int stmfts_input_open(struct input_dev *dev)
@@ -573,13 +572,13 @@ static int stmfts_input_open(struct input_dev *dev)
 	struct stmfts_data *sdata = input_get_drvdata(dev);
 	int err;
 
-	err = pm_runtime_resume_and_get(&sdata->client->dev);
+	err = pm_runtime_resume_and_get(sdata->dev);
 	if (err)
 		return err;
 
 	err = sdata->ops->set_scan(sdata, true);
 	if (err) {
-		pm_runtime_put_sync(&sdata->client->dev);
+		pm_runtime_put_sync(sdata->dev);
 		return err;
 	}
 
@@ -589,17 +588,16 @@ static int stmfts_input_open(struct input_dev *dev)
 		if (sdata->hover_enabled && sdata->ops->set_hover) {
 			err = sdata->ops->set_hover(sdata, true);
 			if (err)
-				dev_warn(&sdata->client->dev,
+				dev_warn(sdata->dev,
 					 "failed to enable hover\n");
 		}
 	}
 
 	if (sdata->use_key) {
-		err = i2c_smbus_write_byte(sdata->client,
-					   STMFTS_MS_KEY_SENSE_ON);
+		err = stmfts_write_byte(sdata, STMFTS_MS_KEY_SENSE_ON);
 		if (err)
 			/* I can still use only the touch screen */
-			dev_warn(&sdata->client->dev,
+			dev_warn(sdata->dev,
 				 "failed to enable touchkey\n");
 	}
 
@@ -613,7 +611,7 @@ static void stmfts_input_close(struct input_dev *dev)
 
 	err = sdata->ops->set_scan(sdata, false);
 	if (err)
-		dev_warn(&sdata->client->dev,
+		dev_warn(sdata->dev,
 			 "failed to disable touchscreen: %d\n", err);
 
 	scoped_guard(mutex, &sdata->mutex) {
@@ -622,20 +620,19 @@ static void stmfts_input_close(struct input_dev *dev)
 		if (sdata->hover_enabled && sdata->ops->set_hover) {
 			err = sdata->ops->set_hover(sdata, false);
 			if (err)
-				dev_warn(&sdata->client->dev,
+				dev_warn(sdata->dev,
 					 "failed to disable hover: %d\n", err);
 		}
 	}
 
 	if (sdata->use_key) {
-		err = i2c_smbus_write_byte(sdata->client,
-					   STMFTS_MS_KEY_SENSE_OFF);
+		err = stmfts_write_byte(sdata, STMFTS_MS_KEY_SENSE_OFF);
 		if (err)
-			dev_warn(&sdata->client->dev,
+			dev_warn(sdata->dev,
 				 "failed to disable touchkey: %d\n", err);
 	}
 
-	pm_runtime_put_sync(&sdata->client->dev);
+	pm_runtime_put_sync(sdata->dev);
 }
 
 static ssize_t stmfts_sysfs_chip_id(struct device *dev,
@@ -688,8 +685,7 @@ static ssize_t stmfts_sysfs_read_status(struct device *dev,
 	u8 status[4];
 	int err;
 
-	err = i2c_smbus_read_i2c_block_data(sdata->client, STMFTS_READ_STATUS,
-					    sizeof(status), status);
+	err = stmfts_read(sdata, STMFTS_READ_STATUS, status, sizeof(status));
 	if (err)
 		return err;
 
@@ -760,12 +756,9 @@ static int stmfts_read_system_info(struct stmfts_data *sdata)
 	int err;
 	u8 reg[8];
 
-	err = i2c_smbus_read_i2c_block_data(sdata->client, STMFTS_READ_INFO,
-					    sizeof(reg), reg);
-	if (err < 0)
+	err = stmfts_read(sdata, STMFTS_READ_INFO, reg, sizeof(reg));
+	if (err)
 		return err;
-	if (err != sizeof(reg))
-		return -EIO;
 
 	sdata->chip_id = be16_to_cpup((__be16 *)&reg[6]);
 	sdata->chip_ver = reg[0];
@@ -795,13 +788,13 @@ static int stmfts_configure(struct stmfts_data *sdata)
 	/* optional tuning */
 	err = stmfts_command(sdata, STMFTS_MS_CX_TUNING);
 	if (err)
-		dev_warn(&sdata->client->dev,
+		dev_warn(sdata->dev,
 			 "failed to perform mutual auto tune: %d\n", err);
 
 	/* optional tuning */
 	err = stmfts_command(sdata, STMFTS_SS_CX_TUNING);
 	if (err)
-		dev_warn(&sdata->client->dev,
+		dev_warn(sdata->dev,
 			 "failed to perform self auto tune: %d\n", err);
 
 	err = stmfts_command(sdata, STMFTS_FULL_FORCE_CALIBRATION);
@@ -848,12 +841,12 @@ static int stmfts_power_on(struct stmfts_data *sdata)
 		timeout = 70;
 	}
 
-	enable_irq(sdata->client->irq);
+	enable_irq(sdata->irq);
 
 	if (!wait_for_completion_timeout(&sdata->cmd_done,
 					 msecs_to_jiffies(timeout))) {
 		if (sdata->reset_gpio) {
-			dev_err(&sdata->client->dev, "controller not ready after reset\n");
+			dev_err(sdata->dev, "controller not ready after reset\n");
 			err = -ETIMEDOUT;
 			goto err_disable_irq;
 		}
@@ -871,12 +864,12 @@ static int stmfts_power_on(struct stmfts_data *sdata)
 	 * At this point no one is using the touchscreen
 	 * and I don't really care about the return value
 	 */
-	(void)i2c_smbus_write_byte(sdata->client, STMFTS_SLEEP_IN);
+	(void)stmfts_write_byte(sdata, STMFTS_SLEEP_IN);
 
 	return 0;
 
 err_disable_irq:
-	disable_irq(sdata->client->irq);
+	disable_irq(sdata->irq);
 
 	regulator_bulk_disable(ARRAY_SIZE(stmfts_supplies), sdata->supplies);
 	return err;
@@ -885,23 +878,16 @@ err_disable_irq:
 static int stmfts5_configure(struct stmfts_data *sdata)
 {
 	u8 event[STMFTS_EVENT_SIZE];
-	int err;
 
-	/* Verify I2C communication */
-	err = i2c_smbus_read_i2c_block_data(sdata->client,
-					    STMFTS_READ_ALL_EVENT,
-					    sizeof(event), event);
-	if (err < 0)
-		return err;
-
-	return 0;
+	/* Verify bus communication */
+	return stmfts_read(sdata, STMFTS_READ_ALL_EVENT, event, sizeof(event));
 }
 
 static void stmfts_power_off(void *data)
 {
 	struct stmfts_data *sdata = data;
 
-	disable_irq(sdata->client->irq);
+	disable_irq(sdata->irq);
 
 	if (sdata->reset_gpio)
 		gpiod_set_value_cansleep(sdata->reset_gpio, 1);
@@ -911,7 +897,7 @@ static void stmfts_power_off(void *data)
 
 static int stmfts_setup_input(struct stmfts_data *sdata)
 {
-	struct device *dev = &sdata->client->dev;
+	struct device *dev = sdata->dev;
 
 	input_set_abs_params(sdata->input, ABS_MT_ORIENTATION, 0, 255, 0, 0);
 	input_set_abs_params(sdata->input, ABS_DISTANCE, 0, 255, 0, 0);
@@ -928,7 +914,7 @@ static int stmfts_setup_input(struct stmfts_data *sdata)
 
 static int stmfts5_setup_input(struct stmfts_data *sdata)
 {
-	struct device *dev = &sdata->client->dev;
+	struct device *dev = sdata->dev;
 
 	sdata->mode_switch_gpio = devm_gpiod_get_optional(dev, "mode-switch",
 							  GPIOD_OUT_HIGH);
@@ -955,7 +941,7 @@ static int stmfts_enable_led(struct stmfts_data *sdata)
 	int err;
 
 	/* get the regulator for powering the leds on */
-	sdata->ledvdd = devm_regulator_get(&sdata->client->dev, "ledvdd");
+	sdata->ledvdd = devm_regulator_get(sdata->dev, "ledvdd");
 	if (IS_ERR(sdata->ledvdd))
 		return PTR_ERR(sdata->ledvdd);
 
@@ -965,7 +951,7 @@ static int stmfts_enable_led(struct stmfts_data *sdata)
 	sdata->led_cdev.brightness_set_blocking = stmfts_brightness_set;
 	sdata->led_cdev.brightness_get = stmfts_brightness_get;
 
-	err = devm_led_classdev_register(&sdata->client->dev, &sdata->led_cdev);
+	err = devm_led_classdev_register(sdata->dev, &sdata->led_cdev);
 	if (err) {
 		devm_regulator_put(sdata->ledvdd);
 		return err;
@@ -974,28 +960,15 @@ static int stmfts_enable_led(struct stmfts_data *sdata)
 	return 0;
 }
 
-static int stmfts_probe(struct i2c_client *client)
+static int stmfts_probe(struct stmfts_data *sdata, u16 bustype)
 {
-	struct device *dev = &client->dev;
+	struct device *dev = sdata->dev;
 	int err;
-	struct stmfts_data *sdata;
 
-	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C |
-						I2C_FUNC_SMBUS_BYTE_DATA |
-						I2C_FUNC_SMBUS_I2C_BLOCK))
-		return -ENODEV;
-
-	sdata = devm_kzalloc(dev, sizeof(*sdata), GFP_KERNEL);
-	if (!sdata)
-		return -ENOMEM;
-
-	i2c_set_clientdata(client, sdata);
-
-	sdata->client = client;
+	dev_set_drvdata(dev, sdata);
 	mutex_init(&sdata->mutex);
 	init_completion(&sdata->cmd_done);
 
-	sdata->ops = i2c_get_match_data(client);
 	if (!sdata->ops)
 		return -EINVAL;
 
@@ -1016,7 +989,7 @@ static int stmfts_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	sdata->input->name = STMFTS_DEV_NAME;
-	sdata->input->id.bustype = BUS_I2C;
+	sdata->input->id.bustype = bustype;
 	sdata->input->open = stmfts_input_open;
 	sdata->input->close = stmfts_input_close;
 
@@ -1041,7 +1014,7 @@ static int stmfts_probe(struct i2c_client *client)
 	 * interrupts. To be on the safe side it's better to not enable
 	 * the interrupts during their request.
 	 */
-	err = devm_request_threaded_irq(dev, client->irq,
+	err = devm_request_threaded_irq(dev, sdata->irq,
 					NULL, stmfts_irq_handler,
 					IRQF_ONESHOT | IRQF_NO_AUTOEN,
 					"stmfts_irq", sdata);
@@ -1082,9 +1055,9 @@ static int stmfts_probe(struct i2c_client *client)
 	return 0;
 }
 
-static void stmfts_remove(struct i2c_client *client)
+static void stmfts_remove(struct device *dev)
 {
-	pm_runtime_disable(&client->dev);
+	pm_runtime_disable(dev);
 }
 
 static int stmfts_runtime_suspend(struct device *dev)
@@ -1092,7 +1065,7 @@ static int stmfts_runtime_suspend(struct device *dev)
 	struct stmfts_data *sdata = dev_get_drvdata(dev);
 	int ret;
 
-	ret = i2c_smbus_write_byte(sdata->client, STMFTS_SLEEP_IN);
+	ret = stmfts_write_byte(sdata, STMFTS_SLEEP_IN);
 	if (ret)
 		dev_warn(dev, "failed to suspend device: %d\n", ret);
 
@@ -1101,43 +1074,42 @@ static int stmfts_runtime_suspend(struct device *dev)
 
 static int stmfts_chip_runtime_resume(struct stmfts_data *sdata)
 {
-	return i2c_smbus_write_byte(sdata->client, STMFTS_SLEEP_OUT);
+	return stmfts_write_byte(sdata, STMFTS_SLEEP_OUT);
 }
 
 static int stmfts5_chip_runtime_resume(struct stmfts_data *sdata)
 {
-	struct i2c_client *client = sdata->client;
-	struct device *dev = &client->dev;
+	struct device *dev = sdata->dev;
 	u8 int_enable_cmd[4] = { 0xB6, 0x00, 0x2C, 0x01 };
 	int err;
 
-	err = i2c_smbus_write_byte(client, STMFTS_SLEEP_OUT);
+	err = stmfts_write_byte(sdata, STMFTS_SLEEP_OUT);
 	if (err)
 		return err;
 
 	msleep(20);
 
 	/* Perform capacitance tuning after wakeup */
-	err = i2c_smbus_write_byte(client, STMFTS_MS_CX_TUNING);
+	err = stmfts_write_byte(sdata, STMFTS_MS_CX_TUNING);
 	if (err)
 		dev_warn(dev, "MS_CX_TUNING failed: %d\n", err);
 	msleep(20);
 
-	err = i2c_smbus_write_byte(client, STMFTS_SS_CX_TUNING);
+	err = stmfts_write_byte(sdata, STMFTS_SS_CX_TUNING);
 	if (err)
 		dev_warn(dev, "SS_CX_TUNING failed: %d\n", err);
 	msleep(20);
 
 	/* Force calibration */
-	err = i2c_smbus_write_byte(client, STMFTS_FULL_FORCE_CALIBRATION);
+	err = stmfts_write_byte(sdata, STMFTS_FULL_FORCE_CALIBRATION);
 	if (err)
 		dev_warn(dev, "FORCE_CALIBRATION failed: %d\n", err);
 	msleep(50);
 
 	/* Enable controller interrupts */
-	err = i2c_master_send(client, int_enable_cmd, sizeof(int_enable_cmd));
-	if (err != sizeof(int_enable_cmd))
-		return err < 0 ? err : -EIO;
+	err = stmfts_write(sdata, int_enable_cmd, sizeof(int_enable_cmd));
+	if (err)
+		return err;
 
 	msleep(20);
 
@@ -1194,6 +1166,80 @@ static const struct stmfts_chip_ops stmfts5_ops = {
 	.runtime_resume	= stmfts5_chip_runtime_resume,
 };
 
+#if IS_ENABLED(CONFIG_I2C)
+static int stmfts_i2c_write(struct stmfts_data *sdata, const u8 *buf,
+			    size_t len)
+{
+	int ret;
+
+	ret = i2c_master_send(sdata->client, buf, len);
+	if (ret < 0)
+		return ret;
+
+	return ret == len ? 0 : -EIO;
+}
+
+/*
+ * Write the command and read the reply with a repeated start. A plain
+ * i2c_smbus_read_i2c_block_data() cannot be used for the event stack,
+ * which is 256 bytes and exceeds the 255-byte SMBus block limit.
+ */
+static int stmfts_i2c_read(struct stmfts_data *sdata, u8 cmd, u8 *buf,
+			   size_t len)
+{
+	struct i2c_msg msgs[2] = {
+		{
+			.addr	= sdata->client->addr,
+			.len	= 1,
+			.buf	= &cmd,
+		},
+		{
+			.addr	= sdata->client->addr,
+			.flags	= I2C_M_RD,
+			.len	= len,
+			.buf	= buf,
+		},
+	};
+	int ret;
+
+	ret = i2c_transfer(sdata->client->adapter, msgs, ARRAY_SIZE(msgs));
+	if (ret < 0)
+		return ret;
+
+	return ret == ARRAY_SIZE(msgs) ? 0 : -EIO;
+}
+
+static const struct stmfts_bus_ops stmfts_i2c_bus_ops = {
+	.write	= stmfts_i2c_write,
+	.read	= stmfts_i2c_read,
+};
+
+static int stmfts_i2c_probe(struct i2c_client *client)
+{
+	struct device *dev = &client->dev;
+	struct stmfts_data *sdata;
+
+	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
+		return -ENODEV;
+
+	sdata = devm_kzalloc(dev, sizeof(*sdata), GFP_KERNEL);
+	if (!sdata)
+		return -ENOMEM;
+
+	sdata->dev = dev;
+	sdata->irq = client->irq;
+	sdata->client = client;
+	sdata->bus = &stmfts_i2c_bus_ops;
+	sdata->ops = i2c_get_match_data(client);
+
+	return stmfts_probe(sdata, BUS_I2C);
+}
+
+static void stmfts_i2c_remove(struct i2c_client *client)
+{
+	stmfts_remove(&client->dev);
+}
+
 #ifdef CONFIG_OF
 static const struct of_device_id stmfts_of_match[] = {
 	{ .compatible = "st,stmfts",	.data = &stmfts4_ops },
@@ -1218,12 +1264,180 @@ static struct i2c_driver stmfts_driver = {
 		.pm = pm_ptr(&stmfts_pm_ops),
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
-	.probe = stmfts_probe,
-	.remove = stmfts_remove,
+	.probe = stmfts_i2c_probe,
+	.remove = stmfts_i2c_remove,
 	.id_table = stmfts_id,
 };
 
-module_i2c_driver(stmfts_driver);
+#endif /* CONFIG_I2C */
+
+#if IS_ENABLED(CONFIG_SPI_MASTER)
+/*
+ * On SPI, FTS5 (FTM5) takes the same write commands as on I2C, but each
+ * read opcode is the I2C one plus one (event stack 0x86 -> 0x87) and the
+ * reply starts with a dummy byte. The command and the reply share one
+ * chip select, held for 10 us after the last byte.
+ */
+#define STMFTS_SPI_CS_DELAY_US	10
+#define STMFTS_SPI_TX_SIZE	8
+
+static int stmfts_spi_write(struct stmfts_data *sdata, const u8 *buf,
+			    size_t len)
+{
+	struct spi_transfer xfer = {
+		.tx_buf = sdata->spi_tx,
+		.len = len,
+		.delay = {
+			.value = STMFTS_SPI_CS_DELAY_US,
+			.unit = SPI_DELAY_UNIT_USECS,
+		},
+	};
+
+	if (len > STMFTS_SPI_TX_SIZE)
+		return -EINVAL;
+
+	guard(mutex)(&sdata->spi_lock);
+
+	memcpy(sdata->spi_tx, buf, len);
+
+	return spi_sync_transfer(sdata->spi, &xfer, 1);
+}
+
+static int stmfts_spi_read(struct stmfts_data *sdata, u8 cmd, u8 *buf,
+			   size_t len)
+{
+	struct spi_transfer xfers[2] = {
+		{
+			.tx_buf = sdata->spi_tx,
+			.len = 1,
+		},
+		{
+			.rx_buf = sdata->spi_rx,
+			.len = len + 1,
+			.delay = {
+				.value = STMFTS_SPI_CS_DELAY_US,
+				.unit = SPI_DELAY_UNIT_USECS,
+			},
+		},
+	};
+	int err;
+
+	if (len > STMFTS_DATA_MAX_SIZE)
+		return -EINVAL;
+
+	guard(mutex)(&sdata->spi_lock);
+
+	sdata->spi_tx[0] = cmd + 1;
+
+	err = spi_sync_transfer(sdata->spi, xfers, ARRAY_SIZE(xfers));
+	if (err)
+		return err;
+
+	memcpy(buf, sdata->spi_rx + 1, len);
+
+	return 0;
+}
+
+static const struct stmfts_bus_ops stmfts_spi_bus_ops = {
+	.write	= stmfts_spi_write,
+	.read	= stmfts_spi_read,
+};
+
+static int stmfts_spi_probe(struct spi_device *spi)
+{
+	struct device *dev = &spi->dev;
+	struct stmfts_data *sdata;
+	int err;
+
+	spi->bits_per_word = 8;
+	err = spi_setup(spi);
+	if (err)
+		return err;
+
+	sdata = devm_kzalloc(dev, sizeof(*sdata), GFP_KERNEL);
+	if (!sdata)
+		return -ENOMEM;
+
+	sdata->spi_tx = devm_kzalloc(dev, STMFTS_SPI_TX_SIZE, GFP_KERNEL);
+	sdata->spi_rx = devm_kzalloc(dev, STMFTS_DATA_MAX_SIZE + 1, GFP_KERNEL);
+	if (!sdata->spi_tx || !sdata->spi_rx)
+		return -ENOMEM;
+
+	err = devm_mutex_init(dev, &sdata->spi_lock);
+	if (err)
+		return err;
+
+	sdata->dev = dev;
+	sdata->irq = spi->irq;
+	sdata->spi = spi;
+	sdata->bus = &stmfts_spi_bus_ops;
+	sdata->ops = spi_get_device_match_data(spi);
+
+	return stmfts_probe(sdata, BUS_SPI);
+}
+
+static void stmfts_spi_remove(struct spi_device *spi)
+{
+	stmfts_remove(&spi->dev);
+}
+
+/* Only FTS5 has a known SPI protocol */
+static const struct of_device_id stmfts_spi_of_match[] = {
+	{ .compatible = "st,stmfts5",	.data = &stmfts5_ops },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, stmfts_spi_of_match);
+
+static const struct spi_device_id stmfts_spi_id[] = {
+	{ .name = "stmfts5",	.driver_data = (kernel_ulong_t)&stmfts5_ops },
+	{ }
+};
+MODULE_DEVICE_TABLE(spi, stmfts_spi_id);
+
+static struct spi_driver stmfts_spi_driver = {
+	.driver = {
+		.name = STMFTS_DEV_NAME,
+		.dev_groups = stmfts_sysfs_groups,
+		.of_match_table = stmfts_spi_of_match,
+		.pm = pm_ptr(&stmfts_pm_ops),
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
+	},
+	.probe = stmfts_spi_probe,
+	.remove = stmfts_spi_remove,
+	.id_table = stmfts_spi_id,
+};
+#endif /* CONFIG_SPI_MASTER */
+
+static int __init stmfts_init(void)
+{
+	int err = 0;
+
+#if IS_ENABLED(CONFIG_I2C)
+	err = i2c_add_driver(&stmfts_driver);
+	if (err)
+		return err;
+#endif
+#if IS_ENABLED(CONFIG_SPI_MASTER)
+	err = spi_register_driver(&stmfts_spi_driver);
+#if IS_ENABLED(CONFIG_I2C)
+	if (err)
+		i2c_del_driver(&stmfts_driver);
+#endif
+#endif
+	return err;
+}
+module_init(stmfts_init);
+
+static void __exit stmfts_exit(void)
+{
+#if IS_ENABLED(CONFIG_SPI_MASTER)
+	spi_unregister_driver(&stmfts_spi_driver);
+#endif
+#if IS_ENABLED(CONFIG_I2C)
+	i2c_del_driver(&stmfts_driver);
+#endif
+}
+module_exit(stmfts_exit);
 
 MODULE_AUTHOR("Andi Shyti <andi.shyti@samsung.com>");
 MODULE_AUTHOR("David Heidelberg <david@ixit.cz>");
