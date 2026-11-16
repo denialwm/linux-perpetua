@@ -48,12 +48,13 @@ module_param(tdm_slots, int, 0644);
 static int tdm_slot_width = 32;
 module_param(tdm_slot_width, int, 0644);
 /*
- * Slot mask must have one bit per active channel: we route two channels at
- * slot indices 0 and 4 (see rx_slots[] below). 0xFF (all eight slots with
- * ch=2) is rejected by the ADSP: AFE_PORT_CMD_DEVICE_START comes back
- * ADSP_EFAILED (-EINVAL at snd_soc_dai_prepare).
+ * Slot mask must have one bit per active channel. The capture side carries
+ * one channel (stock: "PRI_TDM_TX_0 Channels" = One), in slot 0. 0xFF (all
+ * eight slots with ch=2) is rejected by the ADSP:
+ * AFE_PORT_CMD_DEVICE_START comes back ADSP_EFAILED (-EINVAL at
+ * snd_soc_dai_prepare).
  */
-static int tdm_rx_mask = 0x11;
+static int tdm_rx_mask = 0x1;
 module_param(tdm_rx_mask, int, 0644);
 /*
  * The stock machine driver uses four slots, but this mainline clock path
@@ -129,7 +130,10 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 		format = SNDRV_PCM_FORMAT_S24_LE;
 
 	rate->min = rate->max = 48000;
-	channels->min = channels->max = 2;
+	if (cpu_dai && cpu_dai->id == PRIMARY_TDM_TX_0)
+		channels->min = channels->max = 1;
+	else
+		channels->min = channels->max = 2;
 	/*
 	 * snd_mask_set_format() only adds to the allowed set, so the FE's
 	 * format would still win.  Clear the mask to actually force the BE
@@ -212,7 +216,7 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 		 * interface clock at rate*width*slots, and the codec in TDM
 		 * (PCM_A) mode with only slot 0 as its own TX channel.
 		 */
-		unsigned int tx_slots[] = { tdm_off0, tdm_off1 };
+		unsigned int tx_slots[] = { tdm_off0 };
 		int ret_pll, ret_clk, ret_ctdm, ret_cfmt;
 		int ret_cpu_clk, ret_cpu_tdm, ret_cpu_map;
 
@@ -222,7 +226,7 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 				       SNDRV_PCM_STREAM_CAPTURE);
 		ret_cpu_tdm = snd_soc_dai_set_tdm_slot(cpu_dai, tdm_rx_mask, 0,
 					 tdm_slots, tdm_slot_width);
-		ret_cpu_map = snd_soc_dai_set_channel_map(cpu_dai, 2, tx_slots,
+		ret_cpu_map = snd_soc_dai_set_channel_map(cpu_dai, 1, tx_slots,
 							  0, NULL);
 
 		ret_ctdm = snd_soc_dai_set_tdm_slot(codec_dai, 1, 0,
