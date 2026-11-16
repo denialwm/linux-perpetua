@@ -6,12 +6,15 @@
  * command mode and leaves it running. This host keeps that configuration:
  * it carries DECON's output and sends DCS commands in low-power mode over
  * the link as found, and does not program the PLL, the D-PHY or the lanes.
+ * Of the command mode timers it only rescales the TE window, which is a
+ * fraction of a frame, when the panel runs at another rate.
  *
  * The register layout is not the one of the samsung-dsim bridge: the
  * offsets differ, and so do CONFIG, FIFOCTRL and SWRST, whose function
  * reset bit there is the D-PHY reset here.
  */
 
+#include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/io.h>
@@ -19,9 +22,11 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 
+#include <drm/drm_atomic.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
 #include <drm/drm_encoder.h>
+#include <drm/drm_modeset_helper_vtables.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_of.h>
 #include <drm/drm_panel.h>
@@ -52,7 +57,14 @@
 #define  FIFOCTRL_FULL_PH_SFR		BIT(11)
 #define  FIFOCTRL_FULL_PL_SFR		BIT(9)
 
+#define DSIM_CMD_TE_CTRL1		0x0088
+#define  TE_CTRL1_PROTECT_ON		GENMASK(31, 16)
+#define  TE_CTRL1_TIMEOUT		GENMASK(15, 0)
+
 #define DSIM_FIFO_TIMEOUT_US		20000
+
+/* The rate the bootloader set the TE window up for. */
+#define DSIM_BOOT_VREFRESH		60
 
 struct gs101_dsi {
 	struct device *dev;
@@ -62,6 +74,9 @@ struct gs101_dsi {
 	struct drm_encoder encoder;
 	/* Serialises transfers. */
 	struct mutex lock;
+	/* The bootloader's TE window, at DSIM_BOOT_VREFRESH. */
+	u32 te_protect_on;
+	u32 te_timeout;
 };
 
 static inline struct gs101_dsi *host_to_dsi(struct mipi_dsi_host *host)
@@ -191,6 +206,33 @@ static const struct drm_encoder_funcs gs101_dsi_encoder_funcs = {
 	.destroy	= drm_encoder_cleanup,
 };
 
+/*
+ * After TE, commands may go until the protect time and the next TE is due
+ * by the timeout: 95 % and 110 % of a frame in the vendor's setup. Scale
+ * the bootloader's values to the new rate.
+ */
+static void gs101_dsi_atomic_mode_set(struct drm_encoder *encoder,
+				      struct drm_crtc_state *crtc_state,
+				      struct drm_connector_state *conn_state)
+{
+	struct gs101_dsi *dsi = container_of(encoder, struct gs101_dsi,
+					     encoder);
+	int vrefresh = drm_mode_vrefresh(&crtc_state->adjusted_mode);
+
+	if (vrefresh <= 0 || !dsi->te_protect_on || !dsi->te_timeout)
+		return;
+
+	writel(FIELD_PREP(TE_CTRL1_PROTECT_ON,
+			  dsi->te_protect_on * DSIM_BOOT_VREFRESH / vrefresh) |
+	       FIELD_PREP(TE_CTRL1_TIMEOUT,
+			  dsi->te_timeout * DSIM_BOOT_VREFRESH / vrefresh),
+	       dsi->regs + DSIM_CMD_TE_CTRL1);
+}
+
+static const struct drm_encoder_helper_funcs gs101_dsi_encoder_helper_funcs = {
+	.atomic_mode_set	= gs101_dsi_atomic_mode_set,
+};
+
 static int gs101_dsi_bind(struct device *dev, struct device *master,
 			  void *data)
 {
@@ -227,6 +269,8 @@ static int gs101_dsi_bind(struct device *dev, struct device *master,
 			       DRM_MODE_ENCODER_DSI, NULL);
 	if (ret)
 		return ret;
+
+	drm_encoder_helper_add(encoder, &gs101_dsi_encoder_helper_funcs);
 
 	ret = exynos_drm_set_possible_crtcs(encoder, EXYNOS_DISPLAY_TYPE_LCD);
 	if (ret)
@@ -267,6 +311,7 @@ static int gs101_dsi_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct clk_bulk_data *clks;
 	struct gs101_dsi *dsi;
+	u32 val;
 	int ret;
 
 	dsi = devm_kzalloc(dev, sizeof(*dsi), GFP_KERNEL);
@@ -287,6 +332,11 @@ static int gs101_dsi_probe(struct platform_device *pdev)
 	ret = devm_clk_bulk_get_all_enabled(dev, &clks);
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "failed to enable clocks\n");
+
+	/* The bootloader's 60 Hz TE window, before any modeset scales it. */
+	val = readl(dsi->regs + DSIM_CMD_TE_CTRL1);
+	dsi->te_protect_on = FIELD_GET(TE_CTRL1_PROTECT_ON, val);
+	dsi->te_timeout = FIELD_GET(TE_CTRL1_TIMEOUT, val);
 
 	platform_set_drvdata(pdev, dsi);
 
@@ -309,6 +359,11 @@ static void gs101_dsi_remove(struct platform_device *pdev)
 	struct gs101_dsi *dsi = platform_get_drvdata(pdev);
 
 	mipi_dsi_host_unregister(&dsi->host);
+
+	/* Leave the bootloader's TE window for the next probe. */
+	writel(FIELD_PREP(TE_CTRL1_PROTECT_ON, dsi->te_protect_on) |
+	       FIELD_PREP(TE_CTRL1_TIMEOUT, dsi->te_timeout),
+	       dsi->regs + DSIM_CMD_TE_CTRL1);
 }
 
 static const struct of_device_id gs101_dsi_of_match[] = {
