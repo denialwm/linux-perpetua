@@ -32,6 +32,8 @@
 
 #include "rt5514-spi.h"
 
+extern void rt5514_spi_bus_switch(bool host);
+
 #define DRV_NAME "rt5514-spi"
 
 static struct spi_device *rt5514_spi;
@@ -314,67 +316,63 @@ static const struct snd_soc_component_driver rt5514_spi_component = {
 int rt5514_spi_burst_read(unsigned int addr, u8 *rxbuf, size_t len)
 {
 	u8 spi_cmd = RT5514_SPI_CMD_BURST_READ;
+	u8 *tx, *rx;
+	unsigned int i, j, end, offset = 0, total;
 	int status;
-	u8 write_buf[8];
-	unsigned int i, end, offset = 0;
 
-	struct spi_message message;
-	struct spi_transfer x[3];
+	/*
+	 * Same framing the verified userspace loader used: command + 32-bit
+	 * address + four dummy clocks + receive window, all in one
+	 * full-duplex transfer so chip-select stays asserted. The reply is
+	 * the tail of the RX window, with each 8-byte word reversed.
+	 */
+	tx = kzalloc(9 + RT5514_SPI_BUF_LEN, GFP_KERNEL | GFP_DMA);
+	rx = kzalloc(9 + RT5514_SPI_BUF_LEN, GFP_KERNEL | GFP_DMA);
+	if (!tx || !rx) {
+		kfree(tx);
+		kfree(rx);
+		return false;
+	}
 
 	while (offset < len) {
-		if (offset + RT5514_SPI_BUF_LEN <= len)
-			end = RT5514_SPI_BUF_LEN;
-		else
-			end = len % RT5514_SPI_BUF_LEN;
+		struct spi_transfer x = { 0 };
 
-		write_buf[0] = spi_cmd;
-		write_buf[1] = ((addr + offset) & 0xff000000) >> 24;
-		write_buf[2] = ((addr + offset) & 0x00ff0000) >> 16;
-		write_buf[3] = ((addr + offset) & 0x0000ff00) >> 8;
-		write_buf[4] = ((addr + offset) & 0x000000ff) >> 0;
+		end = min_t(size_t, RT5514_SPI_BUF_LEN, len - offset);
+		total = (end + 7) & ~7;
 
-		spi_message_init(&message);
-		memset(x, 0, sizeof(x));
+		memset(tx, 0, 9 + RT5514_SPI_BUF_LEN);
+		memset(rx, 0, 9 + RT5514_SPI_BUF_LEN);
+		tx[0] = spi_cmd;
+		tx[1] = ((addr + offset) >> 24) & 0xff;
+		tx[2] = ((addr + offset) >> 16) & 0xff;
+		tx[3] = ((addr + offset) >> 8) & 0xff;
+		tx[4] = (addr + offset) & 0xff;
+		tx[5] = tx[0];
+		tx[6] = tx[1];
+		tx[7] = tx[2];
+		tx[8] = tx[3];
 
-		x[0].len = 5;
-		x[0].tx_buf = write_buf;
-		spi_message_add_tail(&x[0], &message);
+		x.tx_buf = tx;
+		x.rx_buf = rx;
+		x.len = 9 + total;
 
-		x[1].len = 4;
-		x[1].tx_buf = write_buf;
-		spi_message_add_tail(&x[1], &message);
-
-		x[2].len = end;
-		x[2].rx_buf = rxbuf + offset;
-		spi_message_add_tail(&x[2], &message);
-
-		status = spi_sync(rt5514_spi, &message);
-
-		if (status)
+		status = spi_sync_transfer(rt5514_spi, &x, 1);
+		if (status) {
+			kfree(tx);
+			kfree(rx);
 			return false;
+		}
+
+		for (i = 0; i < total; i += 8) {
+			for (j = 0; j < 8 && (offset + i + j) < len; j++)
+				rxbuf[offset + i + j] = rx[9 + i + 7 - j];
+		}
 
 		offset += RT5514_SPI_BUF_LEN;
 	}
 
-	for (i = 0; i < len; i += 8) {
-		write_buf[0] = rxbuf[i + 0];
-		write_buf[1] = rxbuf[i + 1];
-		write_buf[2] = rxbuf[i + 2];
-		write_buf[3] = rxbuf[i + 3];
-		write_buf[4] = rxbuf[i + 4];
-		write_buf[5] = rxbuf[i + 5];
-		write_buf[6] = rxbuf[i + 6];
-		write_buf[7] = rxbuf[i + 7];
-
-		rxbuf[i + 0] = write_buf[7];
-		rxbuf[i + 1] = write_buf[6];
-		rxbuf[i + 2] = write_buf[5];
-		rxbuf[i + 3] = write_buf[4];
-		rxbuf[i + 4] = write_buf[3];
-		rxbuf[i + 5] = write_buf[2];
-		rxbuf[i + 6] = write_buf[1];
-		rxbuf[i + 7] = write_buf[0];
-	}
+	kfree(tx);
+	kfree(rx);
 
 	return true;
 }
@@ -392,45 +390,47 @@ EXPORT_SYMBOL_GPL(rt5514_spi_burst_read);
 int rt5514_spi_burst_write(u32 addr, const u8 *txbuf, size_t len)
 {
 	u8 spi_cmd = RT5514_SPI_CMD_BURST_WRITE;
-	u8 *write_buf;
-	unsigned int i, end, offset = 0;
+	u8 *buf;
+	unsigned int i, j, end, offset = 0;
+	int ret;
 
-	write_buf = kmalloc(RT5514_SPI_BUF_LEN + 6, GFP_KERNEL);
-
-	if (write_buf == NULL)
+	/*
+	 * One contiguous buffer per chunk, matching the userspace transfer
+	 * that read back byte-for-byte at 1 MHz: command + 32-bit address +
+	 * 8-byte-word-reversed data + command, 240 bytes per chunk.
+	 */
+	buf = kzalloc(RT5514_SPI_BUF_LEN + 6, GFP_KERNEL | GFP_DMA);
+	if (!buf)
 		return -ENOMEM;
 
 	while (offset < len) {
-		if (offset + RT5514_SPI_BUF_LEN <= len)
-			end = RT5514_SPI_BUF_LEN;
-		else
-			end = len % RT5514_SPI_BUF_LEN;
+		end = min_t(size_t, RT5514_SPI_BUF_LEN, len - offset);
+		memset(buf, 0, RT5514_SPI_BUF_LEN + 6);
 
-		write_buf[0] = spi_cmd;
-		write_buf[1] = ((addr + offset) & 0xff000000) >> 24;
-		write_buf[2] = ((addr + offset) & 0x00ff0000) >> 16;
-		write_buf[3] = ((addr + offset) & 0x0000ff00) >> 8;
-		write_buf[4] = ((addr + offset) & 0x000000ff) >> 0;
+		buf[0] = spi_cmd;
+		buf[1] = ((addr + offset) >> 24) & 0xff;
+		buf[2] = ((addr + offset) >> 16) & 0xff;
+		buf[3] = ((addr + offset) >> 8) & 0xff;
+		buf[4] = (addr + offset) & 0xff;
 
 		for (i = 0; i < end; i += 8) {
-			write_buf[i + 12] = txbuf[offset + i + 0];
-			write_buf[i + 11] = txbuf[offset + i + 1];
-			write_buf[i + 10] = txbuf[offset + i + 2];
-			write_buf[i +  9] = txbuf[offset + i + 3];
-			write_buf[i +  8] = txbuf[offset + i + 4];
-			write_buf[i +  7] = txbuf[offset + i + 5];
-			write_buf[i +  6] = txbuf[offset + i + 6];
-			write_buf[i +  5] = txbuf[offset + i + 7];
+			for (j = 0; j < 8 && (i + j) < end; j++)
+				buf[5 + i + 7 - j] = txbuf[offset + i + j];
 		}
 
-		write_buf[end + 5] = spi_cmd;
+		end = (end + 7) & ~7;
+		buf[5 + end] = spi_cmd;
 
-		spi_write(rt5514_spi, write_buf, end + 6);
+		ret = spi_write(rt5514_spi, buf, end + 6);
+		if (ret) {
+			kfree(buf);
+			return ret;
+		}
 
 		offset += RT5514_SPI_BUF_LEN;
 	}
 
-	kfree(write_buf);
+	kfree(buf);
 
 	return 0;
 }
@@ -507,3 +507,21 @@ module_spi_driver(rt5514_spi_driver);
 MODULE_DESCRIPTION("RT5514 SPI driver");
 MODULE_AUTHOR("Oder Chiou <oder_chiou@realtek.com>");
 MODULE_LICENSE("GPL v2");
+
+
+static u32 rt5514_spi_switch_mask;
+
+/*
+ * Vendor-compatible arbitration: the codec's shared pins belong to the host
+ * while any SPI user holds a mask, and to the DSP otherwise.
+ */
+void rt5514_spi_request_switch(u32 mask, bool is_require)
+{
+	if (is_require)
+		rt5514_spi_switch_mask |= mask;
+	else
+		rt5514_spi_switch_mask &= ~mask;
+
+	rt5514_spi_bus_switch(rt5514_spi_switch_mask != 0);
+}
+EXPORT_SYMBOL_GPL(rt5514_spi_request_switch);
