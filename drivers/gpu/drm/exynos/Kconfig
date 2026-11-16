@@ -37,12 +37,13 @@ config DRM_EXYNOS7_DECON
 	  Choose this option if you want to use Exynos DECON for DRM.
 
 config DRM_EXYNOS_GS101
-	bool "Google gs101 display: DPP"
+	bool "Google gs101 display: DECON and DPP"
 	help
 	  Choose this option if you want to use the display of the Google
 	  gs101 (Tensor G1) SoC, as found in the Pixel 6, for DRM. This
-	  adds the DPP layer channels, which fetch layers from memory for
-	  the DECON display controller.
+	  adds the DECON display controller and the DPP layer channels.
+	  They take over the display pipeline that the bootloader leaves
+	  running; they do not initialise it from reset.
 
 config DRM_EXYNOS_MIXER
 	bool "Mixer"

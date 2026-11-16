@@ -104,22 +104,51 @@ static const struct drm_ioctl_desc exynos_ioctls[] = {
 
 DEFINE_DRM_GEM_FOPS(exynos_drm_driver_fops);
 
+#define EXYNOS_DRM_DRIVER_OPS						\
+	.open			= exynos_drm_open,			\
+	.postclose		= exynos_drm_postclose,			\
+	.dumb_create		= exynos_drm_gem_dumb_create,		\
+	.gem_prime_import_sg_table	= exynos_drm_gem_prime_import_sg_table, \
+	EXYNOS_DRM_FBDEV_DRIVER_OPS,					\
+	.ioctls			= exynos_ioctls,			\
+	.num_ioctls		= ARRAY_SIZE(exynos_ioctls),		\
+	.fops			= &exynos_drm_driver_fops,		\
+	.name	= DRIVER_NAME,						\
+	.desc	= DRIVER_DESC,						\
+	.major	= DRIVER_MAJOR,						\
+	.minor	= DRIVER_MINOR
+
 static const struct drm_driver exynos_drm_driver = {
 	.driver_features	= DRIVER_MODESET | DRIVER_GEM
 				  | DRIVER_ATOMIC | DRIVER_RENDER,
-	.open			= exynos_drm_open,
-	.postclose		= exynos_drm_postclose,
-	.dumb_create		= exynos_drm_gem_dumb_create,
-	.gem_prime_import_sg_table	= exynos_drm_gem_prime_import_sg_table,
-	EXYNOS_DRM_FBDEV_DRIVER_OPS,
-	.ioctls			= exynos_ioctls,
-	.num_ioctls		= ARRAY_SIZE(exynos_ioctls),
-	.fops			= &exynos_drm_driver_fops,
-	.name	= DRIVER_NAME,
-	.desc	= DRIVER_DESC,
-	.major	= DRIVER_MAJOR,
-	.minor	= DRIVER_MINOR,
+	EXYNOS_DRM_DRIVER_OPS,
 };
+
+/*
+ * gs101 has no G2D or IPP, the users of the render node, and a render node
+ * cannot allocate the contiguous buffers its display needs. Render clients
+ * would open it in place of the GPU's own render node and fail, so gs101
+ * has no render node, like the other display-only drivers.
+ */
+static const struct drm_driver exynos_drm_kms_driver = {
+	.driver_features	= DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
+	EXYNOS_DRM_DRIVER_OPS,
+};
+
+static const struct drm_driver *exynos_drm_pick_driver(void)
+{
+	struct device *d;
+
+	if (!IS_ENABLED(CONFIG_DRM_EXYNOS_GS101))
+		return &exynos_drm_driver;
+
+	d = platform_find_device_by_driver(NULL, &gs101_decon_driver.driver);
+	if (!d)
+		return &exynos_drm_driver;
+
+	put_device(d);
+	return &exynos_drm_kms_driver;
+}
 
 static int exynos_drm_suspend(struct device *dev)
 {
@@ -170,6 +199,9 @@ static struct exynos_drm_driver_info exynos_drm_drivers[] = {
 		DRM_COMPONENT_DRIVER
 	}, {
 		DRV_PTR(gs101_dpp_driver, CONFIG_DRM_EXYNOS_GS101),
+		DRM_COMPONENT_DRIVER
+	}, {
+		DRV_PTR(gs101_decon_driver, CONFIG_DRM_EXYNOS_GS101),
 		DRM_COMPONENT_DRIVER
 	}, {
 		DRV_PTR(mixer_driver, CONFIG_DRM_EXYNOS_MIXER),
@@ -244,7 +276,7 @@ static int exynos_drm_bind(struct device *dev)
 	unsigned int clone_mask;
 	int ret;
 
-	drm = drm_dev_alloc(&exynos_drm_driver, dev);
+	drm = drm_dev_alloc(exynos_drm_pick_driver(), dev);
 	if (IS_ERR(drm))
 		return PTR_ERR(drm);
 
@@ -291,7 +323,7 @@ static int exynos_drm_bind(struct device *dev)
 	 * such as simple-framebuffer. The components have bound, so the
 	 * devices that drive the display hold what it needs.
 	 */
-	ret = aperture_remove_all_conflicting_devices(exynos_drm_driver.name);
+	ret = aperture_remove_all_conflicting_devices(drm->driver->name);
 	if (ret)
 		goto err_cleanup_poll;
 

@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/samsung/google,gs101-decon.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Google gs101 Display and Enhancement Controller (DECON)
+
+maintainers:
+  - Noswad <64293615+TheNoswad@users.noreply.github.com>
+
+description: |
+  DECON is the display controller of the gs101 Display Processing Unit
+  (DPU). It blends up to six windows, each fed by one DPP (Display
+  Pre-Processor) DMA channel, and sends the result to a DSI interface. With
+  a command-mode panel it transfers each frame on the panel's tearing
+  effect (TE) signal through its hardware trigger.
+
+  DECON0 owns its main and window control banks; the window and sub banks
+  are shared with the other DECONs.
+
+properties:
+  compatible:
+    const: google,gs101-decon
+
+  reg:
+    items:
+      - description: main control bank of this DECON
+      - description: window configuration, shared between DECONs
+      - description: sub block (DSC, DSIM and DP interfaces), shared
+      - description: window control bank of this DECON
+
+  reg-names:
+    items:
+      - const: main
+      - const: win
+      - const: sub
+      - const: wincon
+
+  interrupts:
+    items:
+      - description: frame start
+      - description: frame done
+      - description: extra (errors and resource conflicts)
+
+  interrupt-names:
+    items:
+      - const: frame-start
+      - const: frame-done
+      - const: extra
+
+  clocks:
+    items:
+      - description: DPU APB clock
+      - description: DPU peripheral bus clock
+      - description: DPU data bus clock
+
+  clock-names:
+    items:
+      - const: pclk
+      - const: busp
+      - const: busd
+
+  google,dpps:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    description:
+      The DPP channels this DECON can blend, in channel order.
+    minItems: 1
+    maxItems: 6
+    items:
+      maxItems: 1
+
+  port:
+    $ref: /schemas/graph.yaml#/properties/port
+    description: Output to the DSI host.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - clocks
+  - clock-names
+  - google,dpps
+  - port
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/google,gs101.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    display-controller@1c300000 {
+        compatible = "google,gs101-decon";
+        reg = <0x1c300000 0x6000>, <0x1c310000 0x6000>,
+              <0x1c320000 0x10000>, <0x1c330000 0x6000>;
+        reg-names = "main", "win", "sub", "wincon";
+        interrupts = <GIC_SPI 338 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 337 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 336 IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "frame-start", "frame-done", "extra";
+        clocks = <&cmu_dpu CLK_GOUT_DPU_PCLK>,
+                 <&cmu_dpu CLK_GOUT_DPU_CLK_DPU_BUSP_CLK>,
+                 <&cmu_dpu CLK_GOUT_DPU_CLK_DPU_BUSD_CLK>;
+        clock-names = "pclk", "busp", "busd";
+        google,dpps = <&dpp0>;
+
+        port {
+            decon0_out: endpoint {
+                remote-endpoint = <&dsim0_in>;
+            };
+        };
+    };
