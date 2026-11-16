@@ -7,9 +7,18 @@
 
 /dts-v1/;
 
+#include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 #include "sm7250.dtsi"
+
+/* PM7250B is configured to use SID2/3 */
+#define PM7250B_SID 2
+#define PM7250B_SID1 3
+
+#include "pm8150.dtsi"
+#include "pm8150l.dtsi"
+#include "pm7250b.dtsi"
 
 / {
 	model = "Google Pixel 5a";
@@ -138,6 +147,24 @@
 			regulator-boot-on;
 			regulator-always-on;
 		};
+
+		vreg_l13a_3p3: ldo13 {
+			regulator-name = "vreg_l13a_3p3";
+			regulator-min-microvolt = <3304000>;
+			regulator-max-microvolt = <3304000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-boot-on;
+			regulator-always-on;
+		};
+
+		vreg_l16a_3p0: ldo16 {
+			regulator-name = "vreg_l16a_3p0";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-boot-on;
+			regulator-always-on;
+		};
 	};
 
 	regulators-1 {
@@ -148,6 +175,15 @@
 			regulator-name = "vreg_l7c_2p95";
 			regulator-min-microvolt = <2950000>;
 			regulator-max-microvolt = <2960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-boot-on;
+			regulator-always-on;
+		};
+
+		vreg_l1c_1p8: ldo1 {
+			regulator-name = "vreg_l1c_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 			regulator-boot-on;
 			regulator-always-on;
@@ -210,4 +246,115 @@
 		drive-strength = <2>;
 		bias-disable;
 	};
+
+	touch_spi_default: qupv3-se0-spi-default {
+		pins = "gpio42", "gpio43", "gpio44", "gpio45";
+		function = "qup00";
+		drive-strength = <6>;
+		bias-disable;
+	};
+
+	touch_spi_sleep: qupv3-se0-spi-sleep {
+		pins = "gpio42", "gpio43", "gpio44", "gpio45";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+	};
+
+	ts_irq_default: ts-irq-default {
+		pins = "gpio9";
+		function = "gpio";
+		bias-pull-up;
+		input-enable;
+	};
+
+	ts_reset_default: ts-reset-default {
+		pins = "gpio8";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-low;
+	};
+
 };
+
+/* Display: SM7250 MDSS/DPU with the Barbet Samsung SOFEF01 panel. */
+&mdss { status = "okay"; };
+&mdss_mdp { status = "okay"; };
+&dispcc { status = "okay"; };
+
+&mdss_dsi0_phy {
+	vdds-supply = <&vreg_l5a_0p88>;
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	vdda-supply = <&vreg_l5a_0p88>;
+	status = "okay";
+
+	panel@0 {
+		compatible = "samsung,sofef01";
+		reg = <0>;
+		vddio-supply = <&vreg_l1c_1p8>;
+		vci-supply = <&vreg_l16a_3p0>;
+		poc-supply = <&vreg_l16a_3p0>;
+		reset-gpios = <&pm8150l_gpios 8 GPIO_ACTIVE_LOW>;
+
+		port {
+			panel_in: endpoint { remote-endpoint = <&mdss_dsi0_out>; };
+		};
+	};
+};
+
+&mdss_dsi0_out {
+	data-lanes = <0 1 2 3>;
+	remote-endpoint = <&panel_in>;
+};
+
+&gpu {
+	status = "okay";
+
+	zap-shader { firmware-name = "qcom/a620_zap.mdt"; };
+};
+
+&gmu { status = "okay"; };
+
+&qupv3_id_0 {
+	status = "okay";
+
+	spi0: spi@880000 {
+		compatible = "qcom,geni-spi";
+		reg = <0 0x880000 0 0x4000>;
+		clock-names = "se";
+		clocks = <&gcc GCC_QUPV3_WRAP0_S0_CLK>;
+		interrupts = <GIC_SPI 601 IRQ_TYPE_LEVEL_HIGH>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		iommus = <&apps_smmu 0x4e3 0x0>;
+		pinctrl-names = "default", "sleep";
+		pinctrl-0 = <&touch_spi_default>;
+		pinctrl-1 = <&touch_spi_sleep>;
+		status = "okay";
+
+		touchscreen@0 {
+			compatible = "st,fts-spi";
+			reg = <0>;
+			spi-max-frequency = <10000000>;
+			interrupt-parent = <&tlmm>;
+			interrupts = <9 IRQ_TYPE_LEVEL_LOW>;
+			reset-gpios = <&tlmm 8 GPIO_ACTIVE_LOW>;
+			ap2lpi-gpios = <&tlmm 35 GPIO_ACTIVE_HIGH>;
+			lpi2ap-gpios = <&tlmm 5 GPIO_ACTIVE_HIGH>;
+			vdd-supply = <&vreg_l13a_3p3>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&ts_irq_default>, <&ts_reset_default>;
+			touchscreen-size-x = <1080>;
+			touchscreen-size-y = <2400>;
+			st,max-coords = <1079 2399>;
+			st,force-pi-cfg-ver-map = <0x300 0x306>;
+			st,save-golden-ms-raw;
+			status = "okay";
+		};
+	};
+};
+
