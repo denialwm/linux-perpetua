@@ -355,6 +355,9 @@ struct ufs_qcom_host {
 	struct reset_controller_dev rcdev;
 
 	struct gpio_desc *device_reset;
+	struct pinctrl *pinctrl;
+	struct pinctrl_state *pins_reset_assert;
+	struct pinctrl_state *pins_reset_deassert;
 
 	struct ufs_host_params host_params;
 	u32 phy_gear;

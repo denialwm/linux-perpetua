@@ -13,6 +13,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/phy/phy.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/reset-controller.h>
@@ -792,11 +793,16 @@ static void ufs_qcom_device_reset_ctrl(struct ufs_hba *hba, bool asserted)
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 
-	/* reset gpio is optional */
-	if (!host->device_reset)
+	if (host->device_reset) {
+		gpiod_set_value_cansleep(host->device_reset, asserted);
 		return;
+	}
 
-	gpiod_set_value_cansleep(host->device_reset, asserted);
+	/* Some SoCs only expose the reset line as a dedicated TLMM pin */
+	if (host->pins_reset_assert && host->pins_reset_deassert)
+		pinctrl_select_state(host->pinctrl, asserted ?
+				     host->pins_reset_assert :
+				     host->pins_reset_deassert);
 }
 
 static int ufs_qcom_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op,
@@ -1653,6 +1659,22 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 		goto out_variant_clear;
 	}
 
+	if (!host->device_reset) {
+		/* optional "dev-reset-assert"/"dev-reset-deassert" pin states */
+		host->pinctrl = devm_pinctrl_get(dev);
+		if (!IS_ERR(host->pinctrl)) {
+			host->pins_reset_assert = pinctrl_lookup_state(host->pinctrl,
+								       "dev-reset-assert");
+			host->pins_reset_deassert = pinctrl_lookup_state(host->pinctrl,
+									 "dev-reset-deassert");
+			if (IS_ERR(host->pins_reset_assert) ||
+			    IS_ERR(host->pins_reset_deassert)) {
+				host->pins_reset_assert = NULL;
+				host->pins_reset_deassert = NULL;
+			}
+		}
+	}
+
 	ufs_qcom_get_controller_revision(hba, &host->hw_ver.major,
 		&host->hw_ver.minor, &host->hw_ver.step);
 
@@ -2267,8 +2289,9 @@ static int ufs_qcom_device_reset(struct ufs_hba *hba)
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 
-	/* reset gpio is optional */
-	if (!host->device_reset)
+	/* reset gpio (or pinctrl states) is optional */
+	if (!host->device_reset &&
+	    !(host->pins_reset_assert && host->pins_reset_deassert))
 		return -EOPNOTSUPP;
 
 	/*
