@@ -14,10 +14,12 @@
  * display on. It is never reset or powered down: the full initialisation
  * after a reset is not known.
  *
- * The first enable after takeover sends nothing: the panel is already out
- * of sleep with tear and display on, and while it is awake the DSI host
- * holds commands until DECON sends a frame, which it does only after the
- * panel is enabled.
+ * It runs at 60 or 90 Hz; a change of rate is a full modeset.
+ *
+ * The first enable after takeover sends nothing at 60 Hz: the panel is
+ * already out of sleep with tear and display on, and while it is awake the
+ * DSI host holds a command sent after tear on until DECON sends a frame,
+ * which it does only after the panel is enabled.
  */
 
 #include <linux/backlight.h>
@@ -33,10 +35,10 @@
 #include <video/mipi_display.h>
 
 #include <drm/drm_connector.h>
+#include <drm/drm_crtc.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_panel.h>
-#include <drm/drm_probe_helper.h>
 
 /* WRCTRLD: brightness control on, high brightness mode off. */
 #define S6E3FC3_WRCTRLD_BCTRL		BIT(5)
@@ -57,6 +59,7 @@ static const char * const s6e3fc3_supplies[] = { "vci", "vddi" };
 struct s6e3fc3 {
 	struct drm_panel panel;
 	struct mipi_dsi_device *dsi;
+	struct drm_connector *connector;
 	struct gpio_desc *reset;
 	struct delayed_work bl_work;
 	/* Serialises brightness writes against display on and off. */
@@ -72,20 +75,59 @@ static inline struct s6e3fc3 *to_s6e3fc3(struct drm_panel *panel)
 	return container_of(panel, struct s6e3fc3, panel);
 }
 
-static const struct drm_display_mode s6e3fc3_mode = {
-	.clock = 168498,
-	.hdisplay = 1080,
-	.hsync_start = 1080 + 32,
-	.hsync_end = 1080 + 32 + 12,
-	.htotal = 1080 + 32 + 12 + 26,
-	.vdisplay = 2400,
-	.vsync_start = 2400 + 12,
-	.vsync_end = 2400 + 12 + 4,
-	.vtotal = 2400 + 12 + 4 + 26,
-	.width_mm = 67,
-	.height_mm = 148,
-	.type = DRM_MODE_TYPE_DRIVER,
+#define S6E3FC3_MODE(_clock, _type)		\
+	.clock = _clock,			\
+	.hdisplay = 1080,			\
+	.hsync_start = 1080 + 32,		\
+	.hsync_end = 1080 + 32 + 12,		\
+	.htotal = 1080 + 32 + 12 + 26,		\
+	.vdisplay = 2400,			\
+	.vsync_start = 2400 + 12,		\
+	.vsync_end = 2400 + 12 + 4,		\
+	.vtotal = 2400 + 12 + 4 + 26,		\
+	.width_mm = 67,				\
+	.height_mm = 148,			\
+	.type = DRM_MODE_TYPE_DRIVER | (_type)
+
+/*
+ * In command mode the panel sets the frame rate itself, from its frequency
+ * register, and the host follows its TE. The bootloader leaves it at 60 Hz.
+ */
+static const struct {
+	struct drm_display_mode mode;
+	u8 freq;	/* register 0x60 */
+} s6e3fc3_modes[] = {
+	{ { S6E3FC3_MODE(168498, DRM_MODE_TYPE_PREFERRED) }, 0x00 },	/* 60 Hz */
+	{ { S6E3FC3_MODE(252747, 0) }, 0x08 },				/* 90 Hz */
 };
+
+/* The frequency for the mode being enabled, as panel-novatek-nt35950 does. */
+static u8 s6e3fc3_freq(struct s6e3fc3 *ctx)
+{
+	struct drm_connector *connector = ctx->connector;
+	struct drm_crtc_state *crtc_state;
+	int i;
+
+	if (!connector || !connector->state || !connector->state->crtc)
+		return s6e3fc3_modes[0].freq;
+
+	crtc_state = connector->state->crtc->state;
+	for (i = 0; i < ARRAY_SIZE(s6e3fc3_modes); i++)
+		if (drm_mode_match(&crtc_state->mode, &s6e3fc3_modes[i].mode,
+				   DRM_MODE_MATCH_TIMINGS | DRM_MODE_MATCH_CLOCK))
+			return s6e3fc3_modes[i].freq;
+
+	return s6e3fc3_modes[0].freq;
+}
+
+static void s6e3fc3_set_freq(struct mipi_dsi_multi_context *dsi_ctx, u8 freq)
+{
+	/* Unlock level 2, write, latch, lock again. */
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xf0, 0x5a, 0x5a);
+	mipi_dsi_dcs_write_var_seq_multi(dsi_ctx, 0x60, freq);
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xf7, 0x0f);
+	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xf0, 0xa5, 0xa5);
+}
 
 /* Called with ctx->lock held. */
 static int s6e3fc3_write_brightness(struct s6e3fc3 *ctx)
@@ -153,8 +195,11 @@ static int s6e3fc3_enable(struct drm_panel *panel)
 {
 	struct s6e3fc3 *ctx = to_s6e3fc3(panel);
 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = ctx->dsi };
+	u8 freq = s6e3fc3_freq(ctx);
 
 	mutex_lock(&ctx->lock);
+	if (!ctx->boot_on || freq != s6e3fc3_modes[0].freq)
+		s6e3fc3_set_freq(&dsi_ctx, freq);
 	if (!ctx->boot_on)
 		mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
 	ctx->boot_on = false;
@@ -199,7 +244,26 @@ static int s6e3fc3_unprepare(struct drm_panel *panel)
 static int s6e3fc3_get_modes(struct drm_panel *panel,
 			     struct drm_connector *connector)
 {
-	return drm_connector_helper_get_modes_fixed(connector, &s6e3fc3_mode);
+	struct s6e3fc3 *ctx = to_s6e3fc3(panel);
+	struct drm_display_mode *mode;
+	int i;
+
+	ctx->connector = connector;
+
+	for (i = 0; i < ARRAY_SIZE(s6e3fc3_modes); i++) {
+		mode = drm_mode_duplicate(connector->dev,
+					  &s6e3fc3_modes[i].mode);
+		if (!mode)
+			return -ENOMEM;
+
+		drm_mode_set_name(mode);
+		drm_mode_probed_add(connector, mode);
+	}
+
+	connector->display_info.width_mm = s6e3fc3_modes[0].mode.width_mm;
+	connector->display_info.height_mm = s6e3fc3_modes[0].mode.height_mm;
+
+	return ARRAY_SIZE(s6e3fc3_modes);
 }
 
 static const struct drm_panel_funcs s6e3fc3_panel_funcs = {
