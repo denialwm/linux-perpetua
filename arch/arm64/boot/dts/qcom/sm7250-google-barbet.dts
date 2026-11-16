@@ -45,8 +45,11 @@
 		};
 	};
 
-	/* The bootloader supplies the RAM size. */
-	memory@80000000 {
+	/*
+	 * The Pixel bootloader patches /memory (without a unit address), so keep
+	 * the stock node shape for it to fill in the real DRAM size.
+	 */
+	memory {
 		device_type = "memory";
 		reg = <0 0x80000000 0 0>;
 	};
