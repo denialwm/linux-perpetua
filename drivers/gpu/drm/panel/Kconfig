@@ -1060,6 +1060,19 @@ config DRM_PANEL_SAMSUNG_S6D7AA0
 	select DRM_MIPI_DSI
 	select VIDEOMODE_HELPERS
 
+config DRM_PANEL_SAMSUNG_S6E3FC3
+	tristate "Samsung S6E3FC3 DSI panel controller"
+	depends on GPIOLIB
+	depends on OF
+	depends on DRM_MIPI_DSI
+	help
+	  Say Y or M here if you want to enable support for the
+	  Samsung S6E3FC3 DDIC and the 1080x2400 AMOLED panel it drives
+	  in DSI command mode, as found in the Google Pixel 6. The panel
+	  is taken over in the state the bootloader leaves it in.
+
+	  If M is selected the module will be called panel-samsung-s6e3fc3.
+
 config DRM_PANEL_SAMSUNG_S6E3FC2X01
 	tristate "Samsung S6E3FC2X01 DSI panel controller"
 	depends on GPIOLIB
