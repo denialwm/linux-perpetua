@@ -22,6 +22,12 @@
 
 #define MAX_SPI_PORTS		12
 #define S3C64XX_SPI_QUIRK_CS_AUTO	(1 << 1)
+/*
+ * In polling mode, consecutive receive-only transfers lose bytes from the
+ * device's stream between them (two per transfer on gs101). Transmitting
+ * dummy bytes along with each read keeps the stream intact.
+ */
+#define S3C64XX_SPI_QUIRK_RX_NEEDS_TX	(1 << 2)
 #define AUTOSUSPEND_TIMEOUT	2000
 
 /* Registers and bit-fields */
@@ -1313,6 +1319,8 @@ static int s3c64xx_spi_probe(struct platform_device *pdev)
 	if (sdd->port_conf->has_loopback)
 		host->mode_bits |= SPI_LOOP;
 	host->auto_runtime_pm = true;
+	if (sdd->port_conf->quirks & S3C64XX_SPI_QUIRK_RX_NEEDS_TX)
+		host->flags |= SPI_CONTROLLER_MUST_TX;
 	if (!is_polling(sdd))
 		host->can_dma = s3c64xx_spi_can_dma;
 
@@ -1604,7 +1612,8 @@ static const struct s3c64xx_spi_port_config gs101_spi_port_config = {
 	.clk_from_cmu	= true,
 	.has_loopback	= true,
 	.use_32bit_io	= true,
-	.quirks		= S3C64XX_SPI_QUIRK_CS_AUTO,
+	.quirks		= S3C64XX_SPI_QUIRK_CS_AUTO |
+			  S3C64XX_SPI_QUIRK_RX_NEEDS_TX,
 };
 
 static const struct platform_device_id s3c64xx_spi_driver_ids[] = {
