@@ -19,7 +19,29 @@
 	};
 
 	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * The bootloader command line is replaced by this one. Name the
+		 * console, keep the bootloader's initramfs and take the kernel out
+		 * of the clock and power-domain cleanup that its own nodes would
+		 * otherwise trigger.
+		 */
+		bootargs = "earlycon=qcom_geni,0x888000 keep_bootcon console=ttyMSM0,115200n8 loglevel=7 rdinit=/init panic=15 clk_ignore_unused pd_ignore_unused bootconfig";
 		stdout-path = "serial0:115200n8";
+
+		/*
+		 * The bootloader boots Google's own Barbet tree. Its root model
+		 * names the board, so the handoff can tell it apart from other
+		 * SM7250 devices.
+		 */
+		fdt-handoff {
+			stock-compatible = "google,barbet-sm7250";
+			stock-model = "Google Inc. MSM sm7250 v2 Barbet MP";
+			keep-initrd;
+		};
 	};
 
 	/* The bootloader supplies the RAM size. */
