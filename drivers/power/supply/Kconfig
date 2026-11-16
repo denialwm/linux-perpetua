@@ -1223,6 +1223,16 @@ config CHARGER_QCOM_SMB2
 	  adds support for the SMB2 switch mode battery charger found
 	  in PMI8998 and related PMICs.
 
+config CHARGER_QCOM_PM7250B
+	tristate "Qualcomm PM7250B charger status and charge control"
+	depends on MFD_SPMI_PMIC
+	help
+	  Say Y here to report the state of the SMB5 charger in PM7250B
+	  and to allow userspace to stop and resume battery charging
+	  through the charge_behaviour property (bypass charging). The
+	  driver only ever writes the charge enable command bit, and only
+	  on request; it does not touch any voltage or current limit.
+
 config FUEL_GAUGE_MM8013
 	tristate "Mitsumi MM8013 fuel gauge driver"
 	depends on I2C
