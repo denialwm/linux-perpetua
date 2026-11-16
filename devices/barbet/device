@@ -2,7 +2,6 @@
 name='Google Pixel 5a'
 vendor=qcom
 soc=sm7250
-# The bootloader uses a version 2 image with the ramdisk in the kernel
-# partition, and no in-tree boot chain writes that layout. Packing lives in
-# Phonewave; devices/check reports the boot chain until one fits.
-boot=
+# The bootloader uses a version 2 image with the kernel, ramdisk and DTB,
+# which devices/boot/android-v2 writes.
+boot=android-v2
