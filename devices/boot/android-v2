@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
+"""Write an Android version 2 boot image: kernel, ramdisk and one DTB.
+
+The device's own stock image is the template: its version 2 header fields,
+addresses, command line, AVB salt and properties are kept, and only the
+kernel, ramdisk and DTB change. The kernel is LZ4-frame compressed with the
+template's own settings, and its arm64 text_offset adopts the template's,
+which this bootloader requires. The output is a complete partition image
+with the same unsigned AVB hash footer as the stock image.
+Needs liblz4, mkbootimg, avbtool and unpack_bootimg.
+Adapted from Phonewave's devices/barbet/boot/pack-boot.py.
+
+Usage: devices/boot/android-v2 TEMPLATE IMAGE DTB RAMDISK OUTPUT [EVIDENCE]
+                             [--append-cmdline WORDS]
+
+EVIDENCE, when given, is a directory that receives the avbtool
+verification, the unpacked header and a JSON record of the result.
+"""
+import ctypes
+import hashlib
+import json
+from pathlib import Path
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+
+PAGE = 4096
+HEADER_SIZE = 1660
+AVB_FOOTER_SIZE = 64
+ARM64_IMAGE_MAGIC = b'ARM\x64'
+IMAGE_MAGIC_OFFSET = 0x38
+LZ4_FRAME_MAGIC = b'\x04\x22\x4d\x18'
+
+
+def fail(message):
+    sys.exit(f'android-v2: {message}')
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def align(size):
+    return (size + PAGE - 1) & ~(PAGE - 1)
+
+
+class FrameInfo(ctypes.Structure):
+    _fields_ = [('blockSizeID', ctypes.c_int), ('blockMode', ctypes.c_int),
+                ('contentChecksumFlag', ctypes.c_int), ('frameType', ctypes.c_int),
+                ('contentSize', ctypes.c_ulonglong), ('dictID', ctypes.c_uint),
+                ('blockChecksumFlag', ctypes.c_int)]
+
+
+class Preferences(ctypes.Structure):
+    _fields_ = [('frameInfo', FrameInfo), ('compressionLevel', ctypes.c_int),
+                ('autoFlush', ctypes.c_uint), ('favorDecSpeed', ctypes.c_uint),
+                ('reserved', ctypes.c_uint * 3)]
+
+
+LZ4 = None
+
+
+def lz4():
+    global LZ4
+    if LZ4 is None:
+        try:
+            LZ4 = ctypes.CDLL('liblz4.so.1')
+        except OSError as error:
+            fail(f'liblz4 is required to compress the kernel: {error}')
+        LZ4.LZ4F_compressFrameBound.restype = ctypes.c_size_t
+        LZ4.LZ4F_compressFrameBound.argtypes = [ctypes.c_size_t,
+                                                ctypes.POINTER(Preferences)]
+        LZ4.LZ4F_compressFrame.restype = ctypes.c_size_t
+        LZ4.LZ4F_compressFrame.argtypes = [ctypes.c_void_p, ctypes.c_size_t,
+                                           ctypes.c_void_p, ctypes.c_size_t,
+                                           ctypes.POINTER(Preferences)]
+        LZ4.LZ4F_createDecompressionContext.restype = ctypes.c_size_t
+        LZ4.LZ4F_decompress.restype = ctypes.c_size_t
+        LZ4.LZ4F_freeDecompressionContext.restype = ctypes.c_size_t
+    return LZ4
+
+
+def frame_preferences(frame, path):
+    """The LZ4 frame settings the template uses, so the kernel matches."""
+    if frame[:4] != LZ4_FRAME_MAGIC:
+        fail(f'{path}: the template kernel is not an LZ4 frame')
+    flags, descriptor = frame[4], frame[5]
+    if flags & 0x08:
+        fail(f'{path}: the template LZ4 frame records its content size')
+    if flags & 0x01:
+        fail(f'{path}: the template LZ4 frame uses a dictionary')
+    preferences = Preferences()
+    preferences.frameInfo.blockSizeID = (descriptor >> 4) & 0x7
+    preferences.frameInfo.blockMode = 1 if flags & 0x20 else 0
+    preferences.frameInfo.blockChecksumFlag = 1 if flags & 0x10 else 0
+    preferences.frameInfo.contentChecksumFlag = 1 if flags & 0x04 else 0
+    return preferences
+
+
+def lz4_decompress(data, path):
+    context = ctypes.c_void_p()
+    if lz4().LZ4F_createDecompressionContext(ctypes.byref(context), 100):
+        fail(f'{path}: cannot create an LZ4 frame context')
+    out = bytearray()
+    position = 0
+    while position < len(data):
+        chunk = ctypes.create_string_buffer(1 << 20)
+        chunk_size = ctypes.c_size_t(len(chunk))
+        source_size = ctypes.c_size_t(len(data) - position)
+        result = lz4().LZ4F_decompress(context, chunk, ctypes.byref(chunk_size),
+                                       data[position:], ctypes.byref(source_size), None)
+        if result < 0:
+            fail(f'{path}: the template kernel is not a valid LZ4 frame')
+        out += chunk.raw[:chunk_size.value]
+        position += source_size.value
+        if result == 0:
+            break
+    lz4().LZ4F_freeDecompressionContext(context)
+    return bytes(out)
+
+
+def lz4_compress(data, preferences, path):
+    bound = lz4().LZ4F_compressFrameBound(len(data), ctypes.byref(preferences))
+    out = ctypes.create_string_buffer(bound)
+    size = lz4().LZ4F_compressFrame(out, bound, data, len(data),
+                                    ctypes.byref(preferences))
+    if size <= 0:
+        fail(f'{path}: LZ4 compression failed ({size})')
+    return out.raw[:size]
+
+
+def parse_template(path):
+    data = path.read_bytes()
+    if len(data) < PAGE + HEADER_SIZE:
+        fail(f'{path}: truncated, shorter than a boot image header')
+    if data[:8] != b'ANDROID!':
+        fail(f'{path}: not an Android boot image (no ANDROID magic)')
+
+    fields = struct.unpack_from('<10I', data, 8)
+    (kernel_size, kernel_addr, ramdisk_size, ramdisk_addr, second_size,
+     second_addr, tags_addr, pagesize, header_version, os_version) = fields
+    if header_version != 2:
+        fail(f'{path}: header version {header_version}, this tool writes version 2')
+    if pagesize != PAGE:
+        fail(f'{path}: page size {pagesize}, this tool writes {PAGE}')
+    if struct.unpack_from('<I', data, 1644)[0] != HEADER_SIZE:
+        fail(f'{path}: header size is not {HEADER_SIZE}')
+    if struct.unpack_from('<I', data, 1632)[0]:
+        fail(f'{path}: a recovery DTBO is not supported')
+    dtb_size = struct.unpack_from('<I', data, 1648)[0]
+    dtb_addr = struct.unpack_from('<Q', data, 1652)[0]
+    if second_size:
+        fail(f'{path}: a second stage is not supported')
+    if not dtb_size:
+        fail(f'{path}: the template has no DTB')
+
+    ramdisk_offset = PAGE + align(kernel_size)
+    dtb_offset = ramdisk_offset + align(ramdisk_size)
+    if dtb_offset + dtb_size > len(data):
+        fail(f'{path}: truncated, its DTB lies past the end of the image')
+    kernel_payload = data[PAGE:PAGE + kernel_size]
+    if len(kernel_payload) != kernel_size:
+        fail(f'{path}: truncated, its kernel lies past the end of the image')
+    preferences = frame_preferences(kernel_payload, path)
+    kernel = lz4_decompress(kernel_payload, path)
+    if (len(kernel) < IMAGE_MAGIC_OFFSET + 4 or
+            kernel[IMAGE_MAGIC_OFFSET:IMAGE_MAGIC_OFFSET + 4] != ARM64_IMAGE_MAGIC):
+        fail(f'{path}: the template kernel is not an arm64 Image')
+
+    return {
+        'data': data,
+        'kernel_addr': kernel_addr,
+        'kernel_text_offset': struct.unpack_from('<Q', kernel, 8)[0],
+        'kernel_preferences': preferences,
+        'ramdisk_addr': ramdisk_addr,
+        'tags_addr': tags_addr,
+        'os_version': os_version,
+        'cmdline': data[64:576].split(b'\0', 1)[0].decode(),
+        'board': data[48:64].split(b'\0', 1)[0].decode(),
+        'dtb_addr': dtb_addr,
+    }
+
+
+def prepare_kernel(path, template):
+    """Compress the Image as the template does, and adopt its placement."""
+    raw = path.read_bytes()
+    if (len(raw) < IMAGE_MAGIC_OFFSET + 4 or
+            raw[IMAGE_MAGIC_OFFSET:IMAGE_MAGIC_OFFSET + 4] != ARM64_IMAGE_MAGIC):
+        fail(f'{path}: not an arm64 Image')
+    text_offset = struct.unpack_from('<Q', raw, 8)[0]
+    patched = bytearray(raw)
+    struct.pack_into('<Q', patched, 8, template['kernel_text_offset'])
+    return lz4_compress(bytes(patched), template['kernel_preferences'], path), text_offset
+
+
+def parse_avb(data):
+    footer = data[-AVB_FOOTER_SIZE:]
+    if footer[:4] != b'AVBf':
+        fail('the template has no AVB footer')
+    major, minor, original_size, vbmeta_offset, vbmeta_size = \
+        struct.unpack_from('>IIQQQ', footer, 4)
+    if (major, minor) != (1, 0) or vbmeta_offset + vbmeta_size > len(data):
+        fail('the template has a malformed AVB footer')
+    vbmeta = data[vbmeta_offset:vbmeta_offset + vbmeta_size]
+    if vbmeta[:4] != b'AVB0':
+        fail("the template's AVB footer does not point at a vbmeta struct")
+    auth_size, aux_size = struct.unpack_from('>QQ', vbmeta, 12)
+    algorithm = struct.unpack_from('>I', vbmeta, 28)[0]
+    descriptors_offset, descriptors_size = struct.unpack_from('>QQ', vbmeta, 96)
+    rollback_index = struct.unpack_from('>Q', vbmeta, 112)[0]
+    rollback_index_location = struct.unpack_from('>I', vbmeta, 124)[0]
+    if algorithm != 0:
+        fail(f'the template uses AVB algorithm {algorithm}, not NONE')
+
+    aux = vbmeta[256 + auth_size:256 + auth_size + aux_size]
+    position = descriptors_offset
+    limit = min(len(aux), descriptors_offset + descriptors_size)
+    while position + 16 <= limit:
+        tag, following = struct.unpack_from('>QQ', aux, position)
+        if tag == 2:
+            image_size, = struct.unpack_from('>Q', aux, position + 16)
+            partition_len, salt_len, digest_len = struct.unpack_from(
+                '>III', aux, position + 56)
+            name_at = position + 132
+            name = aux[name_at:name_at + partition_len].decode()
+            salt = aux[name_at + partition_len:name_at + partition_len + salt_len]
+            if name == 'boot':
+                return {
+                    'original_size': original_size,
+                    'rollback_index': rollback_index,
+                    'rollback_index_location': rollback_index_location,
+                    'salt': salt.hex(),
+                    'hash_image_size': image_size,
+                    'digest': aux[name_at + partition_len + salt_len:
+                                 name_at + partition_len + salt_len + digest_len].hex(),
+                }
+        position += 16 + following
+    fail('the template has no AVB hash descriptor for the boot partition')
+
+
+def decode_os_version(value):
+    return (f'{(value >> 25) & 0x7f}.{(value >> 18) & 0x7f}.{(value >> 11) & 0x7f}',
+            f'{2000 + ((value >> 4) & 0x7f)}-{value & 0xf:02d}')
+
+
+def make_payload(template, kernel, ramdisk, dtb, work):
+    payload = work / 'payload.img'
+    argv = [
+        'mkbootimg',
+        '--kernel', str(kernel),
+        '--ramdisk', str(ramdisk),
+        '--dtb', str(dtb),
+        '--header_version', '2',
+        '--pagesize', str(PAGE),
+        '--base', '0',
+        '--kernel_offset', hex(template['kernel_addr']),
+        '--ramdisk_offset', hex(template['ramdisk_addr']),
+        '--tags_offset', hex(template['tags_addr']),
+        '--dtb_offset', hex(template['dtb_addr']),
+        '--output', str(payload),
+    ]
+    if template['cmdline']:
+        argv += ['--cmdline', template['cmdline']]
+    if template['board']:
+        argv += ['--board', template['board']]
+    if template['os_version']:
+        os_version, os_patch_level = decode_os_version(template['os_version'])
+        argv += ['--os_version', os_version, '--os_patch_level', os_patch_level]
+    result = subprocess.run(argv, capture_output=True, text=True)
+    if result.returncode:
+        fail(f'mkbootimg failed: {result.stderr.strip()}')
+    return payload
+
+
+def add_footer(payload, avb, partition_size):
+    argv = [
+        'avbtool', 'add_hash_footer',
+        '--image', str(payload),
+        '--partition_size', str(partition_size),
+        '--partition_name', 'boot',
+        '--hash_algorithm', 'sha256',
+        '--algorithm', 'NONE',
+        '--rollback_index', str(avb['rollback_index']),
+        '--rollback_index_location', str(avb['rollback_index_location']),
+        '--salt', avb['salt'],
+    ]
+    result = subprocess.run(argv, capture_output=True, text=True)
+    if result.returncode:
+        fail(f'avbtool failed: {result.stderr.strip()}')
+
+
+def main():
+    args = sys.argv[1:]
+    append = None
+    if '--append-cmdline' in args:
+        at = args.index('--append-cmdline')
+        if at + 1 >= len(args):
+            sys.exit(__doc__)
+        append = args[at + 1]
+        del args[at:at + 2]
+    if len(args) not in (5, 6):
+        sys.exit(__doc__)
+    template, image, dtb, ramdisk, output = map(Path, args[:5])
+    evidence = Path(args[5]) if len(args) == 6 else None
+    if output.exists():
+        fail(f'{output}: exists; refusing to replace it')
+    for path in (template, image, dtb, ramdisk):
+        if not path.is_file():
+            fail(f'{path}: missing')
+    if dtb.read_bytes()[:4] != b'\xd0\x0d\xfe\xed':
+        fail(f'{dtb}: not an FDT')
+
+    template_data = parse_template(template)
+    if append:
+        template_data['cmdline'] = f"{template_data['cmdline']} {append}".strip()
+        if len(template_data['cmdline']) >= 512:
+            fail('command line does not fit in 512 bytes: '
+                 f"{len(template_data['cmdline'])}")
+    avb = parse_avb(template_data['data'])
+    partition_size = len(template_data['data'])
+    frame, image_text_offset = prepare_kernel(image, template_data)
+
+    payload_size = (PAGE + align(len(frame)) +
+                    align(ramdisk.stat().st_size) + align(dtb.stat().st_size))
+    if payload_size + AVB_FOOTER_SIZE + 512 > partition_size:
+        fail(f'{image}: kernel does not fit with the ramdisk and DTB in '
+             f'{partition_size} bytes')
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix='android-v2-', dir=output.parent))
+    try:
+        kernel = work / 'kernel.lz4'
+        kernel.write_bytes(frame)
+        payload = make_payload(template_data, kernel, ramdisk, dtb, work)
+        add_footer(payload, avb, partition_size)
+        try:
+            payload.rename(output)
+        except FileExistsError:
+            fail(f'{output}: exists; refusing to replace it')
+    finally:
+        shutil.rmtree(work)
+
+    image_data = output.read_bytes()
+    if len(image_data) != partition_size or image_data[:8] != b'ANDROID!':
+        fail(f'{output}: the packed image is not a boot image of the template size')
+    if struct.unpack_from('<I', image_data, 40)[0] != 2:
+        fail(f'{output}: the packed image is not header version 2')
+    if struct.unpack_from('<I', image_data, 36)[0] != PAGE:
+        fail(f'{output}: the packed image page size changed')
+    if image_data[64:576].split(b'\0', 1)[0].decode() != template_data['cmdline']:
+        fail(f'{output}: the packed image command line changed')
+    for at, fmt in ((12, '<I'), (20, '<I'), (28, '<I'), (1652, '<Q')):
+        field = struct.unpack_from(fmt, image_data, at)[0]
+        want = struct.unpack_from(fmt, template_data['data'], at)[0]
+        if field != want:
+            fail(f'{output}: the packed image changed the address at {at}')
+    if image_data[-AVB_FOOTER_SIZE:][:4] != b'AVBf':
+        fail(f'{output}: the packed image has no AVB footer')
+
+    with tempfile.TemporaryDirectory(prefix='android-v2-verify-') as scratch:
+        named = Path(scratch) / 'boot.img'
+        named.symlink_to(output.resolve())
+        verification = subprocess.run(
+            ['avbtool', 'verify_image', '--image', named],
+            check=True, capture_output=True).stdout
+        unpacked = Path(scratch) / 'unpacked'
+        described = subprocess.run(
+            ['unpack_bootimg', '--boot_img', output, '--out', unpacked],
+            check=True, capture_output=True).stdout
+        if (unpacked / 'kernel').read_bytes() != frame:
+            fail(f'{output}: the unpacked kernel differs')
+        if (unpacked / 'ramdisk').read_bytes() != ramdisk.read_bytes():
+            fail(f'{output}: the unpacked ramdisk differs')
+        if (unpacked / 'dtb').read_bytes() != dtb.read_bytes():
+            fail(f'{output}: the unpacked DTB differs')
+        if evidence:
+            evidence.mkdir(parents=True, exist_ok=True)
+            (evidence / 'boot-verification.txt').write_bytes(verification)
+            (evidence / 'boot-header.txt').write_bytes(described)
+
+    record = {
+        'bytes': len(image_data),
+        'sha256': sha(image_data),
+        'template_sha256': sha(template_data['data']),
+        'image_sha256': sha(image.read_bytes()),
+        'kernel_payload_sha256': sha(frame),
+        'ramdisk_sha256': sha(ramdisk.read_bytes()),
+        'dtb_sha256': sha(dtb.read_bytes()),
+        'text_offset': image_text_offset,
+        'patched_text_offset': template_data['kernel_text_offset'],
+        'cmdline': template_data['cmdline'],
+        'header_version': 2,
+        'page_size': PAGE,
+    }
+    if evidence:
+        (evidence / 'boot-format.json').write_text(json.dumps(record, indent=2) + '\n')
+    print(json.dumps({'output': str(output), 'sha256': record['sha256'],
+                      'bytes': record['bytes']}))
+
+
+if __name__ == '__main__':
+    main()
