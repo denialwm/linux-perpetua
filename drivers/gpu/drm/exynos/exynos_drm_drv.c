@@ -7,6 +7,7 @@
  *	Seung-Woo Kim <sw0312.kim@samsung.com>
  */
 
+#include <linux/aperture.h>
 #include <linux/component.h>
 #include <linux/dma-mapping.h>
 #include <linux/platform_device.h>
@@ -281,6 +282,15 @@ static int exynos_drm_bind(struct device *dev)
 
 	/* init kms poll for handling hpd */
 	drm_kms_helper_poll_init(drm);
+
+	/*
+	 * Take over from a framebuffer the bootloader left on the display,
+	 * such as simple-framebuffer. The components have bound, so the
+	 * devices that drive the display hold what it needs.
+	 */
+	ret = aperture_remove_all_conflicting_devices(exynos_drm_driver.name);
+	if (ret)
+		goto err_cleanup_poll;
 
 	/* register the DRM device */
 	ret = drm_dev_register(drm, 0);
