@@ -43,6 +43,7 @@ properties:
       - items:
           - enum:
               - allwinner,sun55i-a523-mali
+              - google,gs101-mali
               - mediatek,mt8188-mali
               - mediatek,mt8192-mali
               - mediatek,mt8370-mali

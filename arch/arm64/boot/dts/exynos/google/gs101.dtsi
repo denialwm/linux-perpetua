@@ -480,6 +480,30 @@
 		};
 	};
 
+	/*
+	 * Shader (G3D) rates of the vendor gpu_dvfs_table_v1, capped at
+	 * 572 MHz. The ACPM firmware sets the GPU voltages for each rate.
+	 */
+	gpu_opp_table: opp-table-gpu {
+		compatible = "operating-points-v2";
+
+		opp-151000000 {
+			opp-hz = /bits/ 64 <151000000>;
+		};
+
+		opp-302000000 {
+			opp-hz = /bits/ 64 <302000000>;
+		};
+
+		opp-455000000 {
+			opp-hz = /bits/ 64 <455000000>;
+		};
+
+		opp-572000000 {
+			opp-hz = /bits/ 64 <572000000>;
+		};
+	};
+
 	/* ect node is required to be present by bootloader */
 	ect {
 	};
@@ -1984,6 +2008,21 @@
 					remote-endpoint = <&dsim0_in>;
 				};
 			};
+		};
+
+		gpu: gpu@1c500000 {
+			compatible = "google,gs101-mali", "arm,mali-valhall-jm";
+			reg = <0x1c500000 0x5000>;
+			interrupts = <GIC_SPI 420 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 421 IRQ_TYPE_LEVEL_HIGH 0>,
+				     <GIC_SPI 419 IRQ_TYPE_LEVEL_HIGH 0>;
+			interrupt-names = "job", "mmu", "gpu";
+			clocks = <&acpm_ipc GS101_CLK_ACPM_DVFS_G3D>,
+				 <&acpm_ipc GS101_CLK_ACPM_DVFS_G3DL2>;
+			clock-names = "core", "bus";
+			operating-points-v2 = <&gpu_opp_table>;
+			#cooling-cells = <2>;
+			status = "disabled";
 		};
 
 		cmu_top: clock-controller@1e080000 {
