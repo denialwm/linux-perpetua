@@ -91,11 +91,18 @@ devices/boot holds one tool per boot chain that writes the images:
                   Usage: TEMPLATE IMAGE RAMDISK OUTPUT [EVIDENCE].
 
 
-  android-v2    Android header version 2, as on Samsung's Galaxy Tab S7 FE:
-                a raw kernel and a ramdisk, with the template's DTB, signer
-                trailer and AVB footer kept. The kept vbmeta no longer
-                matches, so it boots only on an unlocked bootloader.
-                Usage: TEMPLATE IMAGE RAMDISK OUTPUT [EVIDENCE].
+  android-v2    Android header version 2: the kernel, ramdisk and one DTB,
+                page aligned, for devices that keep the ramdisk in the boot
+                partition. Keeps the template's header, addresses, command
+                line, signer trailer and unsigned AVB. An LZ4-frame template
+                kernel is recompressed with the template's settings and its
+                arm64 text_offset adopts the template's; a raw arm64 Image
+                is used as it is. The template's DTB is kept unless --dtb
+                names a replacement. --tail writes a filesystem image after
+                the DTB, for the modules and firmware the kernel mounts from
+                the boot partition.
+                Usage: TEMPLATE IMAGE RAMDISK OUTPUT [--dtb DTB] [--tail FILE]
+                       [--append-cmdline WORDS] [--evidence DIR] [EVIDENCE].
 
 
   mediatek-lk   MediaTek's LK bootloader with Android 13 and later: a
