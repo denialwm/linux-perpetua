@@ -1,0 +1,92 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Google Pixel 5a (barbet)
+ *
+ * Copyright (c) 2026, Bronson Mathews <bronsonmathews@gmail.com>
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include "sm7250.dtsi"
+
+/ {
+	model = "Google Pixel 5a";
+	compatible = "google,barbet", "qcom,sm7250";
+
+	aliases {
+		serial0 = &debug_uart;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	/* The bootloader supplies the RAM size. */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0 0x80000000 0 0>;
+	};
+
+	reserved-memory {
+		cont_splash_mem: cont-splash@a0000000 {
+			reg = <0 0xa0000000 0 0x2300000>;
+			no-map;
+		};
+
+		dfps_data_mem: dfps-data@a2300000 {
+			reg = <0 0xa2300000 0 0x100000>;
+			no-map;
+		};
+
+		reserved_pil_mem: reserved-pil@8bc17400 {
+			reg = <0 0x8bc17400 0 0x3e8c00>;
+			no-map;
+		};
+	};
+};
+
+/* Barbet's firmware carveouts differ from the generic SM7250 memory map. */
+&ipa_gsi_mem {
+	reg = <0 0x8bc10000 0 0x5400>;
+};
+
+/delete-node/ &gpu_mem;
+
+&reserved_memory {
+	gpu_mem: gpu@8bc15400 {
+		reg = <0 0x8bc15400 0 0x2000>;
+		no-map;
+	};
+};
+
+&modem_wlan_mem {
+	reg = <0 0x8c000000 0 0x11800000>;
+};
+
+&qupv3_id_0 {
+	status = "okay";
+
+	debug_uart: serial@888000 {
+		compatible = "qcom,geni-debug-uart";
+		reg = <0 0x888000 0 0x4000>;
+		clock-names = "se";
+		clocks = <&gcc GCC_QUPV3_WRAP0_S2_CLK>;
+		interrupts = <GIC_SPI 603 IRQ_TYPE_LEVEL_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&qup_uart2_default>;
+		status = "okay";
+	};
+};
+
+&tlmm {
+	/* Secure-world peripherals: do not read their pin configuration. */
+	gpio-reserved-ranges = <0 4>, <59 4>;
+
+	qup_uart2_default: qup-uart2-default-state {
+		pins = "gpio36", "gpio37";
+		function = "qup02";
+		drive-strength = <2>;
+		bias-disable;
+	};
+};
