@@ -8,6 +8,8 @@
 
 #include <dt-bindings/clock/qcom,rpmh.h>
 #include <dt-bindings/clock/qcom,sm7250-gcc.h>
+#include <dt-bindings/interconnect/qcom,icc.h>
+#include <dt-bindings/interconnect/qcom,sm7250-rpmh.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/power/qcom,rpmhpd.h>
 #include <dt-bindings/soc/qcom,rpmh-rsc.h>
@@ -557,6 +559,80 @@
 			};
 		};
 
+		config_noc: interconnect@1500000 {
+			compatible = "qcom,sm7250-config-noc";
+			reg = <0x0 0x01500000 0x0 0x28000>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+		};
+
+		system_noc: interconnect@1620000 {
+			compatible = "qcom,sm7250-system-noc";
+			reg = <0x0 0x01620000 0x0 0x19200>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+
+			qup_virt: interconnect-qup-virt {
+				compatible = "qcom,sm7250-qup-virt";
+				#interconnect-cells = <2>;
+				qcom,bcm-voters = <&apps_bcm_voter>;
+			};
+		};
+
+		aggre1_noc: interconnect@16e0000 {
+			compatible = "qcom,sm7250-aggre1-noc";
+			reg = <0x0 0x016e0000 0x0 0x15080>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+		};
+
+		aggre2_noc: interconnect@1700000 {
+			compatible = "qcom,sm7250-aggre2-noc";
+			reg = <0x0 0x01700000 0x0 0x23080>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+
+			compute_noc: interconnect-compute-noc {
+				compatible = "qcom,sm7250-compute-noc";
+				#interconnect-cells = <2>;
+				qcom,bcm-voters = <&apps_bcm_voter>;
+			};
+		};
+
+		mmss_noc: interconnect@1740000 {
+			compatible = "qcom,sm7250-mmss-noc";
+			reg = <0x0 0x01740000 0x0 0x1c100>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+		};
+
+		dc_noc: interconnect@9160000 {
+			compatible = "qcom,sm7250-dc-noc";
+			reg = <0x0 0x09160000 0x0 0x3200>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+		};
+
+		gem_noc: interconnect@9680000 {
+			compatible = "qcom,sm7250-gem-noc";
+			reg = <0x0 0x09680000 0x0 0x3e200>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+
+			mc_virt: interconnect-mc-virt {
+				compatible = "qcom,sm7250-mc-virt";
+				#interconnect-cells = <2>;
+				qcom,bcm-voters = <&apps_bcm_voter>;
+			};
+		};
+
+		npu_noc: interconnect@9990000 {
+			compatible = "qcom,sm7250-npu-noc";
+			reg = <0x0 0x09990000 0x0 0x1600>;
+			#interconnect-cells = <2>;
+			qcom,bcm-voters = <&apps_bcm_voter>;
+		};
+
 		tcsr_mutex: hwlock@1f40000 {
 			compatible = "qcom,tcsr-mutex";
 			reg = <0x0 0x01f40000 0x0 0x40000>;
@@ -731,6 +807,11 @@
 
 			power-domains = <&gcc USB30_PRIM_GDSC>;
 			resets = <&gcc GCC_USB30_PRIM_BCR>;
+			interconnects = <&aggre1_noc MASTER_USB3 QCOM_ICC_TAG_ALWAYS
+					 &mc_virt SLAVE_EBI_CH0 QCOM_ICC_TAG_ALWAYS>,
+					<&gem_noc MASTER_AMPSS_M0 QCOM_ICC_TAG_ACTIVE_ONLY
+					 &config_noc SLAVE_USB3 QCOM_ICC_TAG_ACTIVE_ONLY>;
+			interconnect-names = "usb-ddr", "apps-usb";
 			wakeup-source;
 
 			/* No super-speed PHY described yet: run the controller HS-only */
@@ -794,6 +875,12 @@
 				 <&gcc GCC_UFS_PHY_RX_SYMBOL_1_CLK>;
 
 			operating-points-v2 = <&ufs_opp_table>;
+
+			interconnects = <&aggre1_noc MASTER_UFS_MEM QCOM_ICC_TAG_ALWAYS
+					 &mc_virt SLAVE_EBI_CH0 QCOM_ICC_TAG_ALWAYS>,
+					<&gem_noc MASTER_AMPSS_M0 QCOM_ICC_TAG_ACTIVE_ONLY
+					 &config_noc SLAVE_UFS_MEM_CFG QCOM_ICC_TAG_ACTIVE_ONLY>;
+			interconnect-names = "ufs-ddr", "cpu-ufs";
 
 			status = "disabled";
 
