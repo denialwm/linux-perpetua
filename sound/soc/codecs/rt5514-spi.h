@@ -34,4 +34,14 @@ enum {
 int rt5514_spi_burst_read(unsigned int addr, u8 *rxbuf, size_t len);
 int rt5514_spi_burst_write(u32 addr, const u8 *txbuf, size_t len);
 
+
+/* Vendor additions used by the ported RT5514P codec driver. */
+#define RT5514_DSP_WOV_TYPE		0x18002fac
+#define RT5514_DSP_FUNC			0x18002fb0
+
+#define SPI_SWITCH_MASK_LOAD		(1 << 2)
+#define SPI_SWITCH_MASK_RESET		(1 << 4)
+
+void rt5514_spi_request_switch(u32 mask, bool is_require);
+
 #endif /* __RT5514_SPI_H__ */
