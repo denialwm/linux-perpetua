@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/samsung/google,gs101-dpp.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Google gs101 Display Pre-Processor (DPP)
+
+maintainers:
+  - Noswad <64293615+TheNoswad@users.noreply.github.com>
+
+description: |
+  A DPP channel of the gs101 Display Processing Unit fetches one image
+  layer from memory (its DMA bank), converts it (its DPP bank) and feeds a
+  window of a DECON. gs101 has six channels, L0 to L5.
+
+properties:
+  compatible:
+    const: google,gs101-dpp
+
+  reg:
+    items:
+      - description: DMA (fetch) bank
+      - description: DPP (processing) bank
+
+  reg-names:
+    items:
+      - const: dma
+      - const: dpp
+
+  interrupts:
+    items:
+      - description: DMA interrupt
+      - description: DPP interrupt
+
+  interrupt-names:
+    items:
+      - const: dma
+      - const: dpp
+
+  clocks:
+    items:
+      - description: DPU APB clock
+      - description: DPU peripheral bus clock
+      - description: DPU fetch DMA clock
+      - description: DPU pixel pipeline clock
+
+  clock-names:
+    items:
+      - const: pclk
+      - const: busp
+      - const: aclk_dma
+      - const: aclk_dpp
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - interrupt-names
+  - clocks
+  - clock-names
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/google,gs101.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    dpp@1c0b0000 {
+        compatible = "google,gs101-dpp";
+        reg = <0x1c0b0000 0x1000>, <0x1c0d0000 0x1000>;
+        reg-names = "dma", "dpp";
+        interrupts = <GIC_SPI 354 IRQ_TYPE_LEVEL_HIGH>,
+                     <GIC_SPI 361 IRQ_TYPE_LEVEL_HIGH>;
+        interrupt-names = "dma", "dpp";
+        clocks = <&cmu_dpu CLK_GOUT_DPU_PCLK>,
+                 <&cmu_dpu CLK_GOUT_DPU_CLK_DPU_BUSP_CLK>,
+                 <&cmu_dpu CLK_GOUT_DPU_DPUF_ACLK_DMA>,
+                 <&cmu_dpu CLK_GOUT_DPU_DPUF_ACLK_DPP>;
+        clock-names = "pclk", "busp", "aclk_dma", "aclk_dpp";
+    };
