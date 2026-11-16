@@ -19,8 +19,12 @@
 		/*
 		 * A panic reboots, so an unattended phone comes back. bootconfig:
 		 * the bootloader's androidboot properties, the slot among them.
+		 * console=tty0: the bootloader leaves the UART of stdout-path
+		 * unconfigured and passes console=null, which these arguments
+		 * replace; as a console at its 9600 baud default, the UART held
+		 * the boot for the replay of the log.
 		 */
-		bootargs = "rdinit=/init panic=10 loglevel=7 log_buf_len=2M bootconfig";
+		bootargs = "rdinit=/init panic=10 loglevel=7 log_buf_len=2M bootconfig console=tty0";
 
 		/*
 		 * The bootloader rewrites the root compatible of the vendor_boot
