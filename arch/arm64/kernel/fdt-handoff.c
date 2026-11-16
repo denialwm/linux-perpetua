@@ -39,7 +39,8 @@ struct fdt_handoff_work {
 	struct fdt_handoff_range nomap[FDT_HANDOFF_MAX_RANGES];
 	struct fdt_handoff_range own[FDT_HANDOFF_MAX_RANGES];
 	int nr_ram, nr_reserved, nr_nomap, nr_own;
-	fdt64_t memory_reg[FDT_HANDOFF_MAX_RANGES * 2];
+	/* Two cells each for address and size; one-cell sizes may split. */
+	fdt32_t memory_reg[FDT_HANDOFF_MAX_RANGES * 8];
 };
 
 /* Walks every node and property once, so later lookups cannot run off. */
@@ -437,14 +438,37 @@ static int __init fdt_handoff_read_memory(const void *stock,
 	return work->nr_ram ? 0 : -FDT_ERR_BADVALUE;
 }
 
+/* Stores VALUE in COUNT cells at CELLS, or fails when it does not fit. */
+static int __init fdt_handoff_put_cells(fdt32_t *cells, int count, u64 value)
+{
+	if (count == 1 && value >> 32)
+		return -FDT_ERR_BADNCELLS;
+	if (count == 2)
+		*cells++ = cpu_to_fdt32(value >> 32);
+	*cells = cpu_to_fdt32(value);
+	return 0;
+}
+
+/*
+ * The largest part of a range that one entry holds: a range does not fit
+ * one size cell when it reaches 4 GiB, so it takes several entries.
+ */
+#define FDT_HANDOFF_ONE_CELL_PART	(1ULL << 31)
+
 /* Replaces the memory of OUTPUT and adds the stock reservations to it. */
 static int __init fdt_handoff_write_memory(void *output, const void *stock,
 					   struct fdt_handoff_work *work)
 {
-	int ret, node;
+	int address_cells = fdt_address_cells(output, 0);
+	int size_cells = fdt_size_cells(output, 0);
+	int ret, node, used = 0;
 
-	/* The built-in tree describes its memory with a single node. */
-	if (fdt_address_cells(output, 0) != 2 || fdt_size_cells(output, 0) != 2)
+	/*
+	 * The built-in tree describes its memory with a single node, in the
+	 * cells of its own root.
+	 */
+	if (address_cells < 1 || address_cells > 2 || size_cells < 1 ||
+	    size_cells > 2)
 		return -FDT_ERR_BADNCELLS;
 	fdt_for_each_subnode(node, output, 0)
 		if (fdt_handoff_is_memory(output, node))
@@ -452,12 +476,32 @@ static int __init fdt_handoff_write_memory(void *output, const void *stock,
 	if (node < 0)
 		return node;
 	for (int i = 0; i < work->nr_ram; i++) {
-		work->memory_reg[i * 2] = cpu_to_fdt64(work->ram[i].start);
-		work->memory_reg[i * 2 + 1] =
-			cpu_to_fdt64(work->ram[i].end - work->ram[i].start);
+		u64 start = work->ram[i].start;
+		u64 size = work->ram[i].end - start;
+
+		while (size) {
+			u64 part = size_cells == 1 && size > FDT_HANDOFF_ONE_CELL_PART ?
+				   FDT_HANDOFF_ONE_CELL_PART : size;
+
+			if (used + address_cells + size_cells >
+			    (int)ARRAY_SIZE(work->memory_reg))
+				return -FDT_ERR_NOSPACE;
+			ret = fdt_handoff_put_cells(work->memory_reg + used,
+						    address_cells, start);
+			if (ret)
+				return ret;
+			used += address_cells;
+			ret = fdt_handoff_put_cells(work->memory_reg + used,
+						    size_cells, part);
+			if (ret)
+				return ret;
+			used += size_cells;
+			start += part;
+			size -= part;
+		}
 	}
 	ret = fdt_setprop(output, node, "reg", work->memory_reg,
-			  work->nr_ram * 16);
+			  used * sizeof(fdt32_t));
 	if (ret)
 		return ret;
 
