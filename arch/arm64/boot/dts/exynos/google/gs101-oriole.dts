@@ -63,9 +63,16 @@
 			};
 
 			ldo31m {
+				/*
+				 * Also the panel's VDDI (L31M_DISP_VDDI). The
+				 * bootloader leaves the panel running from it,
+				 * and nothing brings the panel back up once it
+				 * goes off.
+				 */
 				regulator-name = "nfc";
 				regulator-min-microvolt = <1600000>;
 				regulator-max-microvolt = <1950000>;
+				regulator-always-on;
 			};
 		};
 	};
