@@ -1065,6 +1065,7 @@ config DRM_PANEL_SAMSUNG_S6E3FC3
 	depends on GPIOLIB
 	depends on OF
 	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
 	help
 	  Say Y or M here if you want to enable support for the
 	  Samsung S6E3FC3 DDIC and the 1080x2400 AMOLED panel it drives
