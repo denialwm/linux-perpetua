@@ -14,6 +14,7 @@
 
 #define AFE_MAX_CHAN_COUNT	8
 #define AFE_PORT_MAX_AUDIO_CHAN_CNT	0x8
+#define AFE_PORT_MAX_AUDIO_CHAN_CNT_V2	0x20
 
 #define Q6AFE_LPASS_CLK_SRC_INTERNAL 1
 #define Q6AFE_LPASS_CLK_ROOT_DEFAULT 0
@@ -189,6 +190,9 @@ struct q6afe_tdm_cfg {
 	u16	data_format;
 	u16	sync_mode;
 	u16	sync_src;
+	u16	data_out_enable;
+	u16	invert_sync;
+	u16	sync_data_delay;
 	u16	nslots_per_frame;
 	u16	slot_width;
 	u16	slot_mask;
