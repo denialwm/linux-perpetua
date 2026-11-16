@@ -253,6 +253,7 @@ struct qca_serdev {
 	u32 init_speed;
 	u32 oper_speed;
 	bool bdaddr_property_broken;
+	bool disable_ibs;
 	bool support_hfp_hw_offload;
 	const char *firmware_name[2];
 };
@@ -2245,6 +2246,8 @@ retry:
 			qca_pad4_read_peri_version(hu);
 		}
 		clear_bit(QCA_IBS_DISABLED, &qca->flags);
+		if (qcadev && qcadev->disable_ibs)
+			set_bit(QCA_IBS_DISABLED, &qca->flags);
 		qca_debugfs_init(hdev);
 		hu->hdev->hw_error = qca_hw_error;
 		hu->hdev->reset = qca_reset;
@@ -2646,6 +2649,8 @@ static int qca_serdev_probe(struct serdev_device *serdev)
 
 	qcadev->bdaddr_property_broken = device_property_read_bool(&serdev->dev,
 			"qcom,local-bd-address-broken");
+	qcadev->disable_ibs = device_property_read_bool(&serdev->dev,
+			"qcom,disable-ibs");
 
 	if (data)
 		qcadev->btsoc_type = data->soc_type;
@@ -2894,6 +2899,14 @@ static int __maybe_unused qca_suspend(struct device *dev)
 	unsigned long wait_timeout = 0;
 
 	set_bit(QCA_SUSPENDING, &qca->flags);
+
+	/*
+	 * IBS is disabled for the whole session on some boards, so
+	 * QCA_IBS_DISABLED never clears and there is no sleep handshake to
+	 * make. The controller stays awake across the system suspend.
+	 */
+	if (qcadev->disable_ibs)
+		return 0;
 
 	/* if BT SoC is running with default firmware then it does not
 	 * support in-band sleep
