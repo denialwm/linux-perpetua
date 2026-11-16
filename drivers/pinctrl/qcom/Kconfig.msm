@@ -507,6 +507,18 @@ config PINCTRL_SM7150
 	 Qualcomm Technologies Inc TLMM block found on the Qualcomm
 	 Technologies Inc SM7150 platform.
 
+config PINCTRL_SM7250
+	tristate "Qualcomm SM7250 pin controller driver"
+	depends on ARM64 || COMPILE_TEST
+	default ARCH_QCOM
+	help
+	  This is the pinctrl, pinmux, pinconf and gpiolib driver for the
+	  Qualcomm Technologies Inc TLMM block found on the Qualcomm
+	  Technologies Inc SM7250 platform.
+
+	  Say Y or M here to use the GPIOs, pin muxing, pin configuration
+	  and interrupt functions provided by this pin controller.
+
 config PINCTRL_MILOS
 	tristate "Qualcomm Milos pin controller driver"
 	depends on ARM64 || COMPILE_TEST
