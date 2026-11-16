@@ -633,6 +633,10 @@
 	clock-frequency = <200000000>;
 };
 
+&gpu {
+	status = "okay";
+};
+
 &hsi2c_8 {
 	status = "okay";
 
