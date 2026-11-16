@@ -497,6 +497,7 @@ static struct rpmhpd *sm7250_rpmhpds[] = {
 	[RPMHPD_MSS] = &mss,
 	[RPMHPD_MX] = &mx,
 	[RPMHPD_MX_AO] = &mx_ao,
+	[RPMHPD_QPHY] = &qphy,
 };
 
 static const struct rpmhpd_desc sm7250_desc = {
