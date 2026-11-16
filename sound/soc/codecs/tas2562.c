@@ -435,11 +435,11 @@ static int tas2562_update_pwr_ctrl(struct tas2562_data *tas2562)
 	else
 		val = TAS2562_MUTE;
 
-	dev_info(tas2562->dev, "pwr: dac=%d unmuted=%d val=%u\n",
-		 tas2562->dac_powered, tas2562->unmuted, val);
+	dev_dbg(tas2562->dev, "pwr: dac=%d unmuted=%d val=%u\n",
+		tas2562->dac_powered, tas2562->unmuted, val);
 	ret = snd_soc_component_update_bits(component, TAS2562_PWR_CTRL,
 					    TAS2562_MODE_MASK, val);
-	dev_info(tas2562->dev, "pwr: update_bits ret=%d\n", ret);
+	dev_dbg(tas2562->dev, "pwr: update_bits ret=%d\n", ret);
 	if (ret < 0)
 		return ret;
 
@@ -453,8 +453,8 @@ static int tas2562_mute(struct snd_soc_dai *dai, int mute, int direction)
 	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(dai->component);
 	int ret;
 
-	dev_info(tas2562->dev, "mute: mute=%d dac=%d\n", mute,
-		 tas2562->dac_powered);
+	dev_dbg(tas2562->dev, "mute: mute=%d dac=%d\n", mute,
+		tas2562->dac_powered);
 	tas2562->unmuted = !mute;
 	if (mute)
 		return tas2562_update_pwr_ctrl(tas2562);
@@ -534,8 +534,8 @@ static int tas2562_dac_event(struct snd_soc_dapm_widget *w,
 	struct tas2562_data *tas2562 = snd_soc_component_get_drvdata(component);
 	int ret = 0;
 
-	dev_info(tas2562->dev, "dac event=%d dac=%d\n", event,
-		 tas2562->dac_powered);
+	dev_dbg(tas2562->dev, "dac event=%d dac=%d\n", event,
+		tas2562->dac_powered);
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
 		tas2562->dac_powered = true;
