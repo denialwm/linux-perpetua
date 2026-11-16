@@ -2922,7 +2922,7 @@ static int rt5514_i2c_probe(struct i2c_client *i2c)
 	}
 
 	rt5514_hs_gpiod = devm_gpiod_get_optional(&i2c->dev, "handshake",
-						  GPIOD_OUT_LOW);
+						  GPIOD_OUT_HIGH);
 
 	rt5514->gpiod_reset = devm_gpiod_get_optional(&i2c->dev, "reset",
 							GPIOD_OUT_HIGH);
@@ -2930,6 +2930,14 @@ static int rt5514_i2c_probe(struct i2c_client *i2c)
 		ret = PTR_ERR(rt5514->gpiod_reset);
 		dev_err(&i2c->dev, "Failed to initialize gpiod: %d\n", ret);
 		return ret;
+	}
+
+	/* The codec needs a reset pulse before its I2C ID is readable. */
+	if (rt5514->gpiod_reset) {
+		gpiod_set_value_cansleep(rt5514->gpiod_reset, 0);
+		msleep(20);
+		gpiod_set_value_cansleep(rt5514->gpiod_reset, 1);
+		msleep(20);
 	}
 
 	/*
