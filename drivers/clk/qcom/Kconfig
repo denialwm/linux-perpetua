@@ -1543,6 +1543,16 @@ config SM_DISPCC_7150
 	  Say Y if you want to support display devices and functionality such as
 	  splash screen.
 
+config SM_DISPCC_7250
+	tristate "SM7250 Display Clock Controller"
+	depends on ARM64 || COMPILE_TEST
+	depends on SM_GCC_7250
+	help
+	  Support for the display clock controller on Qualcomm Technologies, Inc
+	  SM7250 devices.
+	  Say Y if you want to support display devices and functionality such as
+	  splash screen.
+
 config SM_DISPCC_8250
 	tristate "SM8150/SM8250/SM8350 Display Clock Controller"
 	depends on ARM64 || COMPILE_TEST
@@ -1839,6 +1849,15 @@ config SM_GPUCC_8150
 	default m if ARCH_QCOM
 	help
 	  Support for the graphics clock controller on SM8150 devices.
+	  Say Y if you want to support graphics controller devices and
+	  functionality such as 3D graphics.
+
+config SM_GPUCC_7250
+	tristate "SM7250 Graphics Clock Controller"
+	depends on ARM64 || COMPILE_TEST
+	depends on SM_GCC_7250
+	help
+	  Support for the graphics clock controller on SM7250 devices.
 	  Say Y if you want to support graphics controller devices and
 	  functionality such as 3D graphics.
 
