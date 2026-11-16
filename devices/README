@@ -95,6 +95,15 @@ devices/boot holds one tool per boot chain that writes the images:
                 [EVIDENCE].
 
 
+  android12-gki  The GKI layout of devices launched with Android 12, which
+                 have no init_boot: the boot image carries the kernel, as
+                 legacy LZ4, and the ramdisk of the boot userspace, which the
+                 bootloader loads after the vendor_boot ramdisks. It writes
+                 from the device's own stock boot image, keeping its header
+                 and AVB properties. Usage: TEMPLATE IMAGE RAMDISK OUTPUT
+                 [EVIDENCE].
+
+
 Checks
 ------
 
