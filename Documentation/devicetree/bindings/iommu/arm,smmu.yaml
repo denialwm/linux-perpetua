@@ -445,6 +445,7 @@ allOf:
               - qcom,sc8180x-smmu-500
               - qcom,sm6350-smmu-v2
               - qcom,sm7150-smmu-v2
+              - qcom,sm7250-smmu-500
               - qcom,sm8150-smmu-500
               - qcom,sm8250-smmu-500
     then:
@@ -613,7 +614,6 @@ allOf:
               - qcom,sdx75-smmu-500
               - qcom,sm6350-smmu-500
               - qcom,sm6375-smmu-500
-              - qcom,sm7250-smmu-500
     then:
       properties:
         clock-names: false
