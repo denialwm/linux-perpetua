@@ -29,4 +29,10 @@ properties:
       in-band-sleep protocol is enabled. Send commands without the IBS
       wake/sleep handshake.
 
+  qcom,use-firmware-bdaddr:
+    type: boolean
+    description:
+      The controller reports a usable public address. Keep that address
+      instead of taking one from local-bd-address.
+
 additionalProperties: true
