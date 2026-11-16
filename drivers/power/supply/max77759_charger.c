@@ -26,6 +26,8 @@
 /* Default values for Fast Charge Current & Float Voltage */
 #define CHG_CC_DEFAULT_UA			2266770
 #define CHG_FV_DEFAULT_MV			4300
+/* USB 2.0 configured-device current, for a Default-USB-power source */
+#define CHGIN_ILIM_USB_DEFAULT_UA		500000
 
 #define MAX_NUM_RETRIES				3
 #define PSY_WORK_RETRY_DELAY_MS			10
@@ -616,6 +618,17 @@ static void psy_work_item(struct work_struct *work)
 			ret);
 		goto err;
 	}
+
+	/*
+	 * TCPM reports no current limit for a Default-USB-power source (a
+	 * PC port or a USB-A charger) when the TCPC cannot detect BC1.2
+	 * chargers. Draw the USB 2.0 configured-device current from it
+	 * rather than leaving the buck off. Whether the gadget is configured
+	 * is not known here: a port strict about the 100 mA allowed before
+	 * that may cut its power.
+	 */
+	if (online.intval && !current_limit.intval)
+		current_limit.intval = CHGIN_ILIM_USB_DEFAULT_UA;
 
 	if (online.intval && current_limit.intval) {
 		ret = set_input_current_limit(chg, current_limit.intval);
