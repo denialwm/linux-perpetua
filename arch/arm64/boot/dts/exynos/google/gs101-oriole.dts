@@ -51,3 +51,18 @@
 
 	status = "okay";
 };
+
+&hsi2c_12 {
+	usb-typec@25 {
+		connector {
+			/*
+			 * The bootloader runs with its serial console off
+			 * (androidboot.serialconsole = "0"): there is no
+			 * console on the port for USB PD to disturb.
+			 */
+			/delete-property/ pd-disable;
+			/delete-property/ typec-power-opmode;
+		};
+	};
+};
+
