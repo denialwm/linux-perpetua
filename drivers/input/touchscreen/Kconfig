@@ -1430,3 +1430,12 @@ config TOUCHSCREEN_HIMAX_HX83112B
 	  module will be called himax_hx83112b.
 
 endif
+
+config TOUCHSCREEN_STFTS_SPI
+	tristate "STMicroelectronics FingerTipS SPI touchscreen"
+	depends on SPI
+	help
+	  Say Y here to enable support for the STMicroelectronics FingerTipS
+	  touchscreen controller connected over SPI, as found in the Google
+	  Pixel 5a (barbet) and other SM7250 phones.
+
