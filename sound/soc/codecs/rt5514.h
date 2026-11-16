@@ -378,4 +378,7 @@ enum {
 #define RT5514_SPI_SWITCH_GPIO		0
 #define ZEOR_LATENCY_BUFFER_MS		20
 
+int rt5514_set_gpio(int gpio, bool output);
+void rt5514_spi_bus_switch(bool host);
+
 #endif /* __RT5514_H__ */

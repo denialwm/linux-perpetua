@@ -31,8 +31,7 @@
 #include <sound/tlv.h>
 
 #include "rt5514-spi.h"
-
-extern void rt5514_spi_bus_switch(bool host);
+#include "rt5514.h"
 
 #define DRV_NAME "rt5514-spi"
 
