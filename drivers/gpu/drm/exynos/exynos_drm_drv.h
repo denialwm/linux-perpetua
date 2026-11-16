@@ -262,4 +262,5 @@ extern struct platform_driver gsc_driver;
 extern struct platform_driver mic_driver;
 extern struct platform_driver gs101_dpp_driver;
 extern struct platform_driver gs101_decon_driver;
+extern struct platform_driver gs101_dsi_driver;
 #endif

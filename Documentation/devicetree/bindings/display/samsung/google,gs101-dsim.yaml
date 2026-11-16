@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/samsung/google,gs101-dsim.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Google gs101 MIPI DSI host (DSIM)
+
+maintainers:
+  - Noswad <64293615+TheNoswad@users.noreply.github.com>
+
+description: |
+  The DSIM of the gs101 Display Processing Unit is the MIPI DSI host that
+  carries DECON's output and the DCS commands to a panel. Its D-PHY is a
+  separate block.
+
+allOf:
+  - $ref: /schemas/display/dsi-controller.yaml#
+
+properties:
+  compatible:
+    const: google,gs101-dsim
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    items:
+      - description: DPU APB clock
+      - description: DPU peripheral bus clock
+
+  clock-names:
+    items:
+      - const: pclk
+      - const: busp
+
+  port:
+    $ref: /schemas/graph.yaml#/properties/port
+    description: Input from DECON.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - clock-names
+  - port
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/google,gs101.h>
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    dsi@1c2c0000 {
+        compatible = "google,gs101-dsim";
+        reg = <0x1c2c0000 0x300>;
+        interrupts = <GIC_SPI 345 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&cmu_dpu CLK_GOUT_DPU_PCLK>,
+                 <&cmu_dpu CLK_GOUT_DPU_CLK_DPU_BUSP_CLK>;
+        clock-names = "pclk", "busp";
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        port {
+            dsim0_in: endpoint {
+                remote-endpoint = <&decon0_out>;
+            };
+        };
+
+        panel@0 {
+            compatible = "samsung,s6e3fc3";
+            reg = <0>;
+            reset-gpios = <&gpp24 1 GPIO_ACTIVE_LOW>;
+            vci-supply = <&vci_disp>;
+            vddi-supply = <&vddi_disp>;
+        };
+    };

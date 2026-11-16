@@ -5,7 +5,7 @@ config DRM_EXYNOS
 	depends on ARCH_S3C64XX || ARCH_S5PV210 || ARCH_EXYNOS || COMPILE_TEST
 	depends on MMU
 	select DRM_CLIENT_SELECTION
-	select DRM_DISPLAY_HELPER if DRM_EXYNOS_DP
+	select DRM_DISPLAY_HELPER if DRM_EXYNOS_DP || DRM_EXYNOS_GS101
 	select DRM_KMS_HELPER
 	select VIDEOMODE_HELPERS
 	select FB_DMAMEM_HELPERS if DRM_FBDEV_EMULATION
@@ -37,13 +37,18 @@ config DRM_EXYNOS7_DECON
 	  Choose this option if you want to use Exynos DECON for DRM.
 
 config DRM_EXYNOS_GS101
-	bool "Google gs101 display: DECON and DPP"
+	bool "Google gs101 display: DECON, DPP and DSI host"
+	select DRM_BRIDGE_CONNECTOR
+	select DRM_MIPI_DSI
+	select DRM_PANEL
+	select DRM_PANEL_BRIDGE
 	help
 	  Choose this option if you want to use the display of the Google
 	  gs101 (Tensor G1) SoC, as found in the Pixel 6, for DRM. This
-	  adds the DECON display controller and the DPP layer channels.
-	  They take over the display pipeline that the bootloader leaves
-	  running; they do not initialise it from reset.
+	  adds the DECON display controller, the DPP layer channels and
+	  the DSIM MIPI DSI host. They take over the display pipeline,
+	  panel link included, that the bootloader leaves running; they
+	  do not initialise it from reset.
 
 config DRM_EXYNOS_MIXER
 	bool "Mixer"
