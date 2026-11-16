@@ -22,4 +22,11 @@ properties:
     description:
       boot firmware is incorrectly passing the address in big-endian order
 
+  qcom,disable-ibs:
+    type: boolean
+    description:
+      The controller does not answer standard HCI commands while the QCA
+      in-band-sleep protocol is enabled. Send commands without the IBS
+      wake/sleep handshake.
+
 additionalProperties: true
