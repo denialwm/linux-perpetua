@@ -405,8 +405,11 @@ static struct msm_mdss *msm_mdss_init(struct platform_device *pdev, bool is_mdp5
 	 * them: a reset here stopped the bootloader's scanout, and the panel
 	 * kept its last frame, the boot log, in the rescue too, which never
 	 * starts msm. The reset waits for msm to take the display over.
+	 * SM8750's reset here stopped the bootloader's video stream and its
+	 * PLLs before the DSI hosts could take it over.
 	 */
-	bool late_reset = of_device_is_compatible(pdev->dev.of_node, "qcom,kaanapali-mdss");
+	bool late_reset = of_device_is_compatible(pdev->dev.of_node, "qcom,kaanapali-mdss") ||
+			  of_device_is_compatible(pdev->dev.of_node, "qcom,sm8750-mdss");
 	int ret;
 	int irq;
 

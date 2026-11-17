@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/leds/backlight/kinetic,ktz8868.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Kinetic Technologies KTZ8868 backlight pair
+
+maintainers:
+  - Travis Geisinger <travis@geisinger.dev>
+
+description: |
+  The Kinetic Technologies KTZ8868 is an LED backlight driver with an 11-bit
+  brightness and a dual LCD bias supply. The OnePlus Pad 3 lights its panel
+  with two of them, on two I2C buses, that take the same settings: the
+  primary one, kinetic,ktz8868a, which also feeds the LCD bias, and the
+  secondary one, kinetic,ktz8868b. The primary one is the backlight device.
+
+allOf:
+  - $ref: common.yaml#
+
+properties:
+  compatible:
+    enum:
+      - kinetic,ktz8868a
+      - kinetic,ktz8868b
+
+  reg:
+    maxItems: 1
+
+  enable-gpios:
+    description: GPIO to the HWEN pin of the primary chip
+    maxItems: 1
+
+  vin-supply:
+    description: Supply of the boost converters
+
+  vddio-supply:
+    description: Supply of the I2C interface
+
+  pinctrl-0: true
+  pinctrl-1: true
+  pinctrl-names:
+    items:
+      - const: default
+      - const: sleep
+
+required:
+  - compatible
+  - reg
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        backlight@11 {
+            compatible = "kinetic,ktz8868a";
+            reg = <0x11>;
+            enable-gpios = <&tlmm 15 GPIO_ACTIVE_HIGH>;
+        };
+    };
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        backlight@11 {
+            compatible = "kinetic,ktz8868b";
+            reg = <0x11>;
+        };
+    };
+...

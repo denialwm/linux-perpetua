@@ -49,6 +49,13 @@ properties:
   avee-supply:
     description: Negative LCD bias
 
+  pinctrl-0: true
+  pinctrl-1: true
+  pinctrl-names:
+    items:
+      - const: default
+      - const: sleep
+
   backlight: true
   ports: true
 

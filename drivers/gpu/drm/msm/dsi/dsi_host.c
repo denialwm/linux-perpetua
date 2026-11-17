@@ -2253,6 +2253,18 @@ void msm_dsi_host_drop_boot_stream(struct mipi_dsi_host *host)
  * lines to a frame, and the controller still sending. Anything else restarts
  * the link.
  */
+/*
+ * A bootloader's PLL runs at the rate it computed for the mode, which a mode
+ * clock in kHz may not give to the PLL's last fractional step: the stream
+ * fits when its link clocks are within 1/8192 of the mode's.
+ */
+static bool dsi_boot_clk_fits(struct clk *clk, unsigned long rate)
+{
+	unsigned long running = clk_get_rate(clk);
+
+	return rate && abs_diff(running, rate) <= rate / 8192;
+}
+
 static bool dsi_boot_stream_fits(struct msm_dsi_host *msm_host)
 {
 	u32 ctrl = dsi_read(msm_host, REG_DSI_CTRL);
@@ -2262,8 +2274,8 @@ static bool dsi_boot_stream_fits(struct msm_dsi_host *msm_host)
 	       (ctrl & DSI_CTRL_ENABLE) && (ctrl & DSI_CTRL_VID_MODE_EN) &&
 	       (total & DSI_TOTAL_V_TOTAL__MASK) >> DSI_TOTAL_V_TOTAL__SHIFT ==
 			msm_host->mode->vtotal - 1 &&
-	       clk_get_rate(msm_host->byte_clk) == msm_host->byte_clk_rate &&
-	       clk_get_rate(msm_host->pixel_clk) == msm_host->pixel_clk_rate;
+	       dsi_boot_clk_fits(msm_host->byte_clk, msm_host->byte_clk_rate) &&
+	       dsi_boot_clk_fits(msm_host->pixel_clk, msm_host->pixel_clk_rate);
 }
 
 bool msm_dsi_host_holds_boot_stream(struct mipi_dsi_host *host)
@@ -2305,10 +2317,16 @@ int msm_dsi_host_register(struct mipi_dsi_host *host)
 	if (!msm_host->registered) {
 		host->dev = &msm_host->pdev->dev;
 		host->ops = &dsi_host_ops;
-		ret = mipi_dsi_host_register(host);
-		if (ret)
-			return ret;
+		/*
+		 * Before the registration: it can probe the panel, bind the
+		 * display and power the link on before it returns.
+		 */
 		msm_host->splash = true;
+		ret = mipi_dsi_host_register(host);
+		if (ret) {
+			msm_host->splash = false;
+			return ret;
+		}
 
 		msm_host->registered = true;
 	}
@@ -2596,6 +2614,16 @@ void msm_dsi_host_get_phy_clk_req(struct mipi_dsi_host *host,
 		host->boot_stream = dsi_boot_stream_fits(msm_host);
 		if (!host->boot_stream)
 			msm_dsi_host_drop_boot_stream(host);
+	}
+	/*
+	 * A stream taken over keeps the rates it runs at: setting the mode's,
+	 * a few ppm off, reprogrammed the running PLL under the link.
+	 */
+	if (host->boot_stream) {
+		msm_host->byte_clk_rate = clk_get_rate(msm_host->byte_clk);
+		msm_host->pixel_clk_rate = clk_get_rate(msm_host->pixel_clk);
+		clk_req->bitclk_rate = msm_host->byte_clk_rate *
+				       (msm_host->cphy_mode ? 7 : 8);
 	}
 	clk_req->boot_stream = host->boot_stream;
 }

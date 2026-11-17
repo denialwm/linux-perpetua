@@ -216,12 +216,13 @@ config BACKLIGHT_SY7758
 	  backlight controller found in Ayaneo Pocket S2.
 
 config BACKLIGHT_KTZ8869_ICELAND
-	tristate "Backlight Driver for Kinetic KTZ8869 (oneplus-iceland)"
+	tristate "Backlight Driver for Kinetic KTZ8868 and KTZ8869 (OnePlus Pad 3 and 4)"
 	depends on I2C
 	select REGMAP_I2C
 	help
 		Say Y to enable the backlight driver for the Kinetic KTZ8869
-		found in OnePlus Pad 4 series.
+		found in OnePlus Pad 4 series, and the KTZ8868 found in
+		OnePlus Pad 3.
 
 config BACKLIGHT_LM3533
 	tristate "Backlight Driver for LM3533"

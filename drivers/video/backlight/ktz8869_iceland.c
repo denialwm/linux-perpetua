@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Backlight driver for the Kinetic KTZ8869 in OnePlus Pad 4
+ * Backlight driver for the Kinetic KTZ8869 in OnePlus Pad 4, and the KTZ8868
+ * in OnePlus Pad 3
  *
  * Copyright (c) 2026 map220v <map220v300@gmail.com>
  */
@@ -11,10 +12,9 @@
 #include <linux/i2c.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 
-#define DEFAULT_BRIGHTNESS 2047
-#define MAX_BRIGHTNESS 4095
 #define REG_MAX 0x15
 
 /* reg */
@@ -43,9 +43,44 @@
 #define KTZ_SLAVE 0x2
 #define KTZ_BOTH 0x3
 
+/*
+ * What differs between the chips: the width of the brightness, whose low bits
+ * are in BL_BRT_LSB, and what the driver sets up besides the backlight.
+ */
+struct ktz_chip {
+	const char *name;
+	unsigned int lsb_bits;
+	unsigned int max_brightness;
+	/* LED on/off ramp in BL_DIMMING, 0 to leave it */
+	unsigned int dimming;
+	/* The LCD bias is switched on by register, not by its enable pins. */
+	bool bias_by_reg;
+};
+
+/* OnePlus Pad 4: 12-bit brightness, LCD bias set up by register */
+static const struct ktz_chip ktz8869_chip = {
+	.name = "ktz8869-backlight",
+	.lsb_bits = 4,
+	.max_brightness = 4095,
+	.dimming = 0x48,
+	.bias_by_reg = true,
+};
+
+/*
+ * OnePlus Pad 3: 11-bit brightness. The LCD bias follows its enable pins,
+ * which the bootloader leaves on with the panel; the stock kernel sets no
+ * ramp.
+ */
+static const struct ktz_chip ktz8868_chip = {
+	.name = "ktz8868-backlight",
+	.lsb_bits = 3,
+	.max_brightness = 2047,
+};
+
 struct ktz8869 {
 	struct i2c_client *client;
 	struct regmap *regmap;
+	const struct ktz_chip *chip;
 	bool led_on;
 	struct gpio_desc *enable_gpio;
 };
@@ -76,8 +111,9 @@ static int ktz8869_backlight_update_status(struct backlight_device *backlight_de
 	unsigned int brightness = backlight_get_brightness(backlight_dev);
 
 	/* Set brightness */
-	ktz8869_write(ktz, BL_BRT_LSB, brightness & 0xF, KTZ_BOTH);
-	ktz8869_write(ktz, BL_BRT_MSB, (brightness >> 4) & 0xFF, KTZ_BOTH);
+	ktz8869_write(ktz, BL_BRT_LSB, brightness & GENMASK(ktz->chip->lsb_bits - 1, 0),
+		      KTZ_BOTH);
+	ktz8869_write(ktz, BL_BRT_MSB, (brightness >> ktz->chip->lsb_bits) & 0xFF, KTZ_BOTH);
 
 	if (!ktz->led_on && brightness > 0) {
 		ktz8869_write(ktz, BACKLIGHT_ENABLE, 0x01, KTZ_BOTH);
@@ -110,10 +146,11 @@ static unsigned int ktz8869_lit_brightness(struct ktz8869 *ktz)
 	    regmap_read(ktz->regmap, BL_BRT_MSB, &msb))
 		return 0;
 
-	return ((msb & 0xFF) << 4) | (lsb & 0xF);
+	return ((msb & 0xFF) << ktz->chip->lsb_bits) |
+	       (lsb & GENMASK(ktz->chip->lsb_bits - 1, 0));
 }
 
-static void ktz8869_init(struct ktz8869 *ktz)
+static void ktz8869_bias_init(struct ktz8869 *ktz)
 {
 	unsigned int bias = 0;
 
@@ -133,9 +170,16 @@ static void ktz8869_init(struct ktz8869 *ktz)
 		mdelay(5);
 		ktz8869_write(ktz, LCD_BIAS_CFG1, 0x9E, KTZ_MASTER);
 	}
+}
+
+static void ktz8869_init(struct ktz8869 *ktz)
+{
+	if (ktz->chip->bias_by_reg)
+		ktz8869_bias_init(ktz);
 
 	/* Backlight config */
-	ktz8869_write(ktz, BL_DIMMING, 0x48, KTZ_BOTH);
+	if (ktz->chip->dimming)
+		ktz8869_write(ktz, BL_DIMMING, ktz->chip->dimming, KTZ_BOTH);
 	ktz8869_write(ktz, BL_CFG1, 0xB3, KTZ_BOTH);
 	ktz8869_write(ktz, BL_CFG2, 0xEB, KTZ_BOTH);
 	ktz8869_write(ktz, BL_OPTION2, 0x76, KTZ_BOTH);
@@ -160,6 +204,7 @@ static int ktz8869_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	ktz->client = client;
+	ktz->chip = device_get_match_data(&client->dev) ?: &ktz8869_chip;
 	ktz->regmap = devm_regmap_init_i2c(client, &ktz8869_regmap_config);
 	if (IS_ERR(ktz->regmap))
 		return dev_err_probe(&client->dev, PTR_ERR(ktz->regmap), "failed to init regmap\n");
@@ -185,11 +230,11 @@ static int ktz8869_probe(struct i2c_client *client)
 
 	memset(&props, 0, sizeof(props));
 	props.type = BACKLIGHT_RAW;
-	props.max_brightness = MAX_BRIGHTNESS;
-	props.brightness = lit ?: DEFAULT_BRIGHTNESS;
+	props.max_brightness = ktz->chip->max_brightness;
+	props.brightness = lit ?: ktz->chip->max_brightness / 2;
 	props.scale = BACKLIGHT_SCALE_LINEAR;
 
-	backlight_dev = devm_backlight_device_register(&client->dev, "ktz8869-backlight",
+	backlight_dev = devm_backlight_device_register(&client->dev, ktz->chip->name,
 					&client->dev, ktz, &ktz8869_backlight_ops, &props);
 	if (IS_ERR(backlight_dev))
 		return dev_err_probe(&client->dev, PTR_ERR(backlight_dev),
@@ -215,6 +260,8 @@ static const struct i2c_device_id ktz8869_ids[] = {
 	{ "ktz8869", 0},
 	{ "ktz8869a", 1 },
 	{ "ktz8869b", 2 },
+	{ "ktz8868a", 1 },
+	{ "ktz8868b", 2 },
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, ktz8869_ids);
@@ -223,6 +270,8 @@ static const struct of_device_id ktz8869_match_table[] = {
 	{ .compatible = "kinetic,ktz8869", },
 	{ .compatible = "kinetic,ktz8869a", },
 	{ .compatible = "kinetic,ktz8869b", },
+	{ .compatible = "kinetic,ktz8868a", .data = &ktz8868_chip },
+	{ .compatible = "kinetic,ktz8868b", .data = &ktz8868_chip },
 	{},
 };
 MODULE_DEVICE_TABLE(of, ktz8869_match_table);
