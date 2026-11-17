@@ -46,36 +46,6 @@
 #define AFE_PARAM_ID_I2S_CONFIG	0x0001020D
 #define AFE_PARAM_ID_TDM_CONFIG	0x0001029D
 
-/* TDM group device: the vendor firmware requires this for primary TDM TX. */
-#define AFE_MODULE_GROUP_DEVICE			0x00010254
-#define AFE_PARAM_ID_GROUP_DEVICE_ENABLE	0x00010256
-#define AFE_PARAM_ID_GROUP_DEVICE_TDM_CONFIG	0x0001029E
-#define AFE_PARAM_ID_TDM_LANE_CONFIG		0x000102C1
-#define AFE_API_VERSION_GROUP_DEVICE_TDM_CONFIG	0x1
-#define AFE_GROUP_DEVICE_NUM_PORTS		8
-
-struct afe_param_id_group_device_tdm_cfg {
-	u32	group_device_cfg_minor_version;
-	u16	group_id;
-	u16	reserved;
-	u16	port_id[AFE_GROUP_DEVICE_NUM_PORTS];
-	u32	num_channels;
-	u32	sample_rate;
-	u32	bit_width;
-	u16	nslots_per_frame;
-	u16	slot_width;
-	u32	slot_mask;
-} __packed;
-
-struct afe_group_device_enable {
-	u16	group_id;
-	u16	enable;
-} __packed;
-
-struct afe_param_id_tdm_lane_cfg {
-	u16	port_id;
-	u16	lane_mask;
-} __packed;
 #define AFE_PARAM_ID_PORT_SLOT_MAPPING_CONFIG	0x00010297
 #define AFE_PARAM_ID_CODEC_DMA_CONFIG	0x000102B8
 #define AFE_PARAM_ID_USB_AUDIO_CONFIG    0x000102A4
@@ -705,21 +675,6 @@ struct q6afe_port {
 	struct kref refcount;
 	struct list_head node;
 };
-
-/*
- * Select the slot-map payload the running DSP accepts. -1 asks the reported
- * AFE service version; 0/1 force the legacy/wide format for experiments.
- */
-static int tdm_slot_map_v2 = -1;
-module_param(tdm_slot_map_v2, int, 0644);
-
-/*
- * Some firmware revisions were reported to need an explicit group device
- * around the primary TDM TX. Stock does not send one, and it interposes
- * between the TDM and slot-map parameters, so it is off unless asked for.
- */
-static int tdm_group_enable;
-module_param(tdm_group_enable, int, 0644);
 
 struct afe_cmd_remote_lpass_core_hw_vote_request {
 	uint32_t  hw_block_id;
@@ -1482,12 +1437,10 @@ EXPORT_SYMBOL_GPL(q6afe_slim_port_prepare);
  * q6afe_slot_map_v2() - Use the wide (32-channel) slot-map payload.
  *
  * AFE service API v3 and later reject the legacy 8-channel payload, so pick
- * the format from the version the DSP reported unless overridden.
+ * the format from the version the DSP reported.
  */
 static bool q6afe_slot_map_v2(struct q6afe *afe)
 {
-	if (tdm_slot_map_v2 >= 0)
-		return tdm_slot_map_v2;
 	return afe->ainfo.api_version >= AFE_API_VERSION_V3;
 }
 
@@ -1829,61 +1782,6 @@ EXPORT_SYMBOL_GPL(q6afe_cdc_dma_port_prepare);
  *
  * Return: Will be an negative on packet size on success.
  */
-/**
- * q6afe_tdm_group_enable() - configure and enable the TDM group device
- *
- * The vendor DSP firmware needs a group device enabled for primary TDM TX
- * before the port itself will run.
- */
-static int q6afe_tdm_group_enable(struct q6afe *afe, int port_id,
-				  struct afe_param_id_tdm_cfg *tdm)
-{
-	struct afe_param_id_group_device_tdm_cfg gcfg = {0};
-	struct afe_param_id_tdm_lane_cfg lcfg = {0};
-	struct afe_group_device_enable ecfg = {0};
-	u16 group_id;
-	int ret;
-
-	if (port_id != AFE_PORT_ID_PRIMARY_TDM_TX)
-		return 0;
-
-	group_id = AFE_PORT_ID_PRIMARY_TDM_TX + 0x100;
-
-	gcfg.group_device_cfg_minor_version =
-		AFE_API_VERSION_GROUP_DEVICE_TDM_CONFIG;
-	gcfg.group_id = group_id;
-	gcfg.port_id[0] = port_id;
-	gcfg.num_channels = tdm->num_channels;
-	gcfg.sample_rate = tdm->sample_rate;
-	gcfg.bit_width = tdm->bit_width;
-	gcfg.nslots_per_frame = tdm->nslots_per_frame;
-	gcfg.slot_width = tdm->slot_width;
-	gcfg.slot_mask = tdm->slot_mask;
-
-	ret = q6afe_set_param(afe, NULL, &gcfg,
-			      AFE_PARAM_ID_GROUP_DEVICE_TDM_CONFIG,
-			      AFE_MODULE_GROUP_DEVICE, sizeof(gcfg),
-			      AFE_CLK_TOKEN);
-	if (ret)
-		return ret;
-
-	lcfg.port_id = group_id;
-	lcfg.lane_mask = 0;
-	ret = q6afe_set_param(afe, NULL, &lcfg, AFE_PARAM_ID_TDM_LANE_CONFIG,
-			      AFE_MODULE_GROUP_DEVICE, sizeof(lcfg),
-			      AFE_CLK_TOKEN);
-	if (ret)
-		return ret;
-
-	ecfg.group_id = group_id;
-	ecfg.enable = 1;
-
-	return q6afe_set_param(afe, NULL, &ecfg,
-			       AFE_PARAM_ID_GROUP_DEVICE_ENABLE,
-			       AFE_MODULE_GROUP_DEVICE, sizeof(ecfg),
-			       AFE_CLK_TOKEN);
-}
-
 int q6afe_port_start(struct q6afe_port *port)
 {
 	struct afe_port_cmd_device_start *start;
@@ -1932,11 +1830,6 @@ int q6afe_port_start(struct q6afe_port *port)
 				 port->scfg->ch_mapping[2],
 				 port->scfg->ch_mapping[3]);
 
-		if (tdm_group_enable) {
-			ret = q6afe_tdm_group_enable(afe, port_id, t);
-			dev_info(afe->dev, "tdm group: port=0x%x rc=%d\n",
-				 port_id, ret);
-		}
 	}
 
 	if (port->scfg_v2) {
