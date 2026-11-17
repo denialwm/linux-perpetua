@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/panel/visionox,nt37705.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Visionox NT37705 1080x2412 120Hz MIPI-DSI Panel
+
+maintainers:
+  - Simayon <simayonthampi@gmail.com>
+
+description:
+  The Visionox NT37705 is a DSI panel controller for AMOLED panels. It is
+  driven in command mode, with Display Stream Compression, at 1080x2412 and
+  up to 120 Hz.
+
+allOf:
+  - $ref: panel-common.yaml#
+
+properties:
+  compatible:
+    const: visionox,nt37705
+
+  reg:
+    maxItems: 1
+
+  reset-gpios: true
+
+  vdd-supply:
+    description: 1.8V logic supply
+
+  vci-supply:
+    description: Analog supply of the panel
+
+  vddio-supply:
+    description: I/O supply
+
+  port: true
+
+required:
+  - compatible
+  - reg
+  - reset-gpios
+  - vdd-supply
+  - vci-supply
+  - vddio-supply
+  - port
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    dsi {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        panel@0 {
+            compatible = "visionox,nt37705";
+            reg = <0>;
+
+            reset-gpios = <&tlmm 0 GPIO_ACTIVE_LOW>;
+
+            vdd-supply = <&vreg_l1>;
+            vci-supply = <&vreg_l2>;
+            vddio-supply = <&vreg_l3>;
+
+            port {
+                panel_in: endpoint {
+                    remote-endpoint = <&dsi0_out>;
+                };
+            };
+        };
+    };
+...
