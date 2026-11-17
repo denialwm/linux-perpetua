@@ -190,6 +190,20 @@ struct apm_audio_if_module_intf_cfg {
 
 #define APM_AUDIO_IF_INTF_CFG_PSIZE ALIGN(sizeof(struct apm_audio_if_module_intf_cfg), 8)
 
+struct apm_tdm_module_intf_cfg {
+	struct apm_module_param_data param_data;
+	struct param_id_tdm_intf_cfg cfg;
+} __packed;
+
+#define APM_TDM_INTF_CFG_PSIZE ALIGN(sizeof(struct apm_tdm_module_intf_cfg), 8)
+
+struct apm_tdm_module_lane_cfg {
+	struct apm_module_param_data param_data;
+	struct param_id_tdm_lane_cfg cfg;
+} __packed;
+
+#define APM_TDM_LANE_CFG_PSIZE ALIGN(sizeof(struct apm_tdm_module_lane_cfg), 8)
+
 struct apm_module_hw_ep_mf_cfg {
 	struct apm_module_param_data param_data;
 	struct param_id_hw_ep_mf mf;
@@ -1150,7 +1164,7 @@ static int audioreach_set_module_config(struct q6apm_graph *graph,
 					const struct audioreach_module *module,
 					const struct audioreach_module_config *cfg)
 {
-	int size = le32_to_cpu(module->data->size);
+	int size = le32_to_cpu(module->data->size) - sizeof(*module->data);
 	void *p;
 
 	struct gpr_pkt *pkt __free(kfree) = audioreach_alloc_apm_cmd_pkt(size, APM_CMD_SET_CFG, 0);
@@ -1450,6 +1464,95 @@ static int audioreach_audio_if_set_media_format(struct q6apm_graph *graph,
 	fd_cfg->frame_duration.allow_frame_duration_normalization = AUDIO_IF_FRAME_DURATION_NORMALIZATION_ENABLE;
 	fd_cfg->frame_duration.min_normalized_frame_dur_us = AUDIO_IF_FRAME_DURATION_MIN_US;
 	fd_cfg->frame_duration.max_normalized_frame_dur_us = AUDIO_IF_FRAME_DURATION_MAX_US;
+
+	return q6apm_send_cmd_sync(graph->apm, pkt, 0);
+}
+
+static int audioreach_tdm_set_media_format(struct q6apm_graph *graph,
+					   const struct audioreach_module *module,
+					   const struct audioreach_module_config *cfg)
+{
+	struct apm_module_frame_size_factor_cfg *fs_cfg;
+	struct apm_module_param_data *param_data;
+	struct apm_tdm_module_intf_cfg *intf_cfg;
+	struct apm_tdm_module_lane_cfg *lane_cfg;
+	struct apm_module_hw_ep_mf_cfg *hw_cfg;
+	int ic_sz = APM_TDM_INTF_CFG_PSIZE;
+	int lc_sz = module->active_lane_mask ? APM_TDM_LANE_CFG_PSIZE : 0;
+	int ep_sz = APM_HW_EP_CFG_PSIZE;
+	int fs_sz = APM_FS_CFG_PSIZE;
+	int size = ic_sz + lc_sz + ep_sz + fs_sz;
+	void *p;
+
+	if (module->active_lane_mask > U16_MAX)
+		return -EINVAL;
+
+	struct gpr_pkt *pkt __free(kfree) = audioreach_alloc_apm_cmd_pkt(size, APM_CMD_SET_CFG, 0);
+	if (IS_ERR(pkt))
+		return PTR_ERR(pkt);
+
+	p = (void *)pkt + GPR_HDR_SIZE + APM_CMD_HDR_SIZE;
+	intf_cfg = p;
+
+	param_data = &intf_cfg->param_data;
+	param_data->module_instance_id = module->instance_id;
+	param_data->error_code = 0;
+	param_data->param_id = PARAM_ID_TDM_INTF_CFG;
+	param_data->param_size = ic_sz - APM_MODULE_PARAM_DATA_SIZE;
+
+	intf_cfg->cfg.lpaif_type = module->hw_interface_type;
+	intf_cfg->cfg.intf_idx = module->hw_interface_idx;
+	intf_cfg->cfg.sync_src = module->sync_src;
+	switch (cfg->fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
+	case SND_SOC_DAIFMT_BP_FP:
+		intf_cfg->cfg.sync_src = TDM_SYNC_SRC_INTERNAL;
+		break;
+	case SND_SOC_DAIFMT_BC_FC:
+		intf_cfg->cfg.sync_src = TDM_SYNC_SRC_EXTERNAL;
+		break;
+	default:
+		break;
+	}
+	intf_cfg->cfg.ctrl_data_out_enable = module->ctrl_data_out_enable;
+	intf_cfg->cfg.slot_mask = cfg->slot_mask ?: module->slot_mask;
+	intf_cfg->cfg.nslots_per_frame = cfg->nslots_per_frame ?: module->nslots_per_frame;
+	intf_cfg->cfg.slot_width = cfg->slot_width ?: module->slot_width;
+	intf_cfg->cfg.sync_mode = module->sync_mode;
+	intf_cfg->cfg.ctrl_invert_sync_pulse = module->ctrl_invert_sync_pulse;
+	intf_cfg->cfg.ctrl_sync_data_delay = module->ctrl_sync_data_delay;
+
+	p += ic_sz;
+	if (lc_sz) {
+		lane_cfg = p;
+		param_data = &lane_cfg->param_data;
+		param_data->module_instance_id = module->instance_id;
+		param_data->error_code = 0;
+		param_data->param_id = PARAM_ID_TDM_LANE_CFG;
+		param_data->param_size = lc_sz - APM_MODULE_PARAM_DATA_SIZE;
+		lane_cfg->cfg.lane_mask = module->active_lane_mask;
+		p += lc_sz;
+	}
+
+	hw_cfg = p;
+	param_data = &hw_cfg->param_data;
+	param_data->module_instance_id = module->instance_id;
+	param_data->error_code = 0;
+	param_data->param_id = PARAM_ID_HW_EP_MF_CFG;
+	param_data->param_size = ep_sz - APM_MODULE_PARAM_DATA_SIZE;
+
+	hw_cfg->mf.sample_rate = cfg->sample_rate;
+	hw_cfg->mf.bit_width = cfg->bit_width;
+	hw_cfg->mf.num_channels = cfg->num_channels;
+	hw_cfg->mf.data_format = module->data_format;
+
+	p += ep_sz;
+	fs_cfg = p;
+	param_data = &fs_cfg->param_data;
+	param_data->module_instance_id = module->instance_id;
+	param_data->error_code = 0;
+	param_data->param_id = PARAM_ID_HW_EP_FRAME_SIZE_FACTOR;
+	param_data->param_size = fs_sz - APM_MODULE_PARAM_DATA_SIZE;
+	fs_cfg->frame_size_factor = 1;
 
 	return q6apm_send_cmd_sync(graph->apm, pkt, 0);
 }
@@ -1844,10 +1947,21 @@ int audioreach_set_media_format(struct q6apm_graph *graph,
 	case MODULE_ID_AUDIO_IF_SINK:
 		rc = audioreach_audio_if_set_media_format(graph, module, cfg);
 		break;
+	case MODULE_ID_TDM_SOURCE:
+	case MODULE_ID_TDM_SINK:
+		rc = audioreach_tdm_set_media_format(graph, module, cfg);
+		break;
 
 	default:
 		rc = 0;
 	}
+
+	/*
+	 * Parameters the topology carries for the module (a mixer's
+	 * coefficients, for example) go after its media format.
+	 */
+	if (!rc && module->data && module->module_id != MODULE_ID_SMECNS_V2)
+		rc = audioreach_set_module_config(graph, module, cfg);
 
 	return rc;
 }

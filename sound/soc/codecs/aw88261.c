@@ -14,6 +14,7 @@
 #include <linux/bitops.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
+#include <linux/workqueue.h>
 #include <sound/soc.h>
 #include <sound/pcm_params.h>
 #include <sound/tlv.h>
@@ -654,6 +655,15 @@ static void aw88261_start(struct aw88261 *aw88261)
 	aw88261_start_pa(aw88261);
 }
 
+static void aw88261_startup_work(struct work_struct *work)
+{
+	struct aw88261 *aw88261 =
+		container_of(work, struct aw88261, start_work.work);
+
+	guard(mutex)(&aw88261->lock);
+	aw88261_start(aw88261);
+}
+
 static int aw88261_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 {
 	struct snd_soc_component *component = dai->component;
@@ -841,6 +851,20 @@ static int aw88261_set_tdm_slot(struct snd_soc_dai *dai,
 		return -EINVAL;
 	}
 
+	/*
+	 * A link that drives more amplifiers than one stereo pair passes
+	 * every active slot: each amplifier then plays (and feeds back on)
+	 * the slot of its own channel, the "awinic,audio-channel" that also
+	 * selects its tuning in the ACF.
+	 */
+	chan = aw88261->aw_pa->channel;
+	if (hweight32(rx_mask) > 2 && chan < 16 && (rx_mask & BIT(chan))) {
+		aw88261->tx_slotvld_mask = chan << AW88261_I2S_TX_SLOTVLD_START_BIT;
+		aw88261->rxl_slotvld_mask = chan << AW88261_I2S_RXL_SLOTVLD_START_BIT;
+		aw88261->rxr_slotvld_mask = chan << AW88261_I2S_RXR_SLOTVLD_START_BIT;
+		return 0;
+	}
+
 	if (tx_mask != 0) {
 		if ((chan = __ffs(tx_mask)) > 16)
 			return -EINVAL;
@@ -865,10 +889,38 @@ static int aw88261_set_tdm_slot(struct snd_soc_dai *dai,
 	return 0;
 }
 
+static int aw88261_trigger(struct snd_pcm_substream *substream, int cmd,
+			   struct snd_soc_dai *dai)
+{
+	struct aw88261 *aw88261 = snd_soc_component_get_drvdata(dai->component);
+
+	if (substream->stream != SNDRV_PCM_STREAM_PLAYBACK)
+		return 0;
+
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+	case SNDRV_PCM_TRIGGER_RESUME:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		/*
+		 * The PLL locks only on a running interface, which the CPU
+		 * DAI starts at trigger. Start from process context, the
+		 * start retries while the clocks settle.
+		 */
+		queue_delayed_work(system_dfl_wq, &aw88261->start_work,
+				   msecs_to_jiffies(AW88261_START_WORK_DELAY_MS));
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
 static const struct snd_soc_dai_ops aw88261_dai_ops = {
 	.set_fmt = aw88261_set_fmt,
 	.hw_params = aw88261_hw_params,
 	.set_tdm_slot = aw88261_set_tdm_slot,
+	.trigger = aw88261_trigger,
 };
 
 static struct snd_soc_dai_driver aw88261_dai[] = {
@@ -1036,13 +1088,12 @@ static int aw88261_playback_event(struct snd_soc_dapm_widget *w,
 	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
 	struct aw88261 *aw88261 = snd_soc_component_get_drvdata(component);
 
-	guard(mutex)(&aw88261->lock);
+	/* The amplifier starts at trigger (aw88261_trigger). */
 	switch (event) {
-	case SND_SOC_DAPM_PRE_PMU:
-		aw88261_start(aw88261);
-		break;
 	case SND_SOC_DAPM_POST_PMD:
-		aw88261_dev_stop(aw88261->aw_pa);
+		cancel_delayed_work_sync(&aw88261->start_work);
+		scoped_guard(mutex, &aw88261->lock)
+			aw88261_dev_stop(aw88261->aw_pa);
 		break;
 	default:
 		break;
@@ -1055,7 +1106,7 @@ static const struct snd_soc_dapm_widget aw88261_dapm_widgets[] = {
 	 /* playback */
 	SND_SOC_DAPM_AIF_IN_E("AIF_RX", "Speaker_Playback", 0, 0, 0, 0,
 					aw88261_playback_event,
-					SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
+					SND_SOC_DAPM_POST_PMD),
 	SND_SOC_DAPM_OUTPUT("DAC Output"),
 
 	/* capture */
@@ -1199,6 +1250,8 @@ static int aw88261_codec_probe(struct snd_soc_component *component)
 	struct aw88261 *aw88261 = snd_soc_component_get_drvdata(component);
 	int ret;
 
+	INIT_DELAYED_WORK(&aw88261->start_work, aw88261_startup_work);
+
 	ret = aw88261_request_firmware_file(aw88261);
 	if (ret)
 		return dev_err_probe(aw88261->aw_pa->dev, ret,
@@ -1222,8 +1275,16 @@ static int aw88261_codec_probe(struct snd_soc_component *component)
 	return ret;
 }
 
+static void aw88261_codec_remove(struct snd_soc_component *component)
+{
+	struct aw88261 *aw88261 = snd_soc_component_get_drvdata(component);
+
+	cancel_delayed_work_sync(&aw88261->start_work);
+}
+
 static const struct snd_soc_component_driver soc_codec_dev_aw88261 = {
 	.probe = aw88261_codec_probe,
+	.remove = aw88261_codec_remove,
 };
 
 static void aw88261_parse_channel_dt(struct aw88261 *aw88261)

@@ -3283,10 +3283,10 @@ static int wcd939x_populate_dt_data(struct wcd939x_priv *wcd939x, struct device 
 
 static int wcd939x_reset(struct wcd939x_priv *wcd939x)
 {
-	gpiod_set_value(wcd939x->reset_gpio, 1);
+	gpiod_set_value_cansleep(wcd939x->reset_gpio, 1);
 	/* 20us sleep required after pulling the reset gpio to LOW */
 	usleep_range(20, 30);
-	gpiod_set_value(wcd939x->reset_gpio, 0);
+	gpiod_set_value_cansleep(wcd939x->reset_gpio, 0);
 	/* 20us sleep required after pulling the reset gpio to HIGH */
 	usleep_range(20, 30);
 
@@ -3612,10 +3612,8 @@ static int wcd939x_probe(struct platform_device *pdev)
 	wcd939x->common.max_bias = 4;
 
 	ret = wcd939x_populate_dt_data(wcd939x, dev);
-	if (ret) {
-		dev_err(dev, "%s: Fail to obtain platform data\n", __func__);
-		return -EINVAL;
-	}
+	if (ret)
+		return ret;
 
 	ret = wcd939x_add_typec(wcd939x, dev);
 	if (ret)

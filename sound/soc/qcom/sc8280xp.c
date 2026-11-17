@@ -68,6 +68,8 @@ struct qcom_snd_soc_common {
 	const struct snd_kcontrol_new *controls;
 	int num_controls;
 	unsigned int codec_dai_fmt;
+	/* codec format on TDM links; codec_dai_fmt when 0 */
+	unsigned int tdm_codec_dai_fmt;
 	bool codec_sysclk_set;
 	bool mi2s_mclk_enable;
 	bool mi2s_bclk_enable;
@@ -116,6 +118,7 @@ static int sc8280xp_tdm_hw_params(struct snd_pcm_substream *substream,
 	struct snd_soc_dai *codec_dai;
 	struct qcom_snd_tdm_slot_cfg cpu_cfg;
 	struct qcom_snd_tdm_slot_cfg codec_cfg;
+	unsigned int codec_fmt;
 	int bclk_freq;
 	int ret;
 	int i;
@@ -131,10 +134,10 @@ static int sc8280xp_tdm_hw_params(struct snd_pcm_substream *substream,
 	if (ret && ret != -ENOTSUPP)
 		return ret;
 
-	if (data->priv->codec_dai_fmt) {
+	codec_fmt = data->priv->tdm_codec_dai_fmt ?: data->priv->codec_dai_fmt;
+	if (codec_fmt) {
 		for_each_rtd_codec_dais(rtd, i, codec_dai) {
-			ret = snd_soc_dai_set_fmt(codec_dai,
-						  data->priv->codec_dai_fmt);
+			ret = snd_soc_dai_set_fmt(codec_dai, codec_fmt);
 			if (ret && ret != -ENOTSUPP)
 				return ret;
 		}
@@ -226,6 +229,8 @@ static int sc8280xp_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	struct snd_interval *channels = hw_param_interval(params,
 					SNDRV_PCM_HW_PARAM_CHANNELS);
 	struct snd_mask *fmt = hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT);
+	struct qcom_snd_tdm_slot_cfg cpu_cfg, codec_cfg;
+	unsigned int mask;
 
 	rate->min = rate->max = 48000;
 	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
@@ -243,6 +248,19 @@ static int sc8280xp_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	case TERTIARY_MI2S_RX:
 	case QUATERNARY_MI2S_RX:
 		if (!(codec_dai->driver->playback.formats & SNDRV_PCM_FMTBIT_S16_LE)) {
+			snd_mask_none(fmt);
+			snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S32_LE);
+		}
+		break;
+	case PRIMARY_TDM_RX_0 ... QUINARY_TDM_TX_7:
+		/* one channel per active slot, a sample as wide as the slot */
+		if (qcom_snd_get_dai_tdm_slots(rtd, &cpu_cfg, &codec_cfg) ||
+		    !cpu_cfg.slots)
+			break;
+
+		mask = (cpu_dai->id & 0x1) ? cpu_cfg.tx_mask : cpu_cfg.rx_mask;
+		channels->min = channels->max = mask ? hweight32(mask) : cpu_cfg.slots;
+		if (cpu_cfg.slot_width == 32) {
 			snd_mask_none(fmt);
 			snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S32_LE);
 		}
@@ -635,6 +653,18 @@ static const struct qcom_snd_soc_common sm8750_priv_data = {
 	.driver_name = "sm8750",
 	.dapm_widgets = sc8280xp_dapm_widgets,
 	.num_dapm_widgets = ARRAY_SIZE(sc8280xp_dapm_widgets),
+	.mi2s_bclk_enable = true,
+	.codec_dai_fmt = SND_SOC_DAIFMT_BC_FC |
+				SND_SOC_DAIFMT_NB_NF |
+				SND_SOC_DAIFMT_I2S,
+	/*
+	 * TDM amplifiers (the AW88261 of the OnePlus Pad 3) take the frame
+	 * MSB first from the frame sync, sampling on the inverted bit clock,
+	 * as their vendor tuning sets them up.
+	 */
+	.tdm_codec_dai_fmt = SND_SOC_DAIFMT_BC_FC |
+			     SND_SOC_DAIFMT_IB_NF |
+			     SND_SOC_DAIFMT_DSP_B,
 	.wcd_jack = true,
 };
 

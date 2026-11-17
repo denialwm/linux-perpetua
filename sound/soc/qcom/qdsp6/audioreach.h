@@ -22,6 +22,8 @@ struct q6apm_graph;
 #define MODULE_ID_PLACEHOLDER_DECODER	0x07001009
 #define MODULE_ID_I2S_SINK		0x0700100A
 #define MODULE_ID_I2S_SOURCE		0x0700100B
+#define MODULE_ID_TDM_SINK		0x0700100E
+#define MODULE_ID_TDM_SOURCE		0x0700100F
 #define MODULE_ID_SAL			0x07001010
 #define MODULE_ID_MFC			0x07001015
 #define MODULE_ID_DATA_LOGGING		0x0700101A
@@ -555,6 +557,30 @@ struct param_id_i2s_intf_cfg {
 #define I2S_SD1				2
 #define I2S_SD2				3
 #define I2S_SD3				4
+
+#define PARAM_ID_TDM_INTF_CFG			0x0800101B
+struct param_id_tdm_intf_cfg {
+	uint32_t lpaif_type;
+	uint32_t intf_idx;
+	uint16_t sync_src;
+	uint16_t ctrl_data_out_enable;
+	uint32_t slot_mask;
+	uint16_t nslots_per_frame;
+	uint16_t slot_width;
+	uint16_t sync_mode;
+	uint16_t ctrl_invert_sync_pulse;
+	uint16_t ctrl_sync_data_delay;
+	uint16_t reserved;
+} __packed;
+
+#define TDM_SYNC_SRC_EXTERNAL		0x0
+#define TDM_SYNC_SRC_INTERNAL		0x1
+
+#define PARAM_ID_TDM_LANE_CFG			0x0800106A
+struct param_id_tdm_lane_cfg {
+	uint16_t lane_mask;
+	uint16_t reserved;
+} __packed;
 
 #define PORT_ID_I2S_INPUT		2
 #define PORT_ID_I2S_OUPUT		1

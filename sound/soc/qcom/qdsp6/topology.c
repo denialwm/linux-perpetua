@@ -315,16 +315,14 @@ audioreach_get_module_priv_data(const struct snd_soc_tplg_private *private)
 
 		mod_array = (struct snd_soc_tplg_vendor_array *)((u8 *)private->array + sz);
 		if (le32_to_cpu(mod_array->type) == SND_SOC_AR_TPLG_MODULE_CFG_TYPE) {
-			struct audioreach_module_priv_data *pdata;
+			u32 size = le32_to_cpu(mod_array->size);
 
-			pdata = kzalloc_flex(*pdata, data,
-					     le32_to_cpu(mod_array->size));
-			if (!pdata)
-				return ERR_PTR(-ENOMEM);
+			/* The size covers the header and the parameter records. */
+			if (size <= sizeof(struct audioreach_module_priv_data) ||
+			    size > le32_to_cpu(private->size) - sz)
+				return NULL;
 
-			memcpy(pdata, ((u8 *)private->data + sz), struct_size(pdata, data,
-						le32_to_cpu(mod_array->size)));
-			return pdata;
+			return kmemdup((u8 *)private->data + sz, size, GFP_KERNEL);
 		}
 
 		sz = sz + le32_to_cpu(mod_array->size);
@@ -753,6 +751,7 @@ static int audioreach_widget_i2s_module_load(struct audioreach_module *mod,
 	return 0;
 }
 
+/* The Audio IF and the TDM endpoints take the same TDM framing tokens. */
 static int audioreach_widget_audio_if_module_load(struct audioreach_module *mod,
 						  const struct snd_soc_tplg_vendor_array *mod_array)
 {
@@ -770,6 +769,9 @@ static int audioreach_widget_audio_if_module_load(struct audioreach_module *mod,
 			break;
 		case AR_TKN_U32_MODULE_FMT_DATA:
 			mod->data_format = val;
+			break;
+		case AR_TKN_U32_MODULE_HW_IF_TYPE:
+			mod->hw_interface_type = val;
 			break;
 		case AR_TKN_U16_MODULE_SYNC_SRC:
 			if (val > U16_MAX)
@@ -905,6 +907,8 @@ static int audioreach_widget_load_buffer(struct snd_soc_component *component,
 		break;
 	case MODULE_ID_AUDIO_IF_SINK:
 	case MODULE_ID_AUDIO_IF_SOURCE:
+	case MODULE_ID_TDM_SINK:
+	case MODULE_ID_TDM_SOURCE:
 		ret = audioreach_widget_audio_if_module_load(mod, mod_array);
 		if (ret)
 			return ret;
