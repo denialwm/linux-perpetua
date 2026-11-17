@@ -32,6 +32,15 @@ properties:
   opp-table:
     type: object
 
+  qcom,dpu-disable-multirect:
+    description: |
+      Disable the pairing of a mixer pair's two plane pipes into one
+      source pipe (SSPP multi-rect). Displays whose high refresh rate
+      needs one source pipe per mixer (the quad-pipe topology) set this:
+      the stock kernel runs those modes without the pairing, and the
+      panel can garble on the paired topology.
+    type: boolean
+
   ports:
     $ref: /schemas/graph.yaml#/properties/ports
     description: |

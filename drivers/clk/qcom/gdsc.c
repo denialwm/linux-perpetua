@@ -161,6 +161,21 @@ static int gdsc_toggle_logic(struct gdsc *sc, enum gdsc_status status,
 			goto err_disable_supply;
 	}
 
+	/*
+	 * A GDSC that software never takes out of HW control is powered by
+	 * its hardware trigger; writing SW_COLLAPSE and polling the status
+	 * would race the hardware.
+	 */
+	if (status == GDSC_ON && (sc->flags & HW_CTRL_SKIP_DIS)) {
+		u32 val;
+
+		ret = regmap_read(sc->regmap, sc->gdscr, &val);
+		if (ret)
+			goto err_disable_supply;
+		if (val & HW_CONTROL_MASK)
+			return 0;
+	}
+
 	ret = gdsc_update_collapse_bit(sc, status == GDSC_OFF);
 
 	/* If disabling votable gdscs, don't poll on status */
@@ -347,6 +362,28 @@ static int gdsc_disable(struct generic_pm_domain *domain)
 
 	if (sc->pwrsts == PWRSTS_ON)
 		return gdsc_assert_reset(sc);
+
+	/*
+	 * Leave a GDSC flagged HW_CTRL_SKIP_DIS in HW control: the hardware
+	 * collapses it once its masters are idle, software forcing it off
+	 * can cut power with a bus transaction still in flight.
+	 */
+	if ((sc->flags & HW_CTRL) && (sc->flags & HW_CTRL_SKIP_DIS)) {
+		/*
+		 * While the hardware still holds the GDSC on, it needs its
+		 * parent domain: report it busy, so that genpd keeps this
+		 * domain and the parent rail on.
+		 */
+		if (gdsc_check_status(sc, GDSC_ON))
+			return -EBUSY;
+
+		ret = icc_set_bw(sc->icc_path, 0, 0);
+		if (ret)
+			return ret;
+		if (sc->rsupply)
+			return regulator_disable(sc->rsupply);
+		return 0;
+	}
 
 	/* Turn off HW trigger mode if supported */
 	if (sc->flags & HW_CTRL) {

@@ -70,6 +70,7 @@ struct gdsc {
 #define NO_RET_PERIPH	BIT(8)
 #define HW_CTRL_TRIGGER	BIT(9)
 #define ACTIVE_WAKEUP	BIT(10)
+#define HW_CTRL_SKIP_DIS	BIT(11)
 	struct reset_controller_dev	*rcdev;
 	unsigned int			*resets;
 	unsigned int			reset_count;

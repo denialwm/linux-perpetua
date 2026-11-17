@@ -1376,6 +1376,58 @@ static int dpu_crtc_reassign_planes(struct drm_crtc *crtc, struct drm_crtc_state
 #define MAX_CHANNELS_PER_CRTC PIPES_PER_PLANE
 #define MAX_HDISPLAY_SPLIT 1080
 
+/**
+ * dpu_crtc_mixers_fit - check that layer mixers can take the pixel rate of a mode
+ * @dpu_kms: the DPU
+ * @mode: the mode
+ * @num_lm: the number of mixers sharing each line
+ *
+ * Each mixer blends its share of the active pixels of every line at the core
+ * clock; horizontal blanking belongs to the interface. This is the rate the
+ * core clock is set for, see _dpu_core_perf_calc_clk().
+ *
+ * Return: true if the mixers can drive the mode within the top core clock
+ */
+bool dpu_crtc_mixers_fit(struct dpu_kms *dpu_kms,
+			 const struct drm_display_mode *mode, u32 num_lm)
+{
+	u64 clk = dpu_core_perf_adjusted_mode_clk((u64)mode->vtotal *
+						  mode->hdisplay *
+						  drm_mode_vrefresh(mode),
+						  dpu_kms->perf.perf_cfg);
+
+	do_div(clk, num_lm);
+
+	return clk <= dpu_kms->perf.max_core_clk_rate;
+}
+
+/**
+ * dpu_crtc_max_mixers - the most mixers the topology can give a display
+ * @dpu_kms: the DPU
+ * @num_rt_intf: the number of real-time interfaces of the display
+ * @dsc: whether the display uses DSC
+ *
+ * This follows the limits of dpu_crtc_get_topology().
+ *
+ * Return: the number of mixers
+ */
+u32 dpu_crtc_max_mixers(struct dpu_kms *dpu_kms, u32 num_rt_intf, bool dsc)
+{
+	u32 num_lm = num_rt_intf * 2;
+
+	if (!dpu_use_virtual_planes ||
+	    dpu_kms->catalog->mdss_ver->core_major_ver < 5)
+		num_lm = min(2, num_lm);
+
+	if (!dpu_kms->catalog->caps->has_3d_merge)
+		num_lm = min(num_rt_intf, num_lm);
+
+	if (dsc && num_rt_intf == 1)
+		num_lm = min(2, dpu_kms->catalog->dsc_count);
+
+	return max(num_lm, 1);
+}
+
 static struct msm_display_topology dpu_crtc_get_topology(
 		struct drm_crtc *crtc,
 		struct dpu_kms *dpu_kms,
@@ -1384,8 +1436,6 @@ static struct msm_display_topology dpu_crtc_get_topology(
 	struct drm_display_mode *mode = &crtc_state->adjusted_mode;
 	struct msm_display_topology topology = {0};
 	struct drm_encoder *drm_enc;
-	struct msm_drm_private *priv = crtc->dev->dev_private;
-	struct dpu_kms *kms = to_dpu_kms(priv->kms);
 	u32 num_rt_intf;
 
 	drm_for_each_encoder_mask(drm_enc, crtc->dev, crtc_state->encoder_mask)
@@ -1420,9 +1470,12 @@ static struct msm_display_topology dpu_crtc_get_topology(
 	if (topology.cwb_enabled)
 		num_rt_intf--;
 
+	/*
+	 * Two mixers per interface only when one per interface cannot take
+	 * the width or the pixel rate of the mode.
+	 */
 	if ((mode->hdisplay > (dpu_kms->catalog->caps->max_mixer_width * num_rt_intf)) ||
-	    ((u64)mode->hdisplay * mode->vtotal * drm_mode_vrefresh(mode) >
-	     kms->perf.max_core_clk_rate))
+	    !dpu_crtc_mixers_fit(dpu_kms, mode, max(num_rt_intf, 1)))
 		topology.num_lm = num_rt_intf * 2;
 	else {
 		topology.num_lm = (mode->hdisplay > MAX_HDISPLAY_SPLIT) ?
@@ -1619,7 +1672,6 @@ static enum drm_mode_status dpu_crtc_mode_valid(struct drm_crtc *crtc,
 						const struct drm_display_mode *mode)
 {
 	struct dpu_kms *dpu_kms = _dpu_crtc_get_kms(crtc);
-	u64 adjusted_mode_clk;
 
 	/* if there is no 3d_mux block we cannot merge LMs so we cannot
 	 * split the large layer into 2 LMs, filter out such modes
@@ -1629,23 +1681,9 @@ static enum drm_mode_status dpu_crtc_mode_valid(struct drm_crtc *crtc,
 		return MODE_BAD_HVALUE;
 
 	/*
-	 * The core processes the active pixels of every line; horizontal
-	 * blanking belongs to the interface. This is the rate the core clock
-	 * is set for, see _dpu_core_perf_calc_clk().
+	 * The pixel rate is checked by the encoder, which knows how many
+	 * mixers the topology can give the display.
 	 */
-	adjusted_mode_clk = dpu_core_perf_adjusted_mode_clk(
-			(u64)mode->vtotal * mode->hdisplay * drm_mode_vrefresh(mode),
-			dpu_kms->perf.perf_cfg);
-
-	if (dpu_kms->catalog->caps->has_3d_merge)
-		adjusted_mode_clk /= 2;
-
-	/*
-	 * The given mode, adjusted for the perf clock factor, should not exceed
-	 * the max core clock rate
-	 */
-	if (dpu_kms->perf.max_core_clk_rate < adjusted_mode_clk)
-		return MODE_CLOCK_HIGH;
 
 	/*
 	 * max crtc width is equal to the max mixer width * 2 and max height is 4K

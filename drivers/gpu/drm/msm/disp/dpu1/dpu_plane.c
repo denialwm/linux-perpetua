@@ -893,6 +893,14 @@ static int dpu_plane_split(struct drm_plane *plane,
 		num_stages = 1;
 
 	/*
+	 * The loop below only rewrites the configs of the stages in use. Clear
+	 * them all first, otherwise the rects of a mixer pair that a smaller
+	 * topology no longer uses survive from the previous state, and SSPPs
+	 * get reserved and programmed for them.
+	 */
+	memset(pstate->pipe_cfg, 0, sizeof(pstate->pipe_cfg));
+
+	/*
 	 * For wide plane that exceeds SSPP rectangle constrain, it needed to
 	 * be split and mapped to 2 rectangles with 1 config for 2:2:1.
 	 * For 2 interfaces cases, such as dual DSI, 2:2:2 topology is needed.
@@ -1233,7 +1241,8 @@ static int dpu_plane_assign_resource_in_stage(struct dpu_sw_pipe *pipe,
 	if (drm_rect_width(&r_pipe_cfg->src_rect) == 0)
 		return 0;
 
-	if (dpu_plane_try_multirect_parallel(pipe, pipe_cfg, r_pipe, r_pipe_cfg,
+	if (dpu_kms->use_multirect &&
+	    dpu_plane_try_multirect_parallel(pipe, pipe_cfg, r_pipe, r_pipe_cfg,
 					      pipe->sspp,
 					      msm_framebuffer_format(plane_state->fb),
 					      dpu_kms->catalog->caps->max_linewidth))
@@ -1287,7 +1296,8 @@ static int dpu_plane_virtual_assign_resources(struct drm_crtc *crtc,
 	reqs.rot90 = drm_rotation_90_or_270(plane_state->rotation);
 
 	for (i = 0; i < STAGES_PER_PLANE; i++) {
-		if (prev_adjacent_pstate[i] &&
+		if (dpu_kms->use_multirect &&
+		    prev_adjacent_pstate[i] &&
 		    dpu_plane_try_multirect_shared(pstate, prev_adjacent_pstate[i], fmt,
 						   dpu_kms->catalog->caps->max_linewidth,
 						   i))

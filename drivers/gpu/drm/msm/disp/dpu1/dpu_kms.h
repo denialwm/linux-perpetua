@@ -62,6 +62,11 @@ struct dpu_kms {
 	const struct dpu_mdss_cfg *catalog;
 	const struct qcom_ubwc_cfg_data *mdss;
 
+	/* SSPP multi-rect pairing, off when the display sets
+	 * qcom,dpu-disable-multirect
+	 */
+	bool use_multirect;
+
 	/* io/register spaces: */
 	void __iomem *mmio, *vbif;
 

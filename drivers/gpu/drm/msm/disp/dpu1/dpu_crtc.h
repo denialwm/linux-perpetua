@@ -269,4 +269,11 @@ void dpu_crtc_frame_event_cb(struct drm_crtc *crtc, u32 event);
 
 unsigned int dpu_crtc_get_num_lm(const struct drm_crtc_state *state);
 
+struct dpu_kms;
+
+bool dpu_crtc_mixers_fit(struct dpu_kms *dpu_kms,
+			 const struct drm_display_mode *mode, u32 num_lm);
+
+u32 dpu_crtc_max_mixers(struct dpu_kms *dpu_kms, u32 num_rt_intf, bool dsc);
+
 #endif /* _DPU_CRTC_H_ */

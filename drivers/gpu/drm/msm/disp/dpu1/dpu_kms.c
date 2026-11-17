@@ -1463,6 +1463,15 @@ static int dpu_dev_probe(struct platform_device *pdev)
 
 	dpu_kms->pdev = pdev;
 
+	/*
+	 * Multi-rect pairs a stage's two plane pipes into one SSPP. A
+	 * panel whose high refresh rate needs the full quad-pipe
+	 * topology runs stock without the pairing, and the device tree
+	 * opts the display out of it.
+	 */
+	dpu_kms->use_multirect = !of_property_read_bool(dev->of_node,
+							"qcom,dpu-disable-multirect");
+
 	ret = devm_pm_opp_set_clkname(dev, "core");
 	if (ret)
 		return ret;
