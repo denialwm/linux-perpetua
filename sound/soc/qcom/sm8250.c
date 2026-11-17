@@ -350,11 +350,56 @@ static void sm8250_add_be_ops(struct snd_soc_card *card)
 	}
 }
 
+static void sm8250_disable_tdm_clock(void *data)
+{
+	clk_disable_unprepare(data);
+}
+
+static int sm8250_enable_tdm_clocks(struct device *dev)
+{
+	static const char * const tdm_clk_names[] = {
+		"lpass_pri_tdm_ibit", "lpass_quin_tdm_ibit",
+	};
+	struct clk *tdm_clk;
+	int i, ret;
+
+	/*
+	 * Enabling these makes q6afe issue a global AFE_PARAM_ID_CLOCK_SET for
+	 * the TDM bit clocks, which is what actually starts the LPASS TDM
+	 * clock generators. Do not fail the card if the DSP rejects them.
+	 */
+	for (i = 0; i < ARRAY_SIZE(tdm_clk_names); i++) {
+		tdm_clk = devm_clk_get_optional(dev, tdm_clk_names[i]);
+		if (IS_ERR(tdm_clk)) {
+			if (PTR_ERR(tdm_clk) == -EPROBE_DEFER)
+				return -EPROBE_DEFER;
+			dev_warn(dev, "failed to get %s: %ld\n",
+				 tdm_clk_names[i], PTR_ERR(tdm_clk));
+			continue;
+		}
+		if (!tdm_clk)
+			continue;
+		clk_set_rate(tdm_clk, tdm_clk_rate);
+		ret = clk_prepare_enable(tdm_clk);
+		dev_info(dev, "%s: rate=%u enable_ret=%d\n", tdm_clk_names[i],
+			 tdm_clk_rate, ret);
+		if (ret)
+			continue;
+		ret = devm_add_action_or_reset(dev, sm8250_disable_tdm_clock,
+					      tdm_clk);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
 static int sm8250_platform_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card;
 	struct sm8250_snd_data *data;
 	struct device *dev = &pdev->dev;
+	struct clk *lpass_clk, *dcodec_clk;
 	int ret;
 
 	card = devm_kzalloc(dev, sizeof(*card), GFP_KERNEL);
@@ -371,12 +416,6 @@ static int sm8250_platform_probe(struct platform_device *pdev)
 	dev_set_drvdata(dev, card);
 	snd_soc_card_set_drvdata(card, data);
 
-	struct clk *lpass_clk, *dcodec_clk, *tdm_clk;
-	static const char * const tdm_clk_names[] = {
-		"lpass_pri_tdm_ibit", "lpass_quin_tdm_ibit",
-	};
-	int i;
-
 	lpass_clk = devm_clk_get_optional_enabled(dev, "lpass_audio_hw_vote");
 	if (IS_ERR(lpass_clk))
 		return dev_err_probe(dev, PTR_ERR(lpass_clk),
@@ -387,25 +426,9 @@ static int sm8250_platform_probe(struct platform_device *pdev)
 		dev_warn(dev, "failed to enable LPASS dcodec vote: %ld\n",
 			 PTR_ERR(dcodec_clk));
 
-	/*
-	 * Enabling these makes q6afe issue a global AFE_PARAM_ID_CLOCK_SET for
-	 * the TDM bit clocks, which is what actually starts the LPASS TDM
-	 * clock generators. Do not fail the card if the DSP rejects them.
-	 */
-	for (i = 0; i < ARRAY_SIZE(tdm_clk_names); i++) {
-		tdm_clk = devm_clk_get_optional(dev, tdm_clk_names[i]);
-		if (IS_ERR(tdm_clk)) {
-			dev_warn(dev, "failed to get %s: %ld\n",
-				 tdm_clk_names[i], PTR_ERR(tdm_clk));
-			continue;
-		}
-		if (!tdm_clk)
-			continue;
-		clk_set_rate(tdm_clk, tdm_clk_rate);
-		ret = clk_prepare_enable(tdm_clk);
-		dev_info(dev, "%s: rate=%u enable_ret=%d\n", tdm_clk_names[i],
-			 tdm_clk_rate, ret);
-	}
+	ret = sm8250_enable_tdm_clocks(dev);
+	if (ret)
+		return ret;
 
 	ret = qcom_snd_parse_of(card);
 	if (ret)
