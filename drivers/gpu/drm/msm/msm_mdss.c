@@ -547,12 +547,14 @@ static int mdss_probe(struct platform_device *pdev)
 	/*
 	 * On Eliza, state the core reset leaves behind stalls the first DSI
 	 * enable after the splash (command DMA busy, CTL reset incomplete).
-	 * On SM8550 the panel's first answer after the splash arrives garbled.
+	 * On SM8550 the panel's first answer after the splash arrives garbled;
+	 * on SM8475 the first frames do, until a screen-off cycles the block.
 	 * One power-off of the MDSS domain clears it: suspend once now, the
 	 * first user powers it back on.
 	 */
 	if (of_device_is_compatible(dev->of_node, "qcom,eliza-mdss") ||
-	    of_device_is_compatible(dev->of_node, "qcom,sm8550-mdss")) {
+	    of_device_is_compatible(dev->of_node, "qcom,sm8550-mdss") ||
+	    of_device_is_compatible(dev->of_node, "qcom,sm8475-mdss")) {
 		dev_pm_genpd_release_boot_on(dev);
 		pm_runtime_get_sync(dev);
 		pm_runtime_put_sync(dev);
