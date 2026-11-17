@@ -1135,6 +1135,11 @@ properties:
 
       - items:
           - enum:
+              - nothing,pong
+          - const: qcom,sm8475
+
+      - items:
+          - enum:
               - oneplus,aston
               - qcom,sm8550-hdk
               - qcom,sm8550-mtp
