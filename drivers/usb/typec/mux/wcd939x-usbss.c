@@ -659,10 +659,19 @@ static int wcd939x_usbss_switch_set(struct typec_switch_dev *sw,
 	 * on D+/D- then makes the adapter drop it.
 	 */
 	if (usbss->orientation != orientation) {
-		usbss->orientation = orientation;
-		usbss->dpdm_charger = false;
+		/*
+		 * The orientation of an attach can be reported after the
+		 * charger took D+/D-. The USB route does not depend on it:
+		 * keep D+/D- lent and only take them back on a detach.
+		 */
+		bool keep = usbss->dpdm_charger &&
+			    orientation != TYPEC_ORIENTATION_NONE;
 
-		ret = wcd939x_usbss_set(usbss);
+		usbss->orientation = orientation;
+		if (!keep) {
+			usbss->dpdm_charger = false;
+			ret = wcd939x_usbss_set(usbss);
+		}
 	}
 
 	mutex_unlock(&usbss->lock);

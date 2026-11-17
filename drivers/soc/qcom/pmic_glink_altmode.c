@@ -605,10 +605,10 @@ static int pmic_glink_altmode_probe(struct auxiliary_device *adev,
 	init_completion(&altmode->pan_ack);
 	mutex_init(&altmode->lock);
 
-	device_for_each_child_node(dev, fwnode) {
+	device_for_each_named_child_node(dev, fwnode, "connector") {
 		ret = fwnode_property_read_u32(fwnode, "reg", &port);
 		if (ret < 0) {
-			dev_err(dev, "missing reg property of %pOFn\n", fwnode);
+			dev_err(dev, "missing reg property of %pfwP\n", fwnode);
 			fwnode_handle_put(fwnode);
 			return ret;
 		}
