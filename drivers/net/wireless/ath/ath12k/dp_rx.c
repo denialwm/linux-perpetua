@@ -1337,6 +1337,26 @@ void ath12k_dp_rx_h_ppdu(struct ath12k_pdev_dp *dp_pdev,
 		rx_status->band = NL80211_BAND_5GHZ;
 	}
 
+	/* WCN7850-family firmware can report a channel number that does not
+	 * match the center frequency next to it (seen: 233 for 5765 MHz).
+	 * The frequency is right, so derive the channel and band from it.
+	 */
+	if (rx_status->band == NUM_NL80211_BANDS) {
+		int chan = ieee80211_frequency_to_channel(center_freq);
+
+		if (center_freq >= 2412 && center_freq <= 2484 &&
+		    chan >= ATH12K_2GHZ_MIN_CHAN_NUM &&
+		    chan <= ATH12K_2GHZ_MAX_CHAN_NUM) {
+			rx_status->band = NL80211_BAND_2GHZ;
+			channel_num = chan;
+		} else if (center_freq >= 5160 && center_freq <= 5885 &&
+			   chan >= ATH12K_5GHZ_MIN_CHAN_NUM &&
+			   chan <= ATH12K_5GHZ_MAX_CHAN_NUM) {
+			rx_status->band = NL80211_BAND_5GHZ;
+			channel_num = chan;
+		}
+	}
+
 	if (unlikely(rx_status->band == NUM_NL80211_BANDS ||
 		     !ath12k_pdev_dp_to_hw(dp_pdev)->wiphy->bands[rx_status->band])) {
 		struct ath12k *ar = ath12k_pdev_dp_to_ar(dp_pdev);
