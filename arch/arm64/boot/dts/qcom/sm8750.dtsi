@@ -803,6 +803,28 @@
 				status = "disabled";
 			};
 
+			uart8: serial@880000 {
+				compatible = "qcom,geni-uart";
+				reg = <0x0 0x00880000 0x0 0x4000>;
+
+				interrupts = <GIC_SPI 373 IRQ_TYPE_LEVEL_HIGH>;
+
+				clocks = <&gcc GCC_QUPV3_WRAP2_S0_CLK>;
+				clock-names = "se";
+
+				interconnects = <&clk_virt MASTER_QUP_CORE_2 QCOM_ICC_TAG_ALWAYS
+						 &clk_virt SLAVE_QUP_CORE_2 QCOM_ICC_TAG_ALWAYS>,
+						<&gem_noc MASTER_APPSS_PROC QCOM_ICC_TAG_ALWAYS
+						 &config_noc SLAVE_QUP_2 QCOM_ICC_TAG_ALWAYS>;
+				interconnect-names = "qup-core",
+						     "qup-config";
+
+				pinctrl-0 = <&qup_uart8_default>;
+				pinctrl-names = "default";
+
+				status = "disabled";
+			};
+
 			i2c9: i2c@884000 {
 				compatible = "qcom,geni-i2c";
 				reg = <0x0 0x00884000 0x0 0x4000>;
@@ -5069,6 +5091,14 @@
 				/* TX, RX */
 				pins = "gpio62", "gpio63";
 				function = "qup1_se7";
+				drive-strength = <2>;
+				bias-disable;
+			};
+
+			qup_uart8_default: qup-uart8-default-state {
+				/* TX, RX */
+				pins = "gpio2", "gpio3";
+				function = "qup2_se0";
 				drive-strength = <2>;
 				bias-disable;
 			};

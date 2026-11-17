@@ -1173,6 +1173,7 @@ properties:
 
       - items:
           - enum:
+              - oneplus,erhai
               - qcom,sm8750-mtp
               - qcom,sm8750-qrd
           - const: qcom,sm8750

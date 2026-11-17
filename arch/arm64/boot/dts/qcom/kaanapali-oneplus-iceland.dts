@@ -1906,6 +1906,8 @@
 		touchscreen-size-y = <33920>;
 		touchscreen-inverted-x;
 		touchscreen-swapped-x-y;
+
+		wakeup-source;
 	};
 };
 
