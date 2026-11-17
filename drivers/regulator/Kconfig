@@ -1028,6 +1028,18 @@ config REGULATOR_MTK_DVFSRC
 	  of Mediatek. It allows for voting on regulator state
 	  between multiple users.
 
+config REGULATOR_ONEPLUS_GLINK_HBOOST
+	tristate "OnePlus PMIC GLINK stylus charger boost"
+	depends on QCOM_PMIC_GLINK
+	select AUXILIARY_BUS
+	help
+	  The boost converter that OnePlus' charger firmware on the ADSP drives
+	  for the stylus charger coil of the OnePlus Pad 3, set through PMIC
+	  GLINK.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called oneplus-glink-hboost.
+
 config REGULATOR_PALMAS
 	tristate "TI Palmas PMIC Regulators"
 	depends on MFD_PALMAS

@@ -21,6 +21,7 @@ enum {
 	PMIC_GLINK_CLIENT_BATT = 0,
 	PMIC_GLINK_CLIENT_ALTMODE,
 	PMIC_GLINK_CLIENT_UCSI,
+	PMIC_GLINK_CLIENT_PEN_BOOST,
 };
 
 struct pmic_glink_data {
@@ -40,6 +41,7 @@ struct pmic_glink {
 	struct auxiliary_device altmode_aux;
 	struct auxiliary_device ps_aux;
 	struct auxiliary_device ucsi_aux;
+	struct auxiliary_device pen_boost_aux;
 
 	/* serializing client_state and pdr_state updates */
 	struct mutex state_lock;
@@ -340,6 +342,11 @@ static int pmic_glink_probe(struct platform_device *pdev)
 		if (ret)
 			goto out_release_altmode_aux;
 	}
+	if (pg->data->client_mask & BIT(PMIC_GLINK_CLIENT_PEN_BOOST)) {
+		ret = pmic_glink_add_aux_device(pg, &pg->pen_boost_aux, "pen-boost");
+		if (ret)
+			goto out_release_ps_aux;
+	}
 
 	if (pg->data->charger_pdr_service_name && pg->data->charger_pdr_service_path) {
 		service = pdr_add_lookup(pg->pdr, pg->data->charger_pdr_service_name,
@@ -358,6 +365,9 @@ static int pmic_glink_probe(struct platform_device *pdev)
 	return 0;
 
 out_release_aux_devices:
+	if (pg->data->client_mask & BIT(PMIC_GLINK_CLIENT_PEN_BOOST))
+		pmic_glink_del_aux_device(pg, &pg->pen_boost_aux);
+out_release_ps_aux:
 	if (pg->data->client_mask & BIT(PMIC_GLINK_CLIENT_BATT))
 		pmic_glink_del_aux_device(pg, &pg->ps_aux);
 out_release_altmode_aux:
@@ -378,6 +388,8 @@ static void pmic_glink_remove(struct platform_device *pdev)
 
 	pdr_handle_release(pg->pdr);
 
+	if (pg->data->client_mask & BIT(PMIC_GLINK_CLIENT_PEN_BOOST))
+		pmic_glink_del_aux_device(pg, &pg->pen_boost_aux);
 	if (pg->data->client_mask & BIT(PMIC_GLINK_CLIENT_BATT))
 		pmic_glink_del_aux_device(pg, &pg->ps_aux);
 	if (pg->data->client_mask & BIT(PMIC_GLINK_CLIENT_ALTMODE))
@@ -393,6 +405,19 @@ static const struct pmic_glink_data pmic_glink_adsp_data = {
 	.client_mask = BIT(PMIC_GLINK_CLIENT_BATT) |
 		       BIT(PMIC_GLINK_CLIENT_ALTMODE) |
 		       BIT(PMIC_GLINK_CLIENT_UCSI),
+	.charger_pdr_service_name = "tms/servreg",
+	.charger_pdr_service_path = "msm/adsp/charger_pd",
+};
+
+/*
+ * OnePlus' SM8750 charger firmware also drives the boost converter that feeds
+ * the stylus charger coil.
+ */
+static const struct pmic_glink_data pmic_glink_oneplus_sm8750_data = {
+	.client_mask = BIT(PMIC_GLINK_CLIENT_BATT) |
+		       BIT(PMIC_GLINK_CLIENT_ALTMODE) |
+		       BIT(PMIC_GLINK_CLIENT_UCSI) |
+		       BIT(PMIC_GLINK_CLIENT_PEN_BOOST),
 	.charger_pdr_service_name = "tms/servreg",
 	.charger_pdr_service_path = "msm/adsp/charger_pd",
 };
@@ -415,6 +440,7 @@ static const struct pmic_glink_data pmic_glink_xiaomi_soccp_data = {
 static const struct of_device_id pmic_glink_of_match[] = {
 	{ .compatible = "qcom,glymur-pmic-glink", .data = &pmic_glink_soccp_data },
 	{ .compatible = "qcom,kaanapali-pmic-glink", .data = &pmic_glink_soccp_data },
+	{ .compatible = "oneplus,sm8750-pmic-glink", .data = &pmic_glink_oneplus_sm8750_data },
 	{ .compatible = "xiaomi,kaanapali-pmic-glink", .data = &pmic_glink_xiaomi_soccp_data },
 	{ .compatible = "qcom,pmic-glink", .data = &pmic_glink_adsp_data },
 	{}

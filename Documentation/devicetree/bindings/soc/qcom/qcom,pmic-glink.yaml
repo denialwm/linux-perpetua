@@ -100,6 +100,13 @@ properties:
       - const: charge_limit_end
       - const: charge_limit_delta
 
+  regulator-pen-boost:
+    $ref: /schemas/regulator/regulator.yaml#
+    unevaluatedProperties: false
+    description:
+      The boost converter that OnePlus' SM8750 charger firmware drives for
+      the stylus charger coil.
+
 patternProperties:
   '^connector@\d$':
     $ref: /schemas/connector/usb-connector.yaml#
@@ -111,6 +118,17 @@ required:
 
 dependencies:
   '#cooling-cells': [ 'qcom,charge-current-limits-microamp' ]
+
+allOf:
+  - if:
+      not:
+        properties:
+          compatible:
+            contains:
+              const: oneplus,sm8750-pmic-glink
+    then:
+      properties:
+        regulator-pen-boost: false
 
 additionalProperties: false
 
