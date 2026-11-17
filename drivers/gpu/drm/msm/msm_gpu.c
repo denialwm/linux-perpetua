@@ -461,6 +461,27 @@ static void get_comm_cmdline(struct msm_gem_submit *submit, char **comm, char **
 	put_task_struct(task);
 }
 
+static void msm_gpu_drop_submits(struct msm_gpu *gpu)
+{
+	int i;
+
+	for (i = 0; i < gpu->nr_rings; i++) {
+		struct msm_ringbuffer *ring = gpu->rb[i];
+		struct msm_gem_submit *submit;
+		unsigned long flags;
+
+		spin_lock_irqsave(&ring->submit_lock, flags);
+		list_for_each_entry(submit, &ring->submits, node) {
+			if (!dma_fence_is_signaled(submit->hw_fence))
+				dma_fence_set_error(submit->hw_fence, -EIO);
+		}
+		spin_unlock_irqrestore(&ring->submit_lock, flags);
+
+		ring->memptrs->fence = ring->fctx->last_fence;
+		msm_update_fence(ring->fctx, ring->fctx->last_fence);
+	}
+}
+
 static void recover_worker(struct kthread_work *work)
 {
 	struct msm_gpu *gpu = container_of(work, struct msm_gpu, recover_work);
@@ -557,6 +578,19 @@ static void recover_worker(struct kthread_work *work)
 	priv->disable_err_irq = false;
 
 	gpu->funcs->recover(gpu);
+
+	/*
+	 * If the GPU did not come back, replaying the remaining submits only
+	 * hangs again, one hangcheck period per submit, while everybody waiting
+	 * on their fences (the compositor, atomic commits, system suspend and
+	 * shutdown) waits with them. Fail them all instead; the next submit
+	 * tries to bring the GPU up again.
+	 */
+	if (gpu->needs_hw_init) {
+		DRM_DEV_ERROR(dev->dev, "%s: GPU did not recover, dropping pending submits\n",
+			      gpu->name);
+		msm_gpu_drop_submits(gpu);
+	}
 
 	/* retire completed submits, plus the one that hung: */
 	retire_submits(gpu);
