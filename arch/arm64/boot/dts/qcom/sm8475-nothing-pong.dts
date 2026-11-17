@@ -87,6 +87,22 @@
 	};
 
 	reserved-memory {
+		/*
+		 * The stock tree puts no fixed region here: its rmtfs shared
+		 * memory is allocated at run time (sharedmem-uio, 2.5 MiB), as
+		 * the video region sits at SM8450's rmtfs address.
+		 */
+		rmtfs_mem: rmtfs-region {
+			compatible = "qcom,rmtfs-mem";
+			size = <0x0 0x280000>;
+			alignment = <0x0 0x10000>;
+			alloc-ranges = <0x0 0x00000000 0x0 0xffffffff>;
+			no-map;
+
+			qcom,client-id = <1>;
+			qcom,vmid = <QCOM_SCM_VMID_MSS_MSA>;
+		};
+
 		adsp_mem: memory@85700000 {
 			reg = <0x0 0x85700000 0x0 0x2800000>;
 			no-map;
@@ -851,10 +867,9 @@
 	status = "okay";
 };
 
-/* The modem needs rmtfs and its board data first: it stays off for now. */
 &remoteproc_mpss {
 	firmware-name = "qcom/sm8475/pong/dsp/modem.mdt";
-	status = "disabled";
+	status = "okay";
 };
 
 &remoteproc_slpi {
