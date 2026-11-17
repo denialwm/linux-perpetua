@@ -33,6 +33,7 @@ struct sc8547_sample {
 
 struct sc8547 *sc8547_get(struct device *consumer, struct fwnode_handle *fwnode);
 struct regmap *sc8547_regmap(struct sc8547 *cp);
+unsigned int sc8547_phy_ctrl_reg(struct sc8547 *cp);
 int sc8547_prepare(struct sc8547 *cp);
 int sc8547_enable(struct sc8547 *cp);
 int sc8547_disable(struct sc8547 *cp);

@@ -158,6 +158,8 @@ struct adc5_device_data {
  *	that is an average of multiple measurements.
  * @scale_fn_type: Represents the scaling function to convert voltage
  *	physical units desired by the client for the channel.
+ * @data: per-channel adc5_data, for channels that sit on Gen4 hardware
+ *	within a Gen3 device (full 16-bit ratiometric codes).
  */
 struct adc5_channel_common_prop {
 	unsigned int channel;
@@ -169,6 +171,7 @@ struct adc5_channel_common_prop {
 	unsigned int hw_settle_time_us;
 	unsigned int avg_samples;
 	enum vadc_scale_fn_type scale_fn_type;
+	const struct adc5_data *data;
 };
 
 /**

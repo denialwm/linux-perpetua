@@ -238,24 +238,25 @@ config OPLUS_SVOOC_KUNIT_TEST
 	  Unit tests for the SuperVOOC adapter protocol library.
 
 config CHARGER_SC8547
-	tristate "Southchip SC8547D charge pump"
+	tristate "Southchip SC8547A/SC8547D charge pump"
 	depends on I2C
 	select REGMAP_I2C
 	select AUXILIARY_BUS
 	help
-	  Say Y or M here to enable the Southchip SC8547D 2:1 switched
-	  capacitor charge pump. It reports its state and faults and is
-	  switched on only by a direct charging driver, such as the one for
-	  its SuperVOOC PHY.
+	  Say Y or M here to enable the Southchip SC8547A or SC8547D 2:1
+	  switched capacitor charge pump. It reports its state and faults
+	  and is switched on only by a direct charging driver, such as the
+	  one for its SuperVOOC PHY.
 
 config CHARGER_SC8547_SVOOC
-	tristate "SuperVOOC charging through the SC8547D VOOC PHY"
+	tristate "SuperVOOC charging through the SC8547A/SC8547D VOOC PHY"
 	depends on CHARGER_SC8547 && BATTERY_QCOM_BATTMGR
 	depends on IIO && MULTIPLEXER
 	select OPLUS_SVOOC
 	help
 	  Say Y or M here to charge from Oplus SuperVOOC adapters through the
-	  VOOC PHY of an SC8547D charge pump, with an optional second pump.
+	  VOOC PHY of an SC8547A or SC8547D charge pump, with an optional
+	  second pump.
 	  The Qualcomm PMIC GLINK USB supply detects the charger and gives
 	  up its input while the pumps charge.
 

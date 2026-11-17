@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * SuperVOOC direct charging through the SC8547D VOOC PHY.
+ * SuperVOOC direct charging through the SC8547A/SC8547D VOOC PHY.
  *
  * Session sequence and limits adapted from the Oplus AP VOOC PHY and
  * SC8547D drivers, Copyright (C) 2018-2023 Oplus. All rights reserved.
@@ -11,6 +11,7 @@
 #include <linux/auxiliary_bus.h>
 #include <linux/debugfs.h>
 #include <linux/iio/consumer.h>
+#include <linux/iio/iio.h>
 #include <linux/jiffies.h>
 #include <linux/ktime.h>
 #include <linux/math64.h>
@@ -36,7 +37,6 @@
 #define SC8547_PHY_IRQ_MASK	0x30
 #define SC8547_PREDATA		0x31
 #define SC8547_DET_CTRL		0x33
-#define SC8547_PHY_CTRL		0x34
 
 #define SC8547_PHY_TX_DONE	BIT(0)
 #define SC8547_PHY_RX_DONE	BIT(1)
@@ -78,6 +78,100 @@
 #define SVOOC_BUCK_MS		400
 #define SVOOC_RESTORE_MS	3000
 #define SVOOC_PLUG_MS		2000
+
+/*
+ * The board's charge strategy, from the vooc-phy node, as the factory
+ * driver runs it: oplus_ap_voocphy.c picks a curve by charge level and
+ * temperature at the start (:1193-1326, :2997-3111), steps through it as the
+ * battery voltage rises (:5549-5672), ends at a full voltage for the
+ * temperature (:5778-5862), at a low battery current near full
+ * (strategy/oplus_strategy_low_curr_full.c) or after a time limit
+ * (:5944-5966). The checks run at its rates: voltage every 500 ms, current
+ * every second (oplus_voocphy.h:366-372).
+ */
+#define SVOOC_BANDS_MAX		8
+#define SVOOC_STEPS_MAX		16
+#define SVOOC_LCF_MAX		6
+#define SVOOC_FFC_ROWS_MAX	40
+#define SVOOC_ADAPTERS_MAX	64
+#define SVOOC_VOL_MS		500
+#define SVOOC_CURR_MS		1000
+/* A step ends after more than three readings above its voltage... */
+#define SVOOC_STEP_COUNT	4
+/* ...within 1 A of its current (TARGET_VOL_OFFSET_THR). */
+#define SVOOC_STEP_MARGIN_UA	1000000
+/* More than five readings above the held full voltage end a session. */
+#define SVOOC_FULL_COUNT	6
+/* More than six at the low-current threshold (LCF_LOW_CURR_FULL_COUNTS). */
+#define SVOOC_LCF_COUNT		7
+/* A temperature band changes 1 °C past its edge (VOOC_TEMP_RANGE_THD). */
+#define SVOOC_TEMP_HYST		10
+/* A session stops 0.5 °C below the lowest band (vooc_batt_over_low_temp). */
+#define SVOOC_TEMP_LOW_MARGIN	5
+/*
+ * The top-up after a full session, as oplus_chg_comm.c:4602-4920 runs it
+ * on each 5 s gauge update: the next step after four readings at the
+ * step's battery voltage or two below its current.
+ */
+#define SVOOC_FFC_MS		5000
+#define SVOOC_FFC_VOLT_COUNT	4
+#define SVOOC_FFC_CURR_COUNT	2
+
+struct svooc_step {
+	u32 uv;
+	u32 ua;
+};
+
+struct svooc_curve {
+	struct svooc_step step[SVOOC_STEPS_MAX];
+	unsigned int num;
+};
+
+struct svooc_lcf {
+	u32 ua;
+	u32 uv;
+};
+
+struct svooc_ffc_row {
+	u32 fv_uv;
+	u32 ua;
+	u32 cutoff_uv;
+	u32 cutoff_ua;
+};
+
+struct svooc_strategy {
+	unsigned int soc_bands;
+	u32 soc_max[SVOOC_BANDS_MAX];
+	unsigned int temp_bands;
+	s32 temp[SVOOC_BANDS_MAX + 1];
+	struct svooc_curve curve[SVOOC_BANDS_MAX][SVOOC_BANDS_MAX];
+	u32 full_uv[SVOOC_BANDS_MAX][2];
+	u32 overvoltage_uv;
+	u32 timeout_s;
+	u32 min_ua;
+	unsigned int lcf_bands;
+	s32 lcf_temp[SVOOC_BANDS_MAX + 1];
+	struct svooc_lcf lcf[SVOOC_BANDS_MAX][SVOOC_LCF_MAX];
+	unsigned int lcf_num[SVOOC_BANDS_MAX];
+	unsigned int ffc_bands;
+	unsigned int ffc_steps;
+	s32 ffc_temp[SVOOC_BANDS_MAX + 1];
+	u32 ffc_skip_uv;
+	u32 ffc_restore_uv[SVOOC_BANDS_MAX];
+	struct svooc_ffc_row ffc[SVOOC_FFC_ROWS_MAX];
+};
+
+struct svooc_adapter {
+	u32 first;
+	u32 last;
+	u32 power_uw;
+};
+
+enum svooc_ffc_state {
+	SVOOC_FFC_OFF,
+	SVOOC_FFC_PENDING,	/* after a full session, before the first step */
+	SVOOC_FFC_RUNNING,
+};
 
 enum svooc_therm {
 	SVOOC_USB_CONNECTOR,
@@ -168,6 +262,8 @@ struct sc8547_svooc {
 	unsigned int quiet;
 	unsigned int disagree;
 	int limit_ua;
+	/* The board's limit on the adapter current, at most SVOOC_MAX_UA. */
+	int max_ua;
 	int taper_ua;
 	int target_ua;
 	int applied_ua;
@@ -185,6 +281,38 @@ struct sc8547_svooc {
 	unsigned int skipped;
 	unsigned int retries;
 	bool stopping;
+	/* The board's charge strategy and adapters, or NULL. */
+	struct svooc_strategy *strategy;
+	/*
+	 * Whether sessions follow @strategy and top up after it, from DT;
+	 * debugfs may change them for the next session.
+	 */
+	bool use_strategy;
+	bool use_ffc;
+	struct svooc_adapter *adapters;
+	unsigned int num_adapters;
+	/* This session follows @strategy. */
+	bool stock;
+	/* This session ended full and may top up. */
+	bool full;
+	bool ffc_armed;
+	/* The adapter's power, at most SVOOC_POWER_UW. */
+	s64 power_uw;
+	int soc_band;
+	int temp_band;
+	int step;
+	unsigned int step_count;
+	unsigned int full_count;
+	unsigned int lcf_count;
+	unsigned long running_at;
+	unsigned long vol_at;
+	unsigned long curr_at;
+	enum svooc_ffc_state ffc;
+	int ffc_band;
+	unsigned int ffc_step;
+	unsigned int ffc_volt_count;
+	unsigned int ffc_curr_count;
+	unsigned long ffc_at;
 };
 
 static int svooc_get(struct power_supply *psy, enum power_supply_property prop,
@@ -229,8 +357,12 @@ static int svooc_read_therms(struct sc8547_svooc *sv, int *mc)
 
 	for (i = 0; i < SVOOC_THERMS; i++) {
 		ret = iio_read_channel_processed(sv->therm[i], &mc[i]);
-		if (ret < 0)
+		if (ret < 0) {
+			dev_dbg(sv->dev, "therm[%d] (v_chan %u) read failed: %d\n",
+				i, sv->therm[i]->channel ? sv->therm[i]->channel->channel : 0,
+				ret);
 			return ret;
+		}
 	}
 	return 0;
 }
@@ -271,7 +403,8 @@ static int svooc_thermal_ua(struct sc8547_svooc *sv)
 		ua = min(ua, max(svooc_scale(sv->bat.temp, 380, 440), SVOOC_MIN_UA));
 	else
 		ua = 0;
-	if (sv->bat.temp < 210)
+	/* The board's curves have their own cold steps. */
+	if (!sv->stock && sv->bat.temp < 210)
 		ua = min(ua, 2500000);
 	return ua;
 }
@@ -280,6 +413,20 @@ static int svooc_vbat(struct sc8547_svooc *sv)
 {
 	/* Neither sense point may hide the taper from the other. */
 	return max(sv->bat.uv, sv->sample[0].vbat_uv);
+}
+
+/*
+ * The battery voltage the overvoltage stop judges, picked as the stock
+ * gauge picks it (oplus_mms_gauge.c:3352-3380): the pump's reading, unless
+ * it is missing, at or past @ov_uv, or more than 800 mV off the gauge's;
+ * then the gauge's. The pump senses ahead of the board's path to the
+ * cell, so near full under load it alone can pass the limit.
+ */
+static int svooc_ov_vbat(int gauge_uv, int pump_uv, int ov_uv)
+{
+	if (pump_uv <= 0 || pump_uv >= ov_uv || abs(pump_uv - gauge_uv) > 800000)
+		return gauge_uv;
+	return pump_uv;
 }
 
 static int svooc_taper_ua(int uv)
@@ -295,15 +442,165 @@ static int svooc_taper_ua(int uv)
 	return SVOOC_MAX_UA;
 }
 
+static int svooc_ibus(struct sc8547_svooc *sv)
+{
+	return sv->sample[0].ibus_ua + (sv->second_on ? sv->sample[1].ibus_ua : 0);
+}
+
+static int svooc_min_ua(struct sc8547_svooc *sv)
+{
+	return sv->stock ? sv->strategy->min_ua : SVOOC_MIN_UA;
+}
+
+/* The band of @value between @bands + 1 rising bounds, or -1. */
+static int svooc_band(const s32 *bound, unsigned int bands, int value)
+{
+	unsigned int i;
+
+	for (i = 0; i < bands; i++)
+		if (value >= bound[i] && value < bound[i + 1])
+			return i;
+	return -1;
+}
+
+static int svooc_soc_band(const struct svooc_strategy *st, int capacity)
+{
+	unsigned int i;
+
+	for (i = 0; i < st->soc_bands; i++)
+		if (capacity <= st->soc_max[i])
+			return i;
+	return -1;
+}
+
+static const struct svooc_curve *svooc_curve(struct sc8547_svooc *sv)
+{
+	return &sv->strategy->curve[sv->soc_band][sv->temp_band];
+}
+
+/*
+ * The first step whose voltage the battery has not passed; the last step
+ * only holds until full. Past them all the factory driver takes the first
+ * step (:3093-3097); take the last, lowest one.
+ */
+static int svooc_first_step(const struct svooc_curve *c, int uv)
+{
+	unsigned int i;
+
+	for (i = 0; i + 1 < c->num; i++)
+		if (uv <= c->step[i].uv)
+			return i;
+	return c->num - 1;
+}
+
+/* The bands for the charge level and temperature, or -1 for none. */
+static bool svooc_select(struct sc8547_svooc *sv, int capacity, int temp)
+{
+	const struct svooc_strategy *st = sv->strategy;
+	int soc = svooc_soc_band(st, capacity);
+	int band = svooc_band(st->temp, st->temp_bands, temp);
+
+	if (soc < 0 || band < 0 || !st->curve[soc][band].num) {
+		sv->soc_band = -1;
+		sv->temp_band = -1;
+		return false;
+	}
+	sv->soc_band = soc;
+	sv->temp_band = band;
+	sv->step = svooc_first_step(svooc_curve(sv), sv->bat.uv);
+	sv->step_count = 0;
+	return true;
+}
+
+/*
+ * The board's strategy for a running session. Returns 1 when it is done,
+ * with @sv->full set when the battery is full, or 0.
+ */
+static int svooc_stock_check(struct sc8547_svooc *sv)
+{
+	const struct svooc_strategy *st = sv->strategy;
+	const struct svooc_curve *c;
+	int temp = sv->bat.temp, uv = sv->bat.uv, vbat = svooc_vbat(sv);
+	unsigned long now = jiffies;
+	unsigned int i;
+	int band;
+
+	/*
+	 * Leaving the temperature band starts the curve over for the present
+	 * charge level and temperature, as the factory driver ends the
+	 * session and starts a new one (oplus_chg_vooc.c:2290-2420); above
+	 * the highest charge level band that ends fast charging.
+	 */
+	if (temp < st->temp[sv->temp_band] - SVOOC_TEMP_HYST ||
+	    temp >= st->temp[sv->temp_band + 1] + SVOOC_TEMP_HYST) {
+		if (!svooc_select(sv, sv->bat.capacity, temp))
+			return 1;
+		dev_info(sv->dev, "SuperVOOC curve %d/%d from step %d at %d.%d C\n",
+			 sv->soc_band, sv->temp_band, sv->step, temp / 10, abs(temp) % 10);
+	}
+	if (st->timeout_s && time_after_eq(now, sv->started + st->timeout_s * HZ)) {
+		dev_info(sv->dev, "SuperVOOC time limit\n");
+		sv->full = true;
+		return 1;
+	}
+	if (time_after_eq(now, sv->vol_at)) {
+		sv->vol_at = now + msecs_to_jiffies(SVOOC_VOL_MS);
+		c = svooc_curve(sv);
+		if (sv->step + 1 < c->num && uv > c->step[sv->step].uv &&
+		    svooc_ibus(sv) < c->step[sv->step].ua + SVOOC_STEP_MARGIN_UA) {
+			if (++sv->step_count >= SVOOC_STEP_COUNT) {
+				sv->step++;
+				sv->step_count = 0;
+			}
+		} else {
+			sv->step_count = 0;
+		}
+		/* Like the factory driver, the held count does not reset. */
+		if (vbat > st->full_uv[sv->temp_band][0] ||
+		    (vbat > st->full_uv[sv->temp_band][1] &&
+		     ++sv->full_count >= SVOOC_FULL_COUNT)) {
+			dev_info(sv->dev, "SuperVOOC full at %d uV\n", vbat);
+			sv->full = true;
+			return 1;
+		}
+	}
+	if (st->lcf_bands && time_after_eq(now, sv->curr_at)) {
+		sv->curr_at = now + msecs_to_jiffies(SVOOC_CURR_MS);
+		band = svooc_band(st->lcf_temp, st->lcf_bands, temp);
+		for (i = 0; band >= 0 && i < st->lcf_num[band]; i++)
+			if (sv->bat.ua <= (int)st->lcf[band][i].ua &&
+			    uv >= st->lcf[band][i].uv)
+				break;
+		if (band >= 0 && i < st->lcf_num[band]) {
+			if (++sv->lcf_count >= SVOOC_LCF_COUNT) {
+				dev_info(sv->dev, "SuperVOOC full at %d uA, %d uV\n",
+					 sv->bat.ua, uv);
+				sv->full = true;
+				return 1;
+			}
+		} else {
+			sv->lcf_count = 0;
+		}
+	}
+	return 0;
+}
+
 static bool svooc_admissible(struct sc8547_svooc *sv)
 {
 	const struct svooc_battery *bat = &sv->bat;
 	int i;
 
-	if (bat->health != POWER_SUPPLY_HEALTH_GOOD || bat->capacity >= 90 ||
-	    bat->temp < 150 || bat->temp >= 440 ||
-	    bat->uv < 3300000 || bat->uv >= 4400000)
+	if (bat->health != POWER_SUPPLY_HEALTH_GOOD || bat->temp >= 440 ||
+	    bat->uv < 3300000)
 		return false;
+	/* The board's bands bound the charge level and temperature. */
+	if (sv->stock) {
+		if (sv->temp_band < 0 ||
+		    bat->uv >= sv->strategy->full_uv[sv->temp_band][1])
+			return false;
+	} else if (bat->capacity >= 90 || bat->temp < 150 || bat->uv >= 4400000) {
+		return false;
+	}
 	for (i = 0; i < SVOOC_THERMS; i++)
 		if (sv->therm_mc[i] < 0 || sv->therm_mc[i] >= svooc_therm_limits[i].soft)
 			return false;
@@ -313,20 +610,23 @@ static bool svooc_admissible(struct sc8547_svooc *sv)
 /* The session's current, chosen at entry from the charge level. */
 static int svooc_entry_ua(struct sc8547_svooc *sv)
 {
-	int ua = sv->bat.capacity <= 55 ? SVOOC_MAX_UA :
-		 sv->bat.capacity < 85 ? 3000000 : 2000000;
+	int ua;
 
+	if (sv->stock) {
+		if (sv->temp_band < 0)
+			return 0;
+		ua = svooc_curve(sv)->step[sv->step].ua;
+	} else {
+		ua = sv->bat.capacity <= 55 ? SVOOC_MAX_UA :
+		     sv->bat.capacity < 85 ? 3000000 : 2000000;
+		ua = min(ua, svooc_taper_ua(sv->bat.uv));
+	}
+	ua = min(ua, sv->max_ua);
 	ua = min(ua, svooc_thermal_ua(sv));
-	ua = min(ua, svooc_taper_ua(sv->bat.uv));
 	/* Within the power budget at the top of the VBUS window. */
 	ua = min_t(int, ua, div_s64(SVOOC_POWER_UW * 1000000,
 				    2 * sv->bat.uv + 700000));
 	return ua / 100000 * 100000;
-}
-
-static int svooc_ibus(struct sc8547_svooc *sv)
-{
-	return sv->sample[0].ibus_ua + (sv->second_on ? sv->sample[1].ibus_ua : 0);
 }
 
 static int svooc_write_frame(struct sc8547_svooc *sv, unsigned int reg,
@@ -360,7 +660,7 @@ static int svooc_phy_setup(struct sc8547_svooc *sv)
 	ret = regmap_bulk_write(sv->regmap, SC8547_PREDATA, data, sizeof(data));
 	/* Hold bit 0 for 800 us, or the adapter misreads current commands. */
 	if (!ret)
-		ret = regmap_set_bits(sv->regmap, SC8547_PHY_CTRL, BIT(6));
+		ret = regmap_set_bits(sv->regmap, sc8547_phy_ctrl_reg(sv->main), BIT(6));
 	if (!ret)
 		ret = svooc_write_verify(sv, SC8547_DPDM_CTRL, 0x21);
 	if (!ret)
@@ -486,6 +786,49 @@ static int svooc_power_command(struct sc8547_svooc *sv,
 	}
 }
 
+/*
+ * The models a garbled exchange leaves, on which the factory driver goes
+ * back to standard charging (oplus_vooc.c:1834-1845).
+ */
+static bool svooc_model_garbled(u8 model)
+{
+	return model == 0x0f || model == 0x1f || model == 0x3f || model == 0x7f;
+}
+
+/*
+ * With the board's adapter table, only a known adapter with power may raise
+ * VBUS, as the factory driver looks the model up (oplus_chg_vooc.c:467-512,
+ * :601-649). The session keeps within the adapter's power. A garbled model
+ * never raises it, with a table or without.
+ */
+static int svooc_check_adapter(struct sc8547_svooc *sv)
+{
+	u8 model = sv->proto.model;
+	unsigned int i;
+
+	if (svooc_model_garbled(model)) {
+		dev_warn(sv->dev, "SuperVOOC adapter model %02x garbled\n", model);
+		return -EPROTONOSUPPORT;
+	}
+	if (!sv->num_adapters)
+		return 0;
+	for (i = 0; i < sv->num_adapters; i++) {
+		if (model < sv->adapters[i].first || model > sv->adapters[i].last)
+			continue;
+		if (!sv->adapters[i].power_uw)
+			break;
+		sv->power_uw = min_t(s64, SVOOC_POWER_UW, sv->adapters[i].power_uw);
+		sv->limit_ua = min_t(int, sv->limit_ua,
+				     div_s64(sv->power_uw * 1000000,
+					     2 * sv->bat.uv + 700000) / 100000 * 100000);
+		if (sv->limit_ua < svooc_min_ua(sv))
+			break;
+		return 0;
+	}
+	dev_warn(sv->dev, "SuperVOOC adapter %02x not supported\n", model);
+	return -EPROTONOSUPPORT;
+}
+
 static int svooc_receive(struct sc8547_svooc *sv, u8 rx, u8 flags)
 {
 	struct oplus_svooc_request req;
@@ -541,6 +884,9 @@ static int svooc_receive(struct sc8547_svooc *sv, u8 rx, u8 flags)
 	if (ret) {
 		if (req.command == OPLUS_SVOOC_FASTCHG && sv->proto.granted &&
 		    sv->state == SVOOC_SUSPEND) {
+			ret = svooc_check_adapter(sv);
+			if (ret)
+				return ret;
 			/* Missed replies make the PHY ask for a lower voltage. */
 			ret = svooc_write_frame(sv, SC8547_PREDATA,
 						OPLUS_SVOOC_VBUS_HIGH, false);
@@ -605,6 +951,119 @@ static void svooc_phy_irq(void *data)
 	mutex_unlock(&sv->lock);
 }
 
+static int svooc_set_battery(struct sc8547_svooc *sv,
+			     enum power_supply_property prop, int value)
+{
+	union power_supply_propval val = { .intval = value };
+
+	return power_supply_set_property(sv->battery, prop, &val);
+}
+
+static int svooc_ffc_apply(struct sc8547_svooc *sv)
+{
+	const struct svooc_strategy *st = sv->strategy;
+	const struct svooc_ffc_row *row = &st->ffc[sv->ffc_step * st->ffc_bands +
+						   sv->ffc_band];
+	int ret;
+
+	ret = svooc_set_battery(sv, POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
+				row->fv_uv);
+	if (!ret)
+		ret = svooc_set_battery(sv, POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
+					row->ua);
+	return ret;
+}
+
+/* Give the standard charger its own current and the board's voltage back. */
+static void svooc_ffc_stop(struct sc8547_svooc *sv)
+{
+	const struct svooc_strategy *st = sv->strategy;
+
+	if (sv->ffc == SVOOC_FFC_RUNNING) {
+		if (svooc_set_battery(sv, POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT, -1) ||
+		    svooc_set_battery(sv, POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
+				      st->ffc_restore_uv[sv->ffc_band]))
+			dev_err(sv->dev, "cannot end the top-up charge\n");
+		else
+			dev_info(sv->dev, "top-up charge ended at step %u\n", sv->ffc_step);
+	}
+	sv->ffc = SVOOC_FFC_OFF;
+}
+
+/*
+ * After a full session the standard charger tops the battery up at a
+ * raised voltage limit and a low current, in steps, within a temperature
+ * window (oplus_chg_comm.c:4602-4700, :4783-4920). Runs in the worker.
+ */
+static void svooc_ffc_tick(struct sc8547_svooc *sv)
+{
+	const struct svooc_strategy *st = sv->strategy;
+	const struct svooc_ffc_row *row;
+	struct svooc_battery bat;
+	unsigned int step;
+	int band;
+
+	if (time_before(jiffies, sv->ffc_at)) {
+		mod_delayed_work(system_highpri_wq, &sv->work, sv->ffc_at - jiffies);
+		return;
+	}
+	sv->ffc_at = jiffies + msecs_to_jiffies(SVOOC_FFC_MS);
+	if (svooc_read_battery(sv, &bat) || bat.health != POWER_SUPPLY_HEALTH_GOOD)
+		goto stop;
+	band = svooc_band(st->ffc_temp, st->ffc_bands, bat.temp);
+	if (band < 0)
+		goto stop;
+	if (sv->ffc == SVOOC_FFC_PENDING) {
+		/* A battery already full near its limit skips it (:4609-4635). */
+		if (st->ffc_skip_uv && bat.uv >= st->ffc_skip_uv && bat.capacity >= 100)
+			goto stop;
+		sv->ffc_band = band;
+		sv->ffc_step = 0;
+		sv->ffc_volt_count = 0;
+		sv->ffc_curr_count = 0;
+		sv->ffc = SVOOC_FFC_RUNNING;
+		if (svooc_ffc_apply(sv))
+			goto stop;
+		dev_info(sv->dev, "top-up charge at %d.%d C\n", bat.temp / 10,
+			 abs(bat.temp) % 10);
+		goto next;
+	}
+	if (band != sv->ffc_band) {
+		sv->ffc_band = band;
+		if (svooc_ffc_apply(sv))
+			goto stop;
+	}
+	row = &st->ffc[sv->ffc_step * st->ffc_bands + band];
+	step = sv->ffc_step;
+	/* As the factory driver counts: the voltage count does not reset. */
+	if (bat.uv >= row->cutoff_uv)
+		sv->ffc_volt_count++;
+	if (sv->ffc_volt_count >= SVOOC_FFC_VOLT_COUNT) {
+		step++;
+	} else {
+		if (abs(bat.ua) < row->cutoff_ua)
+			sv->ffc_curr_count++;
+		else
+			sv->ffc_curr_count = 0;
+		if (sv->ffc_curr_count >= SVOOC_FFC_CURR_COUNT)
+			step++;
+	}
+	if (step != sv->ffc_step) {
+		sv->ffc_volt_count = 0;
+		sv->ffc_curr_count = 0;
+		if (step >= st->ffc_steps)
+			goto stop;
+		sv->ffc_step = step;
+		if (svooc_ffc_apply(sv))
+			goto stop;
+	}
+next:
+	mod_delayed_work(system_highpri_wq, &sv->work, msecs_to_jiffies(SVOOC_FFC_MS));
+	return;
+stop:
+	svooc_ffc_stop(sv);
+}
+
 static void svooc_start(struct sc8547_svooc *sv)
 {
 	struct svooc_battery bat;
@@ -618,18 +1077,36 @@ static void svooc_start(struct sc8547_svooc *sv)
 				 sv->plugged_at + msecs_to_jiffies(SVOOC_PLUG_MS) - jiffies);
 		return;
 	}
-	if (svooc_read_battery(sv, &bat) || svooc_read_therms(sv, therm))
+	if (svooc_read_battery(sv, &bat) || svooc_read_therms(sv, therm)) {
+		/* Transient ADC failure: keep retrying instead of wedging. */
+		dev_dbg(sv->dev, "start: battery/therm read failed, retrying\n");
+		mod_delayed_work(system_highpri_wq, &sv->work,
+				 msecs_to_jiffies(SVOOC_RETRY_MS));
 		return;
+	}
+
+	if (sv->ffc != SVOOC_FFC_OFF)
+		svooc_ffc_stop(sv);
 
 	mutex_lock(&sv->lock);
 	sv->bat = bat;
 	memcpy(sv->therm_mc, therm, sizeof(therm));
 	memset(sv->sample, 0, sizeof(sv->sample));
+	/* A session keeps the rules it started with. */
+	sv->stock = sv->strategy && READ_ONCE(sv->use_strategy);
+	sv->ffc_armed = sv->stock && sv->strategy->ffc_steps &&
+			READ_ONCE(sv->use_ffc);
+	sv->full = false;
+	sv->full_count = 0;
+	sv->lcf_count = 0;
+	sv->power_uw = SVOOC_POWER_UW;
+	if (sv->stock)
+		svooc_select(sv, bat.capacity, bat.temp);
 	sv->limit_ua = svooc_entry_ua(sv);
 	if (!sv->second)
 		sv->limit_ua = min(sv->limit_ua, SVOOC_PUMP_MAX_UA);
 	mutex_unlock(&sv->lock);
-	if (!svooc_admissible(sv) || sv->limit_ua < SVOOC_MIN_UA) {
+	if (!svooc_admissible(sv) || sv->limit_ua < svooc_min_ua(sv)) {
 		mod_delayed_work(system_highpri_wq, &sv->work,
 				 msecs_to_jiffies(SVOOC_RETRY_MS));
 		return;
@@ -679,6 +1156,8 @@ static void svooc_start(struct sc8547_svooc *sv)
 	sv->disagree = 0;
 	sv->discharge_since = 0;
 	sv->started = jiffies;
+	sv->vol_at = jiffies;
+	sv->curr_at = jiffies;
 	sv->last_rx = jiffies;
 	sv->sampled_at = jiffies - msecs_to_jiffies(SVOOC_SAMPLE_MS);
 	sv->phy_on = true;
@@ -762,15 +1241,18 @@ static int svooc_regulate(struct sc8547_svooc *sv)
 	if (sv->state != SVOOC_RUNNING || (sv->second && !sv->dual &&
 					    sv->applied_ua > SVOOC_PUMP_MAX_UA))
 		return 0;
-	sv->taper_ua = min(sv->taper_ua, svooc_taper_ua(svooc_vbat(sv)));
+	if (sv->stock)
+		sv->taper_ua = svooc_curve(sv)->step[sv->step].ua;
+	else
+		sv->taper_ua = min(sv->taper_ua, svooc_taper_ua(svooc_vbat(sv)));
 	ua = min(sv->limit_ua, sv->taper_ua);
 	ua = min(ua, svooc_thermal_ua(sv));
-	ua = min_t(int, ua, div_s64(SVOOC_POWER_UW * 1000000, vbus) - 100000);
-	if (power > SVOOC_POWER_UW * 1000000)
+	ua = min_t(int, ua, div_s64(sv->power_uw * 1000000, vbus) - 100000);
+	if (power > sv->power_uw * 1000000)
 		ua = min_t(int, ua, sv->applied_ua - 100000 -
-			   div_s64(power - (SVOOC_POWER_UW - 500000) * 1000000, vbus));
+			   div_s64(power - (sv->power_uw - 500000) * 1000000, vbus));
 	ua = ua / 100000 * 100000;
-	if (ua < SVOOC_MIN_UA)
+	if (ua < svooc_min_ua(sv))
 		return 1;
 	if (sv->pending_ua || sv->change ||
 	    time_before(jiffies, sv->change_deadline))
@@ -795,7 +1277,8 @@ static int svooc_check(struct sc8547_svooc *sv)
 	int frame_ms = sv->frames ? SVOOC_FRAME_MS : SVOOC_FIRST_FRAME_MS;
 	int i, vbat = svooc_vbat(sv);
 
-	if (sv->mode != POWER_SUPPLY_CHARGE_TYPE_FAST || sv->bat.capacity >= 90)
+	if (sv->mode != POWER_SUPPLY_CHARGE_TYPE_FAST ||
+	    (!sv->stock && sv->bat.capacity >= 90))
 		return 1;
 	if (time_after(now, sv->last_rx + msecs_to_jiffies(frame_ms)))
 		return -ETIMEDOUT;
@@ -806,8 +1289,14 @@ static int svooc_check(struct sc8547_svooc *sv)
 		return -ETIMEDOUT;
 	if (sv->change && time_after(now, sv->change_deadline))
 		return -ETIMEDOUT;
-	if (sv->bat.health != POWER_SUPPLY_HEALTH_GOOD || vbat >= SVOOC_VBAT_MAX_UV ||
-	    sv->bat.temp >= 440)
+	if (sv->bat.health != POWER_SUPPLY_HEALTH_GOOD || sv->bat.temp >= 440 ||
+	    (!sv->stock && vbat >= SVOOC_VBAT_MAX_UV))
+		return -ERANGE;
+	if (sv->stock && ((sv->strategy->overvoltage_uv &&
+			   svooc_ov_vbat(sv->bat.uv, sv->sample[0].vbat_uv,
+					 sv->strategy->overvoltage_uv) >=
+			   sv->strategy->overvoltage_uv) ||
+			  sv->bat.temp < sv->strategy->temp[0] - SVOOC_TEMP_LOW_MARGIN))
 		return -ERANGE;
 	for (i = 0; i < SVOOC_THERMS; i++)
 		if (sv->therm_mc[i] >= svooc_therm_limits[i].hard)
@@ -842,6 +1331,11 @@ static int svooc_check(struct sc8547_svooc *sv)
 	if (sv->state == SVOOC_STARTING || sv->state == SVOOC_RUNNING) {
 		i = svooc_check_running(sv);
 		if (i && (sv->state == SVOOC_RUNNING || sv->sample[0].switching))
+			return i;
+	}
+	if (sv->stock && sv->state == SVOOC_RUNNING) {
+		i = svooc_stock_check(sv);
+		if (i)
 			return i;
 	}
 	return svooc_regulate(sv);
@@ -973,6 +1467,10 @@ static void svooc_restore(struct sc8547_svooc *sv)
 	}
 	mutex_lock(&sv->lock);
 	sv->state = SVOOC_DONE;
+	if (sv->full && sv->ffc_armed && !sv->error && !sv->stopping) {
+		sv->ffc = SVOOC_FFC_PENDING;
+		sv->ffc_at = jiffies;
+	}
 	mutex_unlock(&sv->lock);
 	pm_relax(sv->dev);
 	power_supply_changed(sv->psy);
@@ -994,6 +1492,16 @@ static void svooc_done(struct sc8547_svooc *sv)
 	int online = 0;
 
 	svooc_get(sv->usb, POWER_SUPPLY_PROP_ONLINE, &online);
+	if (sv->ffc != SVOOC_FFC_OFF) {
+		if (online && READ_ONCE(sv->mode) == POWER_SUPPLY_CHARGE_TYPE_FAST &&
+		    !sv->stopping) {
+			svooc_ffc_tick(sv);
+			if (sv->ffc != SVOOC_FFC_OFF)
+				return;
+		} else {
+			svooc_ffc_stop(sv);
+		}
+	}
 	mutex_lock(&sv->lock);
 	retry_at = sv->stopped_at + msecs_to_jiffies(SVOOC_RETRY_MS);
 	if (!online) {
@@ -1170,6 +1678,11 @@ static int svooc_status_show(struct seq_file *s, void *data)
 		   sv->bat.capacity, sv->bat.temp);
 	seq_printf(s, "thermistors %d %d %d %d mC\n", sv->therm_mc[0],
 		   sv->therm_mc[1], sv->therm_mc[2], sv->therm_mc[3]);
+	if (sv->strategy)
+		seq_printf(s, "strategy %s curve %d/%d step %d full %d/%u/%u power %lld uW top-up %d step %u\n",
+			   sv->stock ? "on" : "off", sv->soc_band, sv->temp_band,
+			   sv->step, sv->full, sv->full_count, sv->lcf_count,
+			   sv->power_uw, sv->ffc, sv->ffc_step);
 	mutex_unlock(&sv->lock);
 	return 0;
 }
@@ -1193,6 +1706,7 @@ static void svooc_cleanup(void *data)
 	cancel_delayed_work_sync(&sv->work);
 	if (sv->state == SVOOC_STOPPING)
 		svooc_restore(sv);
+	svooc_ffc_stop(sv);
 	sc8547_set_phy_handler(sv->main, NULL, NULL);
 	debugfs_remove_recursive(sv->debugfs);
 	device_init_wakeup(sv->dev, false);
@@ -1220,6 +1734,227 @@ static int svooc_get_curve(struct sc8547_svooc *sv)
 	return 0;
 }
 
+/* Rising temperature bounds, in tenths of a degree, for up to 8 bands. */
+static int svooc_read_bands(struct fwnode_handle *node, const char *name,
+			    s32 *bound, unsigned int *bands)
+{
+	int n, i, ret;
+
+	n = fwnode_property_count_u32(node, name);
+	if (n < 2 || n > SVOOC_BANDS_MAX + 1)
+		return -EINVAL;
+	ret = fwnode_property_read_u32_array(node, name, (u32 *)bound, n);
+	if (ret)
+		return ret;
+	for (i = 1; i < n; i++)
+		if (bound[i] <= bound[i - 1])
+			return -EINVAL;
+	*bands = n - 1;
+	return 0;
+}
+
+/* A property of up to @max rows of @cols cells; returns the rows. */
+static int svooc_read_rows(struct fwnode_handle *node, const char *name,
+			   u32 *data, int cols, int max)
+{
+	int n, ret;
+
+	n = fwnode_property_count_u32(node, name);
+	if (n <= 0 || n % cols || n / cols > max)
+		return n < 0 ? n : -EINVAL;
+	ret = fwnode_property_read_u32_array(node, name, data, n);
+	return ret ? ret : n / cols;
+}
+
+static bool svooc_uv_valid(u32 uv)
+{
+	return uv >= 3500000 && uv <= 4700000;
+}
+
+static int svooc_get_curves(struct device *dev, struct svooc_strategy *st)
+{
+	struct fwnode_handle *curves, *soc;
+	char name[24];
+	unsigned int i, j, k;
+	int n, ret = 0;
+
+	curves = device_get_named_child_node(dev, "charge-curves");
+	if (!curves)
+		return -EINVAL;
+	st->min_ua = SVOOC_MAX_UA;
+	for (i = 0; i < st->soc_bands && !ret; i++) {
+		snprintf(name, sizeof(name), "soc-band-%u", i);
+		soc = fwnode_get_named_child_node(curves, name);
+		if (!soc) {
+			ret = -EINVAL;
+			break;
+		}
+		for (j = 0; j < st->temp_bands; j++) {
+			struct svooc_curve *c = &st->curve[i][j];
+
+			snprintf(name, sizeof(name), "temp-band-%u", j);
+			/* A band without a curve does not fast charge. */
+			if (!fwnode_property_present(soc, name))
+				continue;
+			n = svooc_read_rows(soc, name, (u32 *)c->step, 2, SVOOC_STEPS_MAX);
+			if (n < 0) {
+				ret = n;
+				break;
+			}
+			c->num = n;
+			for (k = 0; k < c->num; k++) {
+				u8 code;
+
+				if (!svooc_uv_valid(c->step[k].uv) ||
+				    (k && c->step[k].uv < c->step[k - 1].uv) ||
+				    oplus_svooc_current(c->step[k].ua, &code)) {
+					ret = -EINVAL;
+					break;
+				}
+				st->min_ua = min(st->min_ua, c->step[k].ua);
+			}
+			if (ret)
+				break;
+		}
+		fwnode_handle_put(soc);
+	}
+	fwnode_handle_put(curves);
+	return ret;
+}
+
+static int svooc_get_lcf(struct device *dev, struct svooc_strategy *st)
+{
+	struct fwnode_handle *node;
+	char name[24];
+	unsigned int i, k;
+	int n, ret;
+
+	node = device_get_named_child_node(dev, "low-current-full");
+	if (!node)
+		return 0;
+	ret = svooc_read_bands(node, "temp-bands", st->lcf_temp, &st->lcf_bands);
+	for (i = 0; !ret && i < st->lcf_bands; i++) {
+		snprintf(name, sizeof(name), "temp-band-%u", i);
+		if (!fwnode_property_present(node, name))
+			continue;
+		n = svooc_read_rows(node, name, (u32 *)st->lcf[i], 2, SVOOC_LCF_MAX);
+		if (n < 0) {
+			ret = n;
+			break;
+		}
+		st->lcf_num[i] = n;
+		for (k = 0; k < st->lcf_num[i]; k++)
+			if (!svooc_uv_valid(st->lcf[i][k].uv) ||
+			    st->lcf[i][k].ua > SVOOC_MAX_UA * 2)
+				ret = -EINVAL;
+	}
+	fwnode_handle_put(node);
+	return ret;
+}
+
+static int svooc_get_ffc(struct device *dev, struct svooc_strategy *st)
+{
+	struct fwnode_handle *node;
+	unsigned int i;
+	int n, ret;
+
+	node = device_get_named_child_node(dev, "fast-full-charge");
+	if (!node)
+		return 0;
+	ret = svooc_read_bands(node, "temp-bands", st->ffc_temp, &st->ffc_bands);
+	if (!ret && fwnode_property_count_u32(node, "restore-microvolt") != st->ffc_bands)
+		ret = -EINVAL;
+	if (!ret)
+		ret = fwnode_property_read_u32_array(node, "restore-microvolt",
+						     st->ffc_restore_uv, st->ffc_bands);
+	if (!ret) {
+		n = svooc_read_rows(node, "steps", (u32 *)st->ffc, 4, SVOOC_FFC_ROWS_MAX);
+		if (n < 0 || n % st->ffc_bands)
+			ret = n < 0 ? n : -EINVAL;
+		else
+			st->ffc_steps = n / st->ffc_bands;
+	}
+	fwnode_property_read_u32(node, "skip-microvolt", &st->ffc_skip_uv);
+	for (i = 0; !ret && i < st->ffc_bands; i++)
+		if (!svooc_uv_valid(st->ffc_restore_uv[i]))
+			ret = -EINVAL;
+	for (i = 0; !ret && i < st->ffc_steps * st->ffc_bands; i++)
+		if (!svooc_uv_valid(st->ffc[i].fv_uv) || !svooc_uv_valid(st->ffc[i].cutoff_uv) ||
+		    !st->ffc[i].ua || st->ffc[i].ua > SVOOC_MAX_UA)
+			ret = -EINVAL;
+	if (ret)
+		st->ffc_steps = 0;
+	fwnode_handle_put(node);
+	return ret;
+}
+
+/*
+ * The board's charge strategy and adapters. A broken table leaves the
+ * driver's own rules in place rather than failing the probe.
+ */
+static void svooc_get_strategy(struct sc8547_svooc *sv)
+{
+	struct device *dev = sv->dev;
+	struct svooc_strategy *st;
+	int n, i, ret;
+
+	n = device_property_count_u32(dev, "oneplus,svooc-adapters");
+	if (n > 0) {
+		sv->adapters = devm_kcalloc(dev, n / 3, sizeof(*sv->adapters), GFP_KERNEL);
+		if (sv->adapters && n % 3 == 0 && n / 3 <= SVOOC_ADAPTERS_MAX &&
+		    !device_property_read_u32_array(dev, "oneplus,svooc-adapters",
+						    (u32 *)sv->adapters, n))
+			sv->num_adapters = n / 3;
+		else
+			dev_warn(dev, "invalid adapter table, ignored\n");
+	}
+
+	if (!device_property_present(dev, "oneplus,svooc-soc-bands"))
+		return;
+	st = devm_kzalloc(dev, sizeof(*st), GFP_KERNEL);
+	if (!st)
+		return;
+	n = device_property_count_u32(dev, "oneplus,svooc-soc-bands");
+	ret = n > 0 && n <= SVOOC_BANDS_MAX ? 0 : -EINVAL;
+	if (!ret) {
+		st->soc_bands = n;
+		ret = device_property_read_u32_array(dev, "oneplus,svooc-soc-bands",
+						     st->soc_max, n);
+	}
+	for (i = 1; !ret && i < st->soc_bands; i++)
+		if (st->soc_max[i] <= st->soc_max[i - 1])
+			ret = -EINVAL;
+	if (!ret)
+		ret = svooc_read_bands(dev_fwnode(dev), "oneplus,svooc-temp-bands",
+				       st->temp, &st->temp_bands);
+	if (!ret && device_property_count_u32(dev, "oneplus,svooc-full-microvolt") !=
+		    2 * st->temp_bands)
+		ret = -EINVAL;
+	if (!ret)
+		ret = device_property_read_u32_array(dev, "oneplus,svooc-full-microvolt",
+						     (u32 *)st->full_uv, 2 * st->temp_bands);
+	for (i = 0; !ret && i < st->temp_bands; i++)
+		if (!svooc_uv_valid(st->full_uv[i][0]) || !svooc_uv_valid(st->full_uv[i][1]))
+			ret = -EINVAL;
+	if (!ret)
+		ret = svooc_get_curves(dev, st);
+	if (!ret)
+		ret = svooc_get_lcf(dev, st);
+	if (ret) {
+		dev_warn(dev, "invalid charge strategy, ignored: %d\n", ret);
+		devm_kfree(dev, st);
+		return;
+	}
+	device_property_read_u32(dev, "oneplus,svooc-overvoltage-microvolt",
+				 &st->overvoltage_uv);
+	device_property_read_u32(dev, "oneplus,svooc-timeout-sec", &st->timeout_s);
+	if (svooc_get_ffc(dev, st))
+		dev_warn(dev, "invalid top-up charge, ignored\n");
+	sv->strategy = st;
+	sv->use_strategy = device_property_read_bool(dev, "oneplus,svooc-stock-strategy");
+	sv->use_ffc = device_property_read_bool(dev, "oneplus,svooc-fast-full-charge");
+}
+
 static int svooc_probe(struct auxiliary_device *adev,
 		       const struct auxiliary_device_id *id)
 {
@@ -1227,6 +1962,7 @@ static int svooc_probe(struct auxiliary_device *adev,
 	struct power_supply_config cfg = {};
 	struct fwnode_handle *node;
 	struct sc8547_svooc *sv;
+	u32 max_ua;
 	int ret, i;
 
 	sv = devm_kzalloc(dev, sizeof(*sv), GFP_KERNEL);
@@ -1241,6 +1977,15 @@ static int svooc_probe(struct auxiliary_device *adev,
 	ret = svooc_get_curve(sv);
 	if (ret)
 		return ret;
+	svooc_get_strategy(sv);
+	sv->soc_band = -1;
+	sv->temp_band = -1;
+	sv->power_uw = SVOOC_POWER_UW;
+	max_ua = SVOOC_MAX_UA;
+	device_property_read_u32(dev, "oneplus,svooc-max-microamp", &max_ua);
+	if (max_ua < SVOOC_MIN_UA || max_ua > SVOOC_MAX_UA)
+		return dev_err_probe(dev, -EINVAL, "Invalid current limit %u\n", max_ua);
+	sv->max_ua = max_ua;
 
 	sv->main = sc8547_get(dev, dev_fwnode(dev->parent));
 	if (IS_ERR(sv->main))
@@ -1286,6 +2031,10 @@ static int svooc_probe(struct auxiliary_device *adev,
 	device_init_wakeup(dev, true);
 	sv->debugfs = debugfs_create_dir(dev_name(dev), NULL);
 	debugfs_create_file("status", 0444, sv->debugfs, sv, &svooc_status_fops);
+	if (sv->strategy) {
+		debugfs_create_bool("stock_strategy", 0644, sv->debugfs, &sv->use_strategy);
+		debugfs_create_bool("fast_full_charge", 0644, sv->debugfs, &sv->use_ffc);
+	}
 	sc8547_set_phy_handler(sv->main, svooc_phy_irq, sv);
 	sv->notifier.notifier_call = svooc_supply_changed;
 	ret = power_supply_reg_notifier(&sv->notifier);
@@ -1322,6 +2071,7 @@ static void svooc_shutdown(struct auxiliary_device *adev)
 	cancel_delayed_work_sync(&sv->work);
 	if (sv->state == SVOOC_STOPPING)
 		svooc_restore(sv);
+	svooc_ffc_stop(sv);
 }
 
 static struct auxiliary_driver svooc_driver = {
@@ -1332,6 +2082,6 @@ static struct auxiliary_driver svooc_driver = {
 };
 module_auxiliary_driver(svooc_driver);
 
-MODULE_DESCRIPTION("SuperVOOC charging through the SC8547D VOOC PHY");
+MODULE_DESCRIPTION("SuperVOOC charging through the SC8547A/SC8547D VOOC PHY");
 MODULE_LICENSE("GPL");
 MODULE_IMPORT_NS("IIO_CONSUMER");

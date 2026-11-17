@@ -1328,6 +1328,41 @@ static int bcl_regmap_field_init(struct device *dev, struct bcl_device *bcl,
 	return 0;
 }
 
+/*
+ * The thresholds the bootloader leaves suit the PMIC's reference design;
+ * the board's battery may need others. They are written before the alarm
+ * interrupts are requested, so no alarm is raised by a half-written pair.
+ */
+static int bcl_apply_board_thresholds(struct bcl_device *bcl)
+{
+	u32 thr[BCL_LIMIT_ALARM_MAX];
+	int ret, i;
+
+	if (bcl->in_attrs &&
+	    !device_property_read_u32_array(bcl->dev,
+					    "undervoltage-thresholds-microvolt",
+					    thr, ARRAY_SIZE(thr))) {
+		for (i = 0; i < ARRAY_SIZE(thr); i++) {
+			ret = bcl_in_thresh_write(bcl, thr[i] / 1000, i);
+			if (ret)
+				return ret;
+		}
+	}
+
+	if (bcl->curr_attrs &&
+	    !device_property_read_u32_array(bcl->dev,
+					    "overcurrent-thresholds-microamp",
+					    thr, ARRAY_SIZE(thr))) {
+		for (i = 0; i < ARRAY_SIZE(thr); i++) {
+			ret = bcl_curr_thresh_write(bcl, thr[i] / 1000, i);
+			if (ret)
+				return ret;
+		}
+	}
+
+	return 0;
+}
+
 static int bcl_probe(struct platform_device *pdev)
 {
 	struct bcl_device *bcl;
@@ -1375,6 +1410,10 @@ static int bcl_probe(struct platform_device *pdev)
 	ret = bcl_build_hwmon_info(bcl);
 	if (ret < 0)
 		return dev_err_probe(&pdev->dev, ret, "Failed to build hwmon info\n");
+
+	ret = bcl_apply_board_thresholds(bcl);
+	if (ret < 0)
+		return dev_err_probe(&pdev->dev, ret, "Failed to set board thresholds\n");
 
 	dev_set_drvdata(&pdev->dev, bcl);
 

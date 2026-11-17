@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Southchip SC8547D 2:1 switched-capacitor charge pump.
+ * Southchip SC8547A and SC8547D 2:1 switched-capacitor charge pumps.
  *
- * Register sequences adapted from the Oplus SC8547D driver,
+ * Register sequences adapted from the Oplus SC8547A and SC8547D drivers,
  * Copyright (C) 2022-2023 Oplus. All rights reserved.
  * The pump never switches on its own: a direct charging driver prepares it,
  * enables it once the adapter voltage is in range, and must sample it at least
@@ -39,11 +39,13 @@
 #define SC8547_ADC_TDIE		0x1f
 #define SC8547_VOOC_CTRL	0x2b
 #define SC8547_DET_CTRL		0x33
-#define SC8547_PHY_CTRL		0x34
+#define SC8547D_PHY_CTRL	0x34
 #define SC8547_DEVICE_ID	0x36
+#define SC8547A_PHY_CTRL	0x3a
 #define SC8547_OTG		0x3b
 #define SC8547_MAX_REGISTER	0x3c
 
+#define SC8547A_ID		0x67
 #define SC8547D_ID		0x49
 
 #define SC8547_STATUS_TSHUT_FLAG	BIT(7)
@@ -68,7 +70,8 @@
 #define SC8547_ADC_EN			BIT(7)
 #define SC8547_ADC_FREEZE		BIT(5)
 #define SC8547_OTG_EN			BIT(2)
-#define SC8547_IBUS_UCP_50MS		BIT(5)
+#define SC8547A_IBUS_UCP_5MS		BIT(4)
+#define SC8547D_IBUS_UCP_50MS		BIT(5)
 
 #define SC8547_VBAT_OVP_MIN_UV		3500000
 #define SC8547_VBAT_OVP_STEP_UV		25000
@@ -77,8 +80,37 @@
 #define SC8547_IBUS_OCP_MIN_UA		1200000
 #define SC8547_IBUS_OCP_STEP_UA		300000
 
+/**
+ * struct sc8547_variant - what differs between the SC8547A and SC8547D
+ * @model: the model name
+ * @id: the device ID register value
+ * @phy_ctrl: the VOOC PHY timing register
+ * @ibus_ucp: the IBUS undercurrent deglitch bits the factory sets
+ */
+struct sc8547_variant {
+	const char *model;
+	u8 id;
+	u8 phy_ctrl;
+	u8 ibus_ucp;
+};
+
+static const struct sc8547_variant sc8547a_variant = {
+	.model = "SC8547A",
+	.id = SC8547A_ID,
+	.phy_ctrl = SC8547A_PHY_CTRL,
+	.ibus_ucp = SC8547A_IBUS_UCP_5MS,
+};
+
+static const struct sc8547_variant sc8547d_variant = {
+	.model = "SC8547D",
+	.id = SC8547D_ID,
+	.phy_ctrl = SC8547D_PHY_CTRL,
+	.ibus_ucp = SC8547D_IBUS_UCP_50MS,
+};
+
 struct sc8547 {
 	struct device *dev;
+	const struct sc8547_variant *variant;
 	struct regmap *regmap;
 	struct power_supply *psy;
 	/* Serializes the switching state, fault latch and each ADC snapshot. */
@@ -104,7 +136,6 @@ static const struct reg_sequence sc8547_defaults[] = {
 	{ SC8547_VAC_OVP, 0x01 },
 	{ SC8547_VBAT_OCP, 0xbf },
 	{ SC8547_VOOC_CTRL, 0 },
-	{ SC8547_PHY_CTRL, 0x60 },
 	{ SC8547_IRQ_MASK, 0x02 },
 	{ SC8547_MODE, SC8547_MODE_UCP_RISE_MASK },
 };
@@ -118,7 +149,7 @@ static int sc8547_write_limits(struct sc8547 *cp)
 		ret = regmap_write(cp->regmap, SC8547_VBAT_OVP, cp->vbat_ovp);
 	if (!ret)
 		ret = regmap_write(cp->regmap, SC8547_IBUS_OCP,
-				   SC8547_IBUS_UCP_50MS | cp->ibus_ocp);
+				   cp->variant->ibus_ucp | cp->ibus_ocp);
 	return ret;
 }
 
@@ -134,6 +165,8 @@ static int sc8547_init(struct sc8547 *cp)
 	usleep_range(1000, 2000);
 	ret = regmap_multi_reg_write(cp->regmap, sc8547_defaults,
 				     ARRAY_SIZE(sc8547_defaults));
+	if (!ret)
+		ret = regmap_write(cp->regmap, cp->variant->phy_ctrl, 0x60);
 	if (!ret)
 		ret = sc8547_write_limits(cp);
 	if (!ret)
@@ -294,6 +327,13 @@ struct regmap *sc8547_regmap(struct sc8547 *cp)
 }
 EXPORT_SYMBOL_GPL(sc8547_regmap);
 
+/** sc8547_phy_ctrl_reg() - the VOOC PHY timing register of this pump */
+unsigned int sc8547_phy_ctrl_reg(struct sc8547 *cp)
+{
+	return cp->variant->phy_ctrl;
+}
+EXPORT_SYMBOL_GPL(sc8547_phy_ctrl_reg);
+
 /**
  * sc8547_prepare() - clear the fault latch and start the ADC, switching off
  * @cp: the pump
@@ -306,8 +346,6 @@ int sc8547_prepare(struct sc8547 *cp)
 		{ SC8547_VAC_OVP, 0x01 },
 		{ SC8547_PMID2OUT, 0x70 },
 		{ SC8547_DET_CTRL, 0xd1 },
-		{ SC8547_PHY_CTRL, 0x60 },
-		{ SC8547_ADC_CTRL, SC8547_ADC_EN },
 	};
 	unsigned int vbat_ovp, ibus_ocp;
 	int ret;
@@ -318,6 +356,10 @@ int sc8547_prepare(struct sc8547 *cp)
 		ret = sc8547_write_limits(cp);
 	if (!ret)
 		ret = regmap_multi_reg_write(cp->regmap, setup, ARRAY_SIZE(setup));
+	if (!ret)
+		ret = regmap_write(cp->regmap, cp->variant->phy_ctrl, 0x60);
+	if (!ret)
+		ret = regmap_write(cp->regmap, SC8547_ADC_CTRL, SC8547_ADC_EN);
 	if (!ret)
 		ret = regmap_read(cp->regmap, SC8547_VBAT_OVP, &vbat_ovp);
 	if (!ret)
@@ -487,7 +529,7 @@ static int sc8547_get_property(struct power_supply *psy,
 
 	switch (prop) {
 	case POWER_SUPPLY_PROP_MODEL_NAME:
-		val->strval = "SC8547D";
+		val->strval = cp->variant->model;
 		return 0;
 	case POWER_SUPPLY_PROP_STATUS:
 		val->intval = prepared && s.switching ? POWER_SUPPLY_STATUS_CHARGING :
@@ -630,12 +672,18 @@ static int sc8547_probe(struct i2c_client *client)
 		.max_register = SC8547_MAX_REGISTER,
 	};
 
-	if (client->irq <= 0)
+	phy = device_get_named_child_node(dev, "vooc-phy");
+	/* Only the VOOC PHY needs the interrupt; a second pump is polled. */
+	if (phy && client->irq <= 0) {
+		fwnode_handle_put(phy);
 		return dev_err_probe(dev, -EINVAL, "Missing interrupt\n");
+	}
+	fwnode_handle_put(phy);
 	cp = devm_kzalloc(dev, sizeof(*cp), GFP_KERNEL);
 	if (!cp)
 		return -ENOMEM;
 	cp->dev = dev;
+	cp->variant = device_get_match_data(dev);
 	cp->health = POWER_SUPPLY_HEALTH_GOOD;
 	mutex_init(&cp->lock);
 	mutex_init(&cp->phy_lock);
@@ -648,7 +696,13 @@ static int sc8547_probe(struct i2c_client *client)
 	ret = regmap_read(cp->regmap, SC8547_DEVICE_ID, &id);
 	if (ret)
 		return dev_err_probe(dev, ret, "Cannot read the device ID\n");
-	if (id != SC8547D_ID)
+	if (!cp->variant) {
+		if (id == SC8547A_ID)
+			cp->variant = &sc8547a_variant;
+		else if (id == SC8547D_ID)
+			cp->variant = &sc8547d_variant;
+	}
+	if (!cp->variant || id != cp->variant->id)
 		return dev_err_probe(dev, -ENODEV, "Unknown device ID %02x\n", id);
 	ret = sc8547_init(cp);
 	if (ret)
@@ -672,10 +726,12 @@ static int sc8547_probe(struct i2c_client *client)
 	cp->psy = devm_power_supply_register(dev, desc, &cfg);
 	if (IS_ERR(cp->psy))
 		return dev_err_probe(dev, PTR_ERR(cp->psy), "Cannot register supply\n");
-	ret = devm_request_threaded_irq(dev, client->irq, NULL, sc8547_irq,
-					IRQF_ONESHOT, dev_name(dev), cp);
-	if (ret)
-		return dev_err_probe(dev, ret, "Cannot request interrupt\n");
+	if (client->irq > 0) {
+		ret = devm_request_threaded_irq(dev, client->irq, NULL, sc8547_irq,
+						IRQF_ONESHOT, dev_name(dev), cp);
+		if (ret)
+			return dev_err_probe(dev, ret, "Cannot request interrupt\n");
+	}
 
 	phy = device_get_named_child_node(dev, "vooc-phy");
 	if (phy) {
@@ -696,7 +752,10 @@ static void sc8547_shutdown(struct i2c_client *client)
 }
 
 static const struct of_device_id sc8547_of_match[] = {
-	{ .compatible = "southchip,sc8547d" },
+	{ .compatible = "southchip,sc8547a", .data = &sc8547a_variant },
+	{ .compatible = "southchip,sc8547d", .data = &sc8547d_variant },
+	/* Either the A or the D on the board, resolved from the device ID. */
+	{ .compatible = "southchip,sc8547" },
 	{}
 };
 MODULE_DEVICE_TABLE(of, sc8547_of_match);
@@ -711,5 +770,5 @@ static struct i2c_driver sc8547_driver = {
 };
 module_i2c_driver(sc8547_driver);
 
-MODULE_DESCRIPTION("Southchip SC8547D charge pump");
+MODULE_DESCRIPTION("Southchip SC8547A/SC8547D charge pump");
 MODULE_LICENSE("GPL");

@@ -585,9 +585,13 @@ static int wcd939x_usbss_dpdm_charger(struct wcd939x_usbss *usbss)
 	unsigned int cntl, function, enable;
 	int ret;
 
-	/* Only a USB connection in manual mode lends its D+/D-. */
+	/*
+	 * Only a USB connection in manual mode lends its D+/D-. The cable
+	 * orientation is deliberately not part of the check: the SuperVOOC
+	 * PHY on the far end resolves the D+/D- polarity itself, and the
+	 * orientation switch belongs to the USB data route.
+	 */
 	if (usbss->suspended || usbss->svid || usbss->dp_active ||
-	    usbss->orientation == TYPEC_ORIENTATION_NONE ||
 	    !(usbss->mode < TYPEC_STATE_MODAL || usbss->mode == TYPEC_MODE_USB2 ||
 	      usbss->mode == TYPEC_MODE_USB3))
 		return -EBUSY;
@@ -616,13 +620,35 @@ static int wcd939x_usbss_dpdm_charger(struct wcd939x_usbss *usbss)
 	return ret;
 }
 
-/* Give D+/D- back to the USB PHY by re-applying the Type-C state. */
+/*
+ * Give D+/D- back to the USB PHY. The firmware keeps the normal USB data
+ * route, so restore the connector pair select and re-enable the switches
+ * instead of re-applying the full Type-C state.
+ */
 static int wcd939x_usbss_dpdm_release(struct wcd939x_usbss *usbss)
 {
+	unsigned int sw_en = WCD_USBSS_SWITCH_SETTINGS_ENABLE_DNL_SWITCHES |
+			     WCD_USBSS_SWITCH_SETTINGS_ENABLE_DPR_SWITCHES;
+	int ret;
+
 	if (!usbss->dpdm_charger)
 		return 0;
 	usbss->dpdm_charger = false;
-	return wcd939x_usbss_set(usbss);
+
+	ret = regmap_update_bits(usbss->regmap, WCD_USBSS_SWITCH_SETTINGS_ENABLE,
+				 sw_en, 0);
+	if (!ret)
+		ret = regmap_update_bits(usbss->regmap, WCD_USBSS_SWITCH_SELECT0,
+				WCD_USBSS_SWITCH_SELECT0_DNL_SWITCHES |
+				WCD_USBSS_SWITCH_SELECT0_DPR_SWITCHES,
+				FIELD_PREP(WCD_USBSS_SWITCH_SELECT0_DNL_SWITCHES,
+					   WCD_USBSS_SWITCH_SELECT0_DNL_SWITCH_DN) |
+				FIELD_PREP(WCD_USBSS_SWITCH_SELECT0_DPR_SWITCHES,
+					   WCD_USBSS_SWITCH_SELECT0_DPR_SWITCH_DP));
+	if (!ret)
+		ret = regmap_update_bits(usbss->regmap, WCD_USBSS_SWITCH_SETTINGS_ENABLE,
+					 sw_en, sw_en);
+	return ret;
 }
 
 static int wcd939x_usbss_dpdm_set(struct mux_control *mux, int state)
@@ -763,7 +789,7 @@ static int wcd939x_usbss_probe(struct i2c_client *client)
 	usbss->mode = TYPEC_STATE_SAFE;
 	usbss->orientation = TYPEC_ORIENTATION_NONE;
 
-	gpiod_set_value(usbss->reset_gpio, 1);
+	gpiod_set_value_cansleep(usbss->reset_gpio, 1);
 
 	ret = regulator_enable(usbss->vdd_supply);
 	if (ret) {
@@ -773,7 +799,7 @@ static int wcd939x_usbss_probe(struct i2c_client *client)
 
 	msleep(20);
 
-	gpiod_set_value(usbss->reset_gpio, 0);
+	gpiod_set_value_cansleep(usbss->reset_gpio, 0);
 
 	msleep(20);
 

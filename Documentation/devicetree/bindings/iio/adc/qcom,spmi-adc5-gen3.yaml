@@ -77,6 +77,12 @@ patternProperties:
         enum: [ 1, 2, 4, 8, 16 ]
         default: 1
 
+      qcom,adc5-gen4:
+        description:
+          The channel is routed through Gen4 hardware within the Gen3
+          device and returns ratiometric codes over the full 16 bits.
+        type: boolean
+
       qcom,adc-tm:
         description:
           ADC_TM is a threshold monitoring feature in HW which can be enabled

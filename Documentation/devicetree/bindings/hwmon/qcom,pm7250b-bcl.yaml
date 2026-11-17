@@ -37,6 +37,23 @@ properties:
       - const: max-min
       - const: critical
 
+  overcurrent-thresholds-microamp:
+    description:
+      Battery current thresholds of the two alarm levels, the warning (max)
+      and the critical one, programmed at probe in place of the ones the
+      bootloader leaves, for a battery with another overcurrent
+      specification. Ignored when the current monitor is not enabled.
+    minItems: 2
+    maxItems: 2
+
+  undervoltage-thresholds-microvolt:
+    description:
+      Battery voltage thresholds of the two alarm levels, the warning (min)
+      and the critical one, programmed at probe in place of the ones the
+      bootloader leaves. Ignored when the voltage monitor is not enabled.
+    minItems: 2
+    maxItems: 2
+
 required:
   - compatible
   - reg
@@ -60,5 +77,7 @@ examples:
                          <0x2 0x1d 0x1 IRQ_TYPE_EDGE_RISING>;
             interrupt-names = "max-min",
                               "critical";
+            overcurrent-thresholds-microamp = <5500000 6000000>;
+            undervoltage-thresholds-microvolt = <2800000 2600000>;
         };
     };

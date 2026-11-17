@@ -4,21 +4,25 @@
 $id: http://devicetree.org/schemas/power/supply/southchip,sc8547.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Southchip SC8547D 2:1 charge pump
+title: Southchip SC8547A and SC8547D 2:1 charge pumps
 
 maintainers:
   - Sebastian Reichel <sre@kernel.org>
 
 description: |
-  The SC8547D is a 2:1 switched-capacitor charge pump for single-cell
-  batteries. It measures its input, output and battery, and stops on its
+  The SC8547A and SC8547D are 2:1 switched-capacitor charge pumps for
+  single-cell batteries. It measures its input, output and battery, and stops on its
   own protection limits or when its watchdog expires. Some boards also use
   its built-in VOOC PHY, which talks to the adapter over USB D+/D- while a
   direct charging driver runs the pump.
 
 properties:
   compatible:
-    const: southchip,sc8547d
+    enum:
+      - southchip,sc8547a
+      - southchip,sc8547d
+      # Either the A or the D, resolved from the device ID at probe.
+      - southchip,sc8547
 
   reg:
     maxItems: 1
@@ -83,6 +87,14 @@ properties:
         $ref: /schemas/types.yaml#/definitions/phandle
         description: A second SC8547D sharing the charging current.
 
+      oneplus,svooc-max-microamp:
+        description:
+          The highest adapter current a SuperVOOC session may ask for, below
+          the driver's own limit.
+        minimum: 1500000
+        maximum: 6200000
+        multipleOf: 100000
+
       oneplus,svooc-battery-curve:
         $ref: /schemas/types.yaml#/definitions/uint32-matrix
         description:
@@ -99,6 +111,212 @@ properties:
               maximum: 12700000
               multipleOf: 100000
 
+      oneplus,svooc-adapters:
+        $ref: /schemas/types.yaml#/definitions/uint32-matrix
+        description:
+          The SuperVOOC adapters the board charges from, as ranges of the
+          model number the adapter reports, each with the power it may
+          deliver in microwatts. A session with an adapter outside these
+          ranges, or with no power, goes back to standard charging before
+          the adapter raises VBUS.
+        minItems: 1
+        maxItems: 64
+        items:
+          items:
+            - description: First model number of the range
+              maximum: 0x7f
+            - description: Last model number of the range
+              maximum: 0x7f
+            - description: Adapter power in microwatts
+              maximum: 240000000
+
+      oneplus,svooc-soc-bands:
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        description:
+          The highest state of charge of each charge curve band, in percent.
+          A session starts only up to the last one and keeps the band it
+          started in until it changes temperature band.
+        minItems: 1
+        maxItems: 8
+        items:
+          maximum: 100
+
+      oneplus,svooc-temp-bands:
+        $ref: /schemas/types.yaml#/definitions/int32-array
+        description:
+          Battery temperatures in tenths of a degree Celsius bounding the
+          charge curve temperature bands, in rising order; band n spans
+          entries n and n + 1. A session starts only between the first and
+          the last.
+        minItems: 2
+        maxItems: 9
+
+      oneplus,svooc-full-microvolt:
+        description:
+          For each temperature band, the battery voltage that ends a
+          session at once and the one that ends it when held.
+        minItems: 1
+        maxItems: 8
+        items:
+          items:
+            - minimum: 3500000
+              maximum: 4700000
+            - minimum: 3500000
+              maximum: 4700000
+
+      oneplus,svooc-stock-strategy:
+        type: boolean
+        description:
+          Charge by the charge curves, the full voltages, the low-current
+          full thresholds and the time limit below, rather than by the
+          driver's own rules.
+
+      oneplus,svooc-fast-full-charge:
+        type: boolean
+        description:
+          After a session by the charge curves ends full, run the top-up
+          charge described in fast-full-charge.
+
+      oneplus,svooc-overvoltage-microvolt:
+        description: A battery voltage that stops a session as a fault.
+        minimum: 3500000
+        maximum: 4800000
+
+      oneplus,svooc-timeout-sec:
+        description: The longest a session may charge.
+        minimum: 60
+
+      charge-curves:
+        type: object
+        description:
+          The adapter current for each state of charge band, temperature
+          band and battery voltage. A session starts at the first step whose
+          voltage the battery has not passed, moves on once the battery
+          stays above it, and holds the last step until the battery is full.
+        additionalProperties: false
+
+        patternProperties:
+          "^soc-band-[0-7]$":
+            type: object
+            additionalProperties: false
+
+            patternProperties:
+              "^temp-band-[0-7]$":
+                $ref: /schemas/types.yaml#/definitions/uint32-matrix
+                description:
+                  Pairs of battery voltage in microvolts and adapter current
+                  in microamps.
+                minItems: 1
+                maxItems: 16
+                items:
+                  items:
+                    - minimum: 3500000
+                      maximum: 4700000
+                    - minimum: 100000
+                      maximum: 12700000
+                      multipleOf: 100000
+
+      low-current-full:
+        type: object
+        description:
+          Ends a session once the battery current falls to a threshold at or
+          above a battery voltage, for each temperature band.
+        additionalProperties: false
+
+        properties:
+          temp-bands:
+            $ref: /schemas/types.yaml#/definitions/int32-array
+            description:
+              Battery temperatures in tenths of a degree Celsius bounding
+              the bands, in rising order.
+            minItems: 2
+            maxItems: 9
+
+        patternProperties:
+          "^temp-band-[0-7]$":
+            $ref: /schemas/types.yaml#/definitions/uint32-matrix
+            description:
+              Pairs of battery current in microamps and battery voltage in
+              microvolts.
+            minItems: 1
+            maxItems: 6
+            items:
+              items:
+                - maximum: 12700000
+                - minimum: 3500000
+                  maximum: 4700000
+
+        required:
+          - temp-bands
+
+      fast-full-charge:
+        type: object
+        description:
+          After a session ends full, the standard charger tops the battery
+          up at a raised voltage limit and a low current, in steps, while
+          the battery temperature stays within the bands.
+        additionalProperties: false
+
+        properties:
+          temp-bands:
+            $ref: /schemas/types.yaml#/definitions/int32-array
+            description:
+              Battery temperatures in tenths of a degree Celsius bounding
+              the bands, in rising order.
+            minItems: 2
+            maxItems: 9
+
+          restore-microvolt:
+            description:
+              For each temperature band, the voltage limit the standard
+              charger gets back after the top-up.
+            minItems: 1
+            maxItems: 8
+            items:
+              minimum: 3500000
+              maximum: 4700000
+
+          skip-microvolt:
+            description:
+              A battery voltage at which a full battery skips the top-up.
+            minimum: 3500000
+            maximum: 4700000
+
+          steps:
+            $ref: /schemas/types.yaml#/definitions/uint32-matrix
+            description:
+              For each step and temperature band, the voltage limit and the
+              charge current in microvolts and microamps, and the battery
+              voltage and current that end the step.
+            minItems: 1
+            maxItems: 40
+            items:
+              items:
+                - minimum: 3500000
+                  maximum: 4700000
+                - maximum: 12700000
+                - minimum: 3500000
+                  maximum: 4700000
+                - maximum: 12700000
+
+        required:
+          - temp-bands
+          - restore-microvolt
+          - steps
+
+    dependentRequired:
+      oneplus,svooc-soc-bands:
+        - oneplus,svooc-temp-bands
+        - oneplus,svooc-full-microvolt
+        - charge-curves
+      charge-curves:
+        - oneplus,svooc-soc-bands
+      oneplus,svooc-stock-strategy:
+        - oneplus,svooc-soc-bands
+      oneplus,svooc-fast-full-charge:
+        - oneplus,svooc-stock-strategy
+        - fast-full-charge
+
     required:
       - mux-states
       - io-channels
@@ -108,7 +326,14 @@ properties:
 required:
   - compatible
   - reg
-  - interrupts
+
+allOf:
+  - if:
+      required:
+        - vooc-phy
+    then:
+      required:
+        - interrupts
 
 additionalProperties: false
 
