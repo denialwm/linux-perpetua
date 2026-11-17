@@ -149,6 +149,10 @@
 		     "qcom,mdss-dsi-ctrl";
 };
 
+&usb_1_qmpphy {
+	compatible = "qcom,sm8475-qmp-usb3-dp-phy";
+};
+
 &mdss_dsi0_phy {
 	compatible = "qcom,sm8475-dsi-phy-4nm";
 };
