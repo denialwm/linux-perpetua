@@ -707,6 +707,15 @@ void dpu_encoder_update_topology(struct drm_encoder *drm_enc,
 			topology->num_dsc = 2;
 		else
 			topology->num_dsc = 1;
+
+		/*
+		 * The panel of the Nothing Phone (2), two 540 pixel slices on
+		 * one interface, is only right on one DSC encoder, as in the
+		 * stock tree.
+		 */
+		if (topology->num_intf == 1 &&
+		    of_device_is_compatible(dpu_kms->pdev->dev.of_node, "qcom,sm8475-dpu"))
+			topology->num_dsc = 1;
 	}
 
 	connector = drm_atomic_get_new_connector_for_encoder(state, drm_enc);

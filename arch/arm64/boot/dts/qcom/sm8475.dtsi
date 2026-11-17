@@ -1,0 +1,195 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Copyright (c) 2024, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2024, Danila Tikhonov <danila@jiaxyga.com>
+ *
+ * SM8475 (Cape, Snapdragon 8+ Gen 1): the TSMC respin of SM8450. Same
+ * peripherals, with its own clock tables, pin controller, UFS PHY sequence
+ * and an eUSB2 high-speed PHY in place of the femto PHY.
+ */
+
+#include "sm8450.dtsi"
+
+/*
+ * The UFS PHY is the v6 layout: one 0x2000 window at 0x1d80000, where
+ * SM8450's is 0x1000 at 0x1d87000.
+ */
+/delete-node/ &ufs_mem_phy;
+/delete-node/ &gpu_opp_table;
+
+&soc {
+	ufs_mem_phy: phy@1d80000 {
+		compatible = "qcom,sm8475-qmp-ufs-phy";
+		reg = <0 0x01d80000 0 0x2000>;
+
+		clock-names = "ref", "ref_aux", "qref";
+		clocks = <&rpmhcc RPMH_CXO_CLK>,
+			 <&gcc GCC_UFS_PHY_PHY_AUX_CLK>,
+			 <&gcc GCC_UFS_0_CLKREF_EN>;
+
+		power-domains = <&gcc UFS_PHY_GDSC>;
+
+		resets = <&ufs_mem_hc 0>;
+		reset-names = "ufsphy";
+
+		#clock-cells = <1>;
+		#phy-cells = <0>;
+
+		status = "disabled";
+	};
+};
+
+&camcc {
+	compatible = "qcom,sm8475-camcc";
+};
+
+&dispcc {
+	compatible = "qcom,sm8475-dispcc";
+};
+
+&gcc {
+	compatible = "qcom,sm8475-gcc";
+};
+
+/*
+ * The GPU keeps SM8450's identity (Adreno 730.1, which Mesa knows) and has
+ * the stock frequency table of this chip: up to 900 MHz.
+ */
+&gpu {
+	gpu_opp_table: opp-table {
+		compatible = "operating-points-v2";
+
+		opp-900000000 {
+			opp-hz = /bits/ 64 <900000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_TURBO_L1>;
+		};
+
+		opp-862000000 {
+			opp-hz = /bits/ 64 <862000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_TURBO>;
+		};
+
+		opp-815000000 {
+			opp-hz = /bits/ 64 <815000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_NOM_L1>;
+		};
+
+		opp-765000000 {
+			opp-hz = /bits/ 64 <765000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_NOM>;
+		};
+
+		opp-710000000 {
+			opp-hz = /bits/ 64 <710000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_SVS_L2>;
+		};
+
+		opp-645000000 {
+			opp-hz = /bits/ 64 <645000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_SVS_L1>;
+		};
+
+		opp-580000000 {
+			opp-hz = /bits/ 64 <580000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_SVS_L0>;
+		};
+
+		opp-515000000 {
+			opp-hz = /bits/ 64 <515000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_SVS>;
+		};
+
+		opp-439000000 {
+			opp-hz = /bits/ 64 <439000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_L2>;
+		};
+
+		opp-364000000 {
+			opp-hz = /bits/ 64 <364000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_L1>;
+		};
+
+		opp-324000000 {
+			opp-hz = /bits/ 64 <324000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS>;
+		};
+
+		opp-285000000 {
+			opp-hz = /bits/ 64 <285000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_LOW_SVS_D1>;
+		};
+
+		opp-220000000 {
+			opp-hz = /bits/ 64 <220000000>;
+			opp-level = <RPMH_REGULATOR_LEVEL_MIN_SVS>;
+		};
+	};
+};
+
+&gpucc {
+	compatible = "qcom,sm8475-gpucc";
+};
+
+/* The DSI PHYs are revision 4.3.2, on 4nm. */
+&mdss {
+	compatible = "qcom,sm8475-mdss", "qcom,sm8450-mdss";
+};
+
+&mdss_mdp {
+	compatible = "qcom,sm8475-dpu", "qcom,sm8450-dpu";
+};
+
+&mdss_dsi0 {
+	compatible = "qcom,sm8475-dsi-ctrl", "qcom,sm8450-dsi-ctrl",
+		     "qcom,mdss-dsi-ctrl";
+};
+
+&mdss_dsi1 {
+	compatible = "qcom,sm8475-dsi-ctrl", "qcom,sm8450-dsi-ctrl",
+		     "qcom,mdss-dsi-ctrl";
+};
+
+&usb_1_qmpphy {
+	compatible = "qcom,sm8475-qmp-usb3-dp-phy";
+};
+
+&mdss_dsi0_phy {
+	compatible = "qcom,sm8475-dsi-phy-4nm";
+};
+
+&mdss_dsi1_phy {
+	compatible = "qcom,sm8475-dsi-phy-4nm";
+};
+
+&tlmm {
+	compatible = "qcom,sm8475-tlmm";
+};
+
+/* The PCIe port 0 PHY is the SM8475 one: another register sequence than SM8450's. */
+&pcie0_phy {
+	compatible = "qcom,sm8475-qmp-gen3x1-pcie-phy";
+};
+
+&ufs_mem_hc {
+	freq-table-hz =
+		<75000000 850000000>,
+		<0 0>,
+		<0 0>,
+		<75000000 850000000>,
+		<75000000 850000000>,
+		<0 0>,
+		<0 0>,
+		<0 0>;
+};
+
+
+/* eUSB2: the board supplies the repeater as this PHY's own phy. */
+&usb_1_hsphy {
+	compatible = "qcom,sm8475-snps-eusb2-phy",
+		     "qcom,sm8550-snps-eusb2-phy";
+	reg = <0 0x088e3000 0 0x154>;
+};
+
+&videocc {
+	compatible = "qcom,sm8475-videocc";
+};

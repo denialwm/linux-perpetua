@@ -33,6 +33,7 @@ struct pwrseq_qcom_wcn_ctx {
 	const struct pwrseq_qcom_wcn_pdata *pdata;
 	struct regulator_bulk_data *regs;
 	struct regulator *vddio;
+	struct regulator *vddipa;	/* optional: the internal power amplifier */
 	struct gpio_desc *bt_gpio;
 	struct gpio_desc *wlan_gpio;
 	struct gpio_desc *xo_clk_gpio;
@@ -78,13 +79,25 @@ static const struct pwrseq_unit_data pwrseq_qcom_wcn_vddio_unit_data = {
 static int pwrseq_qcom_wcn_vregs_enable(struct pwrseq_device *pwrseq)
 {
 	struct pwrseq_qcom_wcn_ctx *ctx = pwrseq_device_get_drvdata(pwrseq);
+	int ret;
 
-	return regulator_bulk_enable(ctx->pdata->num_vregs, ctx->regs);
+	ret = regulator_bulk_enable(ctx->pdata->num_vregs, ctx->regs);
+	if (ret || !ctx->vddipa)
+		return ret;
+
+	ret = regulator_enable(ctx->vddipa);
+	if (ret)
+		regulator_bulk_disable(ctx->pdata->num_vregs, ctx->regs);
+
+	return ret;
 }
 
 static int pwrseq_qcom_wcn_vregs_disable(struct pwrseq_device *pwrseq)
 {
 	struct pwrseq_qcom_wcn_ctx *ctx = pwrseq_device_get_drvdata(pwrseq);
+
+	if (ctx->vddipa)
+		regulator_disable(ctx->vddipa);
 
 	return regulator_bulk_disable(ctx->pdata->num_vregs, ctx->regs);
 }
@@ -505,6 +518,13 @@ static int pwrseq_qcom_wcn_probe(struct platform_device *pdev)
 		ctx->vddio = devm_regulator_get(dev, "vddio");
 		if (IS_ERR(ctx->vddio))
 			return dev_err_probe(dev, PTR_ERR(ctx->vddio), "Failed to get VDDIO\n");
+	}
+
+	ctx->vddipa = devm_regulator_get_optional(dev, "vddipa");
+	if (IS_ERR(ctx->vddipa)) {
+		if (PTR_ERR(ctx->vddipa) != -ENODEV)
+			return dev_err_probe(dev, PTR_ERR(ctx->vddipa), "Failed to get VDDIPA\n");
+		ctx->vddipa = NULL;
 	}
 
 	ctx->bt_gpio = devm_gpiod_get_optional(dev, "bt-enable", GPIOD_OUT_LOW);

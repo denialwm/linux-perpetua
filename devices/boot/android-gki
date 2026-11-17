@@ -10,14 +10,19 @@ template that the vendor signed (Nubia signs boot with its own key) loses
 that signature, which an unlocked bootloader accepts.
 Needs avbtool and unpack_bootimg.
 
-Usage: devices/boot/android-gki boot|init_boot TEMPLATE PAYLOAD OUTPUT [EVIDENCE] [--tail TAIL]
+Usage: devices/boot/android-gki boot|init_boot TEMPLATE PAYLOAD OUTPUT [EVIDENCE]
+           [--ramdisk RAMDISK] [--tail TAIL]
 
 EVIDENCE, when given, is a directory that receives the avbtool
 verification, the unpacked header and the unpacked image.
 
-TAIL, for boot, is a filesystem image written right after the kernel, at the
-next page. The bootloader loads only what the header lists and never reads
-it; Linux mounts it in place from the partition.
+RAMDISK, for boot, is the ramdisk of a device that has no init_boot
+partition. It replaces the template's own and follows the kernel, at the next
+page.
+
+TAIL, for boot, is a filesystem image written right after the kernel, or the
+ramdisk if there is one, at the next page. The bootloader loads only what the
+header lists and never reads it; Linux mounts it in place from the partition.
 """
 import hashlib
 import json
@@ -44,12 +49,15 @@ def sha256(data):
 
 def main():
     args = sys.argv[1:]
-    tail = b''
-    if '--tail' in args:
-        at = args.index('--tail')
-        tail = Path(args[at + 1]).read_bytes()
-        del args[at:at + 2]
-    if len(args) not in (4, 5) or args[0] not in ('boot', 'init_boot') or (tail and args[0] != 'boot'):
+    extra = {}
+    for option in ('--ramdisk', '--tail'):
+        if option in args:
+            at = args.index(option)
+            extra[option] = Path(args[at + 1]).read_bytes()
+            del args[at:at + 2]
+    ramdisk, tail = extra.get('--ramdisk'), extra.get('--tail', b'')
+    if len(args) not in (4, 5) or args[0] not in ('boot', 'init_boot') or (
+            (tail or ramdisk is not None) and args[0] != 'boot'):
         sys.exit(__doc__)
     assert len(tail) % PAGE == 0, 'tail is not a whole number of pages'
     partition, template, payload, output = args[0], *map(Path, args[1:4])
@@ -63,7 +71,10 @@ def main():
     assert header[:8] == b'ANDROID!', 'template is not an Android boot image'
     assert struct.unpack_from('<I', header, HEADER_VERSION)[0] == 4, 'template header is not version 4'
     assert struct.unpack_from('<I', header, SIGNATURE_SIZE)[0] == 0, 'template has a boot signature'
-    assert struct.unpack_from('<I', header, other)[0] == 0, f'template {partition} carries another payload'
+    if ramdisk is None:
+        assert struct.unpack_from('<I', header, other)[0] == 0, f'template {partition} carries another payload'
+    else:
+        struct.pack_into('<I', header, RAMDISK_SIZE, len(ramdisk))
     struct.pack_into('<I', header, field, len(content))
 
     info = run('avbtool', 'info_image', '--image', template).decode()
@@ -71,13 +82,15 @@ def main():
     salt = re.search(r'^\s*Salt:\s*([0-9a-f]+)\s*$', info, re.M).group(1)
     props = re.findall(r"^\s*Prop: (\S+) -> '(.*)'$", info, re.M)
 
-    output.write_bytes(bytes(header) + content + b'\0' * (-len(content) % PAGE) + tail)
+    pad = lambda data: data + b'\0' * (-len(data) % PAGE)
+    payloads = pad(content) + pad(ramdisk or b'')
+    output.write_bytes(bytes(header) + payloads + tail)
     run('avbtool', 'add_hash_footer', '--image', output, '--partition_size', len(stock),
         '--partition_name', partition, '--hash_algorithm', 'sha256', '--algorithm', 'NONE',
         '--salt', salt, *[a for key, value in props for a in ('--prop', f'{key}:{value}')])
     image = output.read_bytes()
     assert len(image) == len(stock) and image[:PAGE] == header
-    start = PAGE + len(content) + -len(content) % PAGE
+    start = PAGE + len(payloads)
     assert image[start:start + len(tail)] == tail, 'tail is not after the kernel'
 
     with tempfile.TemporaryDirectory() as scratch:
@@ -90,6 +103,8 @@ def main():
         described = run('unpack_bootimg', '--boot_img', output, '--out', unpacked)
         name = 'kernel' if partition == 'boot' else 'ramdisk'
         assert (unpacked / name).read_bytes() == content, 'unpacked payload differs'
+        if ramdisk is not None:
+            assert (unpacked / 'ramdisk').read_bytes() == ramdisk, 'unpacked ramdisk differs'
     if evidence:
         (evidence / f'{partition}-verification.txt').write_bytes(verification)
         (evidence / f'{partition}-header.txt').write_bytes(described)

@@ -1437,6 +1437,20 @@ config DRM_PANEL_VISIONOX_RM69299
 	  Say Y here if you want to enable support for Visionox
 	  RM69299  DSI Video Mode panel.
 
+config DRM_PANEL_VISIONOX_NT37705
+	tristate "Visionox NT37705"
+	depends on OF
+	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
+	select DRM_DISPLAY_DSC_HELPER
+	select DRM_DISPLAY_HELPER
+	help
+	  Say Y here if you want to enable support for the Visionox NT37705
+	  1080x2412 120Hz DSI DSC command mode panel of the Nothing Phone (2).
+	  The panel is driven in command mode with Display Stream Compression
+	  and keeps what the bootloader set up. Say Y here to build it into the
+	  kernel, or M to build it as a module.
+
 config DRM_PANEL_VISIONOX_RM692E5
 	tristate "Visionox RM692E5"
 	depends on OF

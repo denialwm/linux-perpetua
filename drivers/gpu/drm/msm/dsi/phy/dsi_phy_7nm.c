@@ -53,6 +53,8 @@
 #define DSI_PHY_7NM_QUIRK_V5_2		BIT(4)
 /* Hardware is V7.2 */
 #define DSI_PHY_7NM_QUIRK_V7_2		BIT(5)
+/* PHY 4.3.2 (SM8475): 4.3 on 4nm, with its own regulator control */
+#define DSI_PHY_7NM_QUIRK_V4_3_2	BIT(6)
 
 struct dsi_pll_config {
 	bool enable_ssc;
@@ -1141,6 +1143,10 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
 			glbl_rescode_top_ctrl = less_than_1500_mhz ? 0x3d :  0x01;
 			glbl_rescode_bot_ctrl = less_than_1500_mhz ? 0x38 :  0x39;
 		}
+		if (phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V4_3_2) {
+			vreg_ctrl_0 = phy->cphy_mode ? 0x45 : 0x44;
+			vreg_ctrl_1 = phy->cphy_mode ? 0x41 : 0x19;
+		}
 	} else if (phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V4_2) {
 		if (phy->cphy_mode) {
 			glbl_rescode_top_ctrl = less_than_1500_mhz ? 0x3d :  0x01;
@@ -1188,6 +1194,7 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
 	/* program CMN_CTRL_4 for minor_ver 2 chipsets*/
 	if ((phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V5_2) ||
 	    (phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V7_2) ||
+	    (phy->cfg->quirks & DSI_PHY_7NM_QUIRK_V4_3_2) ||
 	    (readl(base + REG_DSI_7nm_PHY_CMN_REVISION_ID0) & (0xf0)) == 0x20)
 		writel(0x04, base + REG_DSI_7nm_PHY_CMN_CTRL_4);
 
@@ -1483,6 +1490,29 @@ const struct msm_dsi_phy_cfg dsi_phy_5nm_8450_cfgs = {
 	.io_start = { 0xae94400, 0xae96400 },
 	.num_dsi_phy = 2,
 	.quirks = DSI_PHY_7NM_QUIRK_V4_3,
+};
+
+const struct msm_dsi_phy_cfg dsi_phy_4nm_8475_cfgs = {
+	.has_phy_lane = true,
+	.regulator_data = dsi_phy_7nm_97800uA_regulators,
+	.num_regulators = ARRAY_SIZE(dsi_phy_7nm_97800uA_regulators),
+	.ops = {
+		.enable = dsi_7nm_phy_enable,
+		.disable = dsi_7nm_phy_disable,
+		.pll_init = dsi_pll_7nm_init,
+		.save_pll_state = dsi_7nm_pll_save_state,
+		.restore_pll_state = dsi_7nm_pll_restore_state,
+		.set_continuous_clock = dsi_7nm_set_continuous_clock,
+	},
+	.min_pll_rate = 600000000UL,
+#ifdef CONFIG_64BIT
+	.max_pll_rate = 5000000000UL,
+#else
+	.max_pll_rate = ULONG_MAX,
+#endif
+	.io_start = { 0xae94400, 0xae96400 },
+	.num_dsi_phy = 2,
+	.quirks = DSI_PHY_7NM_QUIRK_V4_3 | DSI_PHY_7NM_QUIRK_V4_3_2,
 };
 
 const struct msm_dsi_phy_cfg dsi_phy_5nm_8775p_cfgs = {
