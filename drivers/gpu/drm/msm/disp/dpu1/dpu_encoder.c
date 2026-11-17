@@ -2096,14 +2096,12 @@ static void dpu_encoder_prep_dsc(struct dpu_encoder_virt *dpu_enc,
 	 * interface the pair is programmed with that part's width, not with the
 	 * width of the whole panel.
 	 */
-	if (dsc_common_mode & DSC_MODE_MULTIPLEX) {
+	if ((dsc_common_mode & DSC_MODE_MULTIPLEX) && dpu_enc->num_phys_encs > 1) {
 		initial_lines = dpu_encoder_dsc_merge_initial_line_calc(dsc);
 
-		if (dpu_enc->num_phys_encs > 1) {
-			pair_dsc = *dsc;
-			pair_dsc.pic_width = pic_width / dpu_enc->num_phys_encs;
-			dsc = &pair_dsc;
-		}
+		pair_dsc = *dsc;
+		pair_dsc.pic_width = pic_width / dpu_enc->num_phys_encs;
+		dsc = &pair_dsc;
 	}
 
 	for (i = 0; i < num_dsc; i++)

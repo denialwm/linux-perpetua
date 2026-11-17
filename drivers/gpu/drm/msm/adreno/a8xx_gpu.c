@@ -892,6 +892,13 @@ void a8xx_recover(struct msm_gpu *gpu)
 			a8xx_dump(gpu);
 	}
 
+	/*
+	 * The hang handler kept GX on with the GMU's keepalive vote while
+	 * the dump above was collected; release it now that recovery owns
+	 * the GPU.
+	 */
+	gmu_write(gmu, REG_A8XX_GMU_GMU_PWR_COL_KEEPALIVE, 0);
+
 	pm_runtime_dont_use_autosuspend(&gpu->pdev->dev);
 
 	/* active_submit won't change until we make a submission */
@@ -1117,7 +1124,7 @@ static u64 gpu_periph_read64(struct msm_gpu *gpu, u32 dbg_offset)
 #define CP_PERIPH_IB3_SIZE      0x700f
 #define CP_PERIPH_IB3_OFFSET    0x7010
 
-static void a8xx_fault_detect_irq(struct msm_gpu *gpu)
+static bool a8xx_fault_detect_irq(struct msm_gpu *gpu)
 {
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
 	struct a6xx_gpu *a6xx_gpu = to_a6xx_gpu(adreno_gpu);
@@ -1131,7 +1138,7 @@ static void a8xx_fault_detect_irq(struct msm_gpu *gpu)
 	 * just bail.
 	 */
 	if (gpu_read(gpu, REG_A8XX_RBBM_MISC_STATUS) & A8XX_RBBM_MISC_STATUS_SMMU_STALLED_ON_FAULT)
-		return;
+		return false;
 
 	/*
 	 * Force the GPU to stay on until after we finish
@@ -1180,6 +1187,8 @@ static void a8xx_fault_detect_irq(struct msm_gpu *gpu)
 	timer_delete(&gpu->hangcheck_timer);
 
 	kthread_queue_work(gpu->worker, &gpu->recover_work);
+
+	return true;
 }
 
 static void a8xx_sw_fuse_violation_irq(struct msm_gpu *gpu)
@@ -1239,6 +1248,7 @@ static int a8xx_irq_poll_fence(struct msm_gpu *gpu)
 irqreturn_t a8xx_irq(struct msm_gpu *gpu)
 {
 	struct msm_drm_private *priv = gpu->dev->dev_private;
+	bool hang = false;
 	u32 status;
 
 	/* Keep GX on until the handler is done with the GPU registers */
@@ -1258,7 +1268,7 @@ irqreturn_t a8xx_irq(struct msm_gpu *gpu)
 	}
 
 	if (status & A6XX_RBBM_INT_0_MASK_RBBM_HANG_DETECT)
-		a8xx_fault_detect_irq(gpu);
+		hang = a8xx_fault_detect_irq(gpu);
 
 	if (status & A6XX_RBBM_INT_0_MASK_CP_AHB_ERROR) {
 		u32 rl0, rl1;
@@ -1296,7 +1306,8 @@ irqreturn_t a8xx_irq(struct msm_gpu *gpu)
 		a8xx_preempt_irq(gpu);
 
 done:
-	a8xx_gpu_keepalive_vote(gpu, false);
+	if (!hang)
+		a8xx_gpu_keepalive_vote(gpu, false);
 
 	return IRQ_HANDLED;
 }

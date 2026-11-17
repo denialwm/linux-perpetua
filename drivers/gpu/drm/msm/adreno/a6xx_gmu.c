@@ -1459,7 +1459,7 @@ bool a6xx_gmu_isidle(struct a6xx_gmu *gmu)
 }
 
 /* Gracefully try to shut down the GMU and by extension the GPU */
-static int a6xx_gmu_shutdown(struct a6xx_gmu *gmu)
+static void a6xx_gmu_shutdown(struct a6xx_gmu *gmu)
 {
 	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
 	struct adreno_gpu *adreno_gpu = &a6xx_gpu->base;
@@ -1556,11 +1556,8 @@ slumber:
 	/* Tell RPMh to power off the GPU */
 	a6xx_rpmh_stop(gmu);
 
-	return 0;
-
 force_off:
 	a6xx_gmu_force_off(gmu);
-	return 0;
 }
 
 
@@ -1568,7 +1565,6 @@ int a6xx_gmu_stop(struct a6xx_gpu *a6xx_gpu)
 {
 	struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
 	struct msm_gpu *gpu = &a6xx_gpu->base.base;
-	int ret;
 
 	if (!pm_runtime_active(gmu->dev))
 		return 0;
@@ -1579,11 +1575,8 @@ int a6xx_gmu_stop(struct a6xx_gpu *a6xx_gpu)
 	 */
 	if (gmu->hung)
 		a6xx_gmu_force_off(gmu);
-	else {
-		ret = a6xx_gmu_shutdown(gmu);
-		if (ret)
-			return ret;
-	}
+	else
+		a6xx_gmu_shutdown(gmu);
 
 	/* Remove the bus vote */
 	dev_pm_opp_set_opp(&gpu->pdev->dev, NULL);
