@@ -1,0 +1,91 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/convenientpower,cps8601.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: ConvenientPower CPS8601 wireless power transmitter
+
+maintainers:
+  - Travis Geisinger <travis@geisinger.dev>
+
+description:
+  The CPS8601 is a wireless power transmitter with its own firmware. On the
+  OnePlus Pad 3 it runs OnePlus firmware and charges the docked stylus. Its
+  coil is fed by a boost converter whose voltage the host sets; GPIOs wake
+  the chip, switch its power and gate the transmitter.
+
+allOf:
+  - $ref: power-supply.yaml#
+
+properties:
+  compatible:
+    const: convenientpower,cps8601
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  vin-supply:
+    description: Supply of the transmitter coil.
+
+  wakeup-gpios:
+    maxItems: 1
+    description: GP0, keeps the firmware awake while high.
+
+  scan-gpios:
+    maxItems: 1
+    description: GP1, held high while the host display is on.
+
+  enable-gpios:
+    maxItems: 1
+    description: GP2, the power switch of the chip.
+
+  tx-disable-gpios:
+    maxItems: 1
+    description: GP3, stops the transmitter while high.
+
+  oneplus,idle-microvolt:
+    description: Coil supply voltage while no stylus is attached.
+
+  oneplus,charge-microvolt:
+    description: Coil supply voltage while a stylus is attached.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - vin-supply
+  - wakeup-gpios
+  - scan-gpios
+  - enable-gpios
+  - tx-disable-gpios
+  - oneplus,idle-microvolt
+  - oneplus,charge-microvolt
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        pen-charger@41 {
+            compatible = "convenientpower,cps8601";
+            reg = <0x41>;
+            interrupts-extended = <&tlmm 172 IRQ_TYPE_EDGE_FALLING>;
+            vin-supply = <&pen_boost>;
+            wakeup-gpios = <&tlmm 106 GPIO_ACTIVE_HIGH>;
+            scan-gpios = <&tlmm 56 GPIO_ACTIVE_HIGH>;
+            enable-gpios = <&tlmm 105 GPIO_ACTIVE_HIGH>;
+            tx-disable-gpios = <&tlmm 107 GPIO_ACTIVE_HIGH>;
+            oneplus,idle-microvolt = <7000000>;
+            oneplus,charge-microvolt = <10000000>;
+        };
+    };

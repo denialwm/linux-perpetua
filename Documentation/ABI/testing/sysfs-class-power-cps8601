@@ -1,0 +1,40 @@
+What:		/sys/class/power_supply/cps8601-stylus/bt_address
+Date:		November 2026
+KernelVersion:	7.3
+Contact:	linux-pm@vger.kernel.org
+Description:
+		Bluetooth address of the stylus docked on the charger, as the
+		stylus sent it over the charging coil and the charger checked
+		it, in the colon-separated form, most significant byte first,
+		lower case (for example c0:87:06:07:fe:68). Reading fails with
+		ENODATA while no identified stylus is docked.
+
+		When an identified stylus docks or leaves, the power supply
+		sends a change uevent with these variables:
+
+		ACCESSORY_TYPE=stylus
+		ACCESSORY_PRESENT=1 (docked) or 0 (left)
+		ACCESSORY_BT_ADDRESS=<the address above>
+
+		Access: Read
+
+What:		/sys/class/power_supply/cps8601-stylus/bt_capacity
+Date:		November 2026
+KernelVersion:	7.3
+Contact:	linux-pm@vger.kernel.org
+Description:
+		State of charge of the docked stylus as userspace read it over
+		Bluetooth. The stylus reports its state of charge over the coil
+		only when it stops charging, so the charger relies on this
+		value to charge a full stylus again: a write at or below
+		charge_control_start_threshold (default 90) restarts charging
+		of a stylus that had reported full. The value written is also
+		reported as capacity. Writing fails with ENODEV while no
+		identified stylus is docked. Reading returns the last state of
+		charge, written here or reported over the coil, and fails with
+		ENODATA from the time a stylus leaves, or another one is
+		identified, until either of them sets it again.
+
+		Access: Read, Write
+
+		Valid values: 0 - 100 (percent)

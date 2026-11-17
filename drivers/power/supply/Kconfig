@@ -557,6 +557,19 @@ config BATTERY_RX51
 	  Say Y here to enable support for battery information on Nokia
 	  RX-51, also known as N900 tablet.
 
+config CHARGER_CPS8601
+	tristate "CPS8601 stylus wireless charger"
+	depends on I2C
+	depends on OF
+	select REGMAP_I2C
+	help
+	  Say Y here to enable the ConvenientPower CPS8601 wireless power
+	  transmitter that charges the stylus of the OnePlus Pad 3. The
+	  stylus' charge state is reported as a power supply.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called cps8601-pen-charger.
+
 config CHARGER_CPCAP
 	tristate "CPCAP PMIC Charger Driver"
 	depends on MFD_CPCAP && IIO
