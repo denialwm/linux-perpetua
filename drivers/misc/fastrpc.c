@@ -2525,6 +2525,7 @@ static const struct of_device_id fastrpc_poll_supported_machines[] __maybe_unuse
 	{ .compatible = "qcom,sa8775p" },
 	{ .compatible = "qcom,sar2130p" },
 	{ .compatible = "qcom,sm8450" },
+	{ .compatible = "qcom,sm8475" },
 	{ .compatible = "qcom,sm8550" },
 	{ .compatible = "qcom,sm8650" },
 	{ .compatible = "qcom,sm8750" },
