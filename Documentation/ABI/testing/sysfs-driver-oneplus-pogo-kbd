@@ -1,0 +1,67 @@
+What:		/sys/bus/serial/drivers/oneplus-pogo-kbd/<device>/bt_address
+Date:		November 2026
+KernelVersion:	7.3
+Contact:	linux-input@vger.kernel.org
+Description:
+		Bluetooth address of the keyboard attached to the pogo pins, as
+		the keyboard sent it in its first frames, in the colon-separated
+		form, most significant byte first, lower case. Reading fails
+		with ENODATA while no keyboard is attached or the keyboard did
+		not send its address.
+
+		When a keyboard that sent its address attaches or detaches, the
+		device sends a change uevent with these variables:
+
+		ACCESSORY_TYPE=keyboard
+		ACCESSORY_PRESENT=1 (attached) or 0 (detached)
+		ACCESSORY_BT_ADDRESS=<the address above>
+
+		While attached the keyboard's input arrives over the pogo pins;
+		userspace that also connects it over Bluetooth gets each key
+		twice.
+
+		Access: Read
+
+What:		/sys/bus/serial/drivers/oneplus-pogo-kbd/<device>/bt_name
+Date:		November 2026
+KernelVersion:	7.3
+Contact:	linux-input@vger.kernel.org
+Description:
+		Bluetooth name of the keyboard attached to the pogo pins, the
+		name it advertises, as selected by the brand it sent with its
+		address, for example "OnePlus Pad 3 Keyboard". Reading fails
+		with ENODATA while bt_address does, or when the brand is not
+		known.
+
+		Access: Read
+
+What:		/sys/class/power_supply/oneplus-pogo-kbd-<device>/
+Date:		November 2026
+KernelVersion:	7.3
+Contact:	linux-input@vger.kernel.org
+Description:
+		Battery of the keyboard attached to the pogo pins, a power
+		supply of type "Battery" and scope "Device" named after the
+		serial device the keyboard is bound to. It appears when an
+		attached keyboard first reports its battery level and goes away
+		when the keyboard detaches.
+
+		The attributes are those of the power supply class, see
+		sysfs-class-power; the driver provides present (always 1),
+		capacity (the level the keyboard reported, in percent), scope
+		and model_name.
+
+What:		/sys/class/leds/<device>::micmute/
+Date:		November 2026
+KernelVersion:	7.3
+Contact:	linux-input@vger.kernel.org
+Description:
+		Mic mute LED of the keyboard attached to the pogo pins, a LED
+		class device named after the serial device the keyboard is
+		bound to, with the "audio-micmute" default trigger. It exists
+		while the driver is bound; its state is sent to each keyboard
+		that attaches. The caps lock and mute LEDs are the keyboard
+		input device's LEDs (LED_CAPSL, LED_MUTE).
+
+		The attributes are those of the LED class, see
+		sysfs-class-led.

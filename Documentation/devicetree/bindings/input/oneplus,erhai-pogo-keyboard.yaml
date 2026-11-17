@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/oneplus,erhai-pogo-keyboard.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: OnePlus Pad 3 pogo-pin keyboard
+
+maintainers:
+  - Travis Geisinger <travis@geisinger.dev>
+
+description:
+  The keyboard covers of the OnePlus Pad 3 attach through pogo pins that
+  carry their supply and one data line. The tablet drives the line from a
+  UART through a line driver it enables while transmitting; an attached
+  keyboard pulls the line low, which a GPIO senses.
+
+allOf:
+  - $ref: /schemas/serial/serial-peripheral-props.yaml#
+
+properties:
+  compatible:
+    const: oneplus,erhai-pogo-keyboard
+
+  vcc-supply:
+    description: Supply of the keyboard on the pogo pins.
+
+  tx-enable-gpios:
+    maxItems: 1
+    description: Enables the line driver while the UART transmits.
+
+  detect-gpios:
+    maxItems: 1
+    description: Senses the data line, low while a keyboard is attached.
+
+  max-speed: true
+
+  oneplus,touchpad-size:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: Range of the touchpad of the keyboard covers.
+    items:
+      - description: maximum X coordinate of the touchpad
+      - description: maximum Y coordinate of the touchpad
+
+  oneplus,touchpad-resolution:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: Resolution of the touchpad of the keyboard covers.
+    items:
+      - description: X resolution of the touchpad, in units per mm
+      - description: Y resolution of the touchpad, in units per mm
+
+required:
+  - compatible
+  - vcc-supply
+  - tx-enable-gpios
+  - detect-gpios
+  - max-speed
+
+dependencies:
+  oneplus,touchpad-resolution: [ 'oneplus,touchpad-size' ]
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    serial {
+        mcu {
+            compatible = "oneplus,erhai-pogo-keyboard";
+            vcc-supply = <&pogo_vcc>;
+            tx-enable-gpios = <&tlmm 83 GPIO_ACTIVE_HIGH>;
+            detect-gpios = <&tlmm 96 GPIO_ACTIVE_HIGH>;
+            max-speed = <921600>;
+            oneplus,touchpad-size = <2764 1630>;
+            oneplus,touchpad-resolution = <23 23>;
+        };
+    };

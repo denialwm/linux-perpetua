@@ -476,6 +476,20 @@ config KEYBOARD_TEGRA
 	  To compile this driver as a module, choose M here: the
 	  module will be called tegra-kbc.
 
+config KEYBOARD_ONEPLUS_POGO
+	tristate "OnePlus Pad 3 pogo-pin keyboard"
+	depends on SERIAL_DEV_BUS
+	depends on OF
+	depends on LEDS_CLASS
+	depends on POWER_SUPPLY
+	help
+	  Say Y here to enable the keyboard cover of the OnePlus Pad 3,
+	  attached through its pogo pins: keys, media keys, the touchpad
+	  and the cover's battery level.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called oneplus-pogo-kbd.
+
 config KEYBOARD_OPENCORES
 	tristate "OpenCores Keyboard Controller"
 	depends on HAS_IOMEM
