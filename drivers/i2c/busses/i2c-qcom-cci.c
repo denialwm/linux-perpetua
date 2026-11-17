@@ -520,6 +520,13 @@ static int cci_probe(struct platform_device *pdev)
 	if (!cci->data)
 		return -ENOENT;
 
+	/*
+	 * The reset and its interrupt use master 0's completion whichever
+	 * masters the board describes, so set them all up.
+	 */
+	for (i = 0; i < cci->data->num_masters; i++)
+		init_completion(&cci->master[i].irq_complete);
+
 	for_each_available_child_of_node_scoped(dev->of_node, child) {
 		struct cci_master *master;
 		u32 idx;
@@ -558,8 +565,6 @@ static int cci_probe(struct platform_device *pdev)
 			else if (val == I2C_MAX_FAST_MODE_PLUS_FREQ)
 				master->mode = I2C_MODE_FAST_PLUS;
 		}
-
-		init_completion(&master->irq_complete);
 	}
 
 	/* Memory */

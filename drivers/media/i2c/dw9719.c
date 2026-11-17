@@ -76,6 +76,18 @@
 #define DW9800K_MODE_SAC_SHIFT		6
 #define DW9800K_DEFAULT_VCM_FREQ		0x10
 
+/*
+ * The GT9772 has the DW9761 register layout behind an advanced mode, which a
+ * key written to its own register opens. Its SAC field starts at bit 5.
+ */
+#define GT9772_ADVANCED_MODE		CCI_REG8(0xed)
+#define GT9772_ADVANCED_MODE_KEY	0xab
+#define GT9772_MODE_SAC_SHIFT		5
+#define GT9772_MODE_LOW_BITS		0x04
+#define GT9772_DEFAULT_SAC		4
+#define GT9772_DEFAULT_VCM_FREQ		0x01
+#define GT9772_DEFAULT_VCM_PRELOAD	0x6f
+
 #define to_dw9719_device(x) container_of(x, struct dw9719_device, sd)
 
 enum dw9719_model {
@@ -83,6 +95,7 @@ enum dw9719_model {
 	DW9719,
 	DW9761,
 	DW9800K,
+	GT9772,
 };
 
 struct dw9719_device {
@@ -148,6 +161,10 @@ static int dw9719_power_up(struct dw9719_device *dw9719, bool detect)
 			dw9719->sac_mode = DW9800K_DEFAULT_SAC;
 			dw9719->vcm_freq = DW9800K_DEFAULT_VCM_FREQ;
 			goto props;
+		case GT9772:
+			dw9719->sac_mode = GT9772_DEFAULT_SAC;
+			dw9719->vcm_freq = GT9772_DEFAULT_VCM_FREQ;
+			goto props;
 		default:
 			break;
 		}
@@ -198,6 +215,15 @@ props:
 		cci_write(dw9719->regmap, DW9719_MODE,
 			  dw9719->sac_mode << DW9800K_MODE_SAC_SHIFT, &ret);
 		cci_write(dw9719->regmap, DW9719_VCM_FREQ, dw9719->vcm_freq, &ret);
+		break;
+	case GT9772:
+		cci_write(dw9719->regmap, GT9772_ADVANCED_MODE,
+			  GT9772_ADVANCED_MODE_KEY, &ret);
+		cci_write(dw9719->regmap, DW9719_MODE, GT9772_MODE_LOW_BITS |
+			  (dw9719->sac_mode << GT9772_MODE_SAC_SHIFT), &ret);
+		cci_write(dw9719->regmap, DW9719_VCM_FREQ, dw9719->vcm_freq, &ret);
+		cci_write(dw9719->regmap, DW9761_VCM_PRELOAD,
+			  GT9772_DEFAULT_VCM_PRELOAD, &ret);
 		break;
 	case DW9718S:
 		/* Datasheet says [OCP/UVLO] should be disabled below 2.5V */
@@ -476,6 +502,7 @@ static const struct i2c_device_id dw9719_id_table[] = {
 	{ .name = "dw9719", .driver_data = (kernel_ulong_t)DW9719 },
 	{ .name = "dw9761", .driver_data = (kernel_ulong_t)DW9761 },
 	{ .name = "dw9800k", .driver_data = (kernel_ulong_t)DW9800K },
+	{ .name = "gt9772", .driver_data = (kernel_ulong_t)GT9772 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, dw9719_id_table);
@@ -485,6 +512,7 @@ static const struct of_device_id dw9719_of_table[] = {
 	{ .compatible = "dongwoon,dw9719", .data = (const void *)DW9719 },
 	{ .compatible = "dongwoon,dw9761", .data = (const void *)DW9761 },
 	{ .compatible = "dongwoon,dw9800k", .data = (const void *)DW9800K },
+	{ .compatible = "giantec,gt9772", .data = (const void *)GT9772 },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, dw9719_of_table);

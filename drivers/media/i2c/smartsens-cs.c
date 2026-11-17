@@ -14,7 +14,9 @@
 #include <linux/i2c.h>
 #include <linux/log2.h>
 #include <linux/module.h>
+#include <linux/nvmem-provider.h>
 #include <linux/pm_runtime.h>
+#include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/units.h>
 #include <media/v4l2-cci.h>
@@ -52,6 +54,36 @@
 #define SC_AGAIN_STEP			1
 #define SC_AGAIN_DEFAULT		SC_GAIN_UNIT
 
+/*
+ * One-time programmable memory of the D154, read a page at a time: the page
+ * goes to a buffer at 0x8000 + 0x200 * page, and its bytes from offset 0x7a
+ * on are module data. The bytes of all pages follow each other in the
+ * nvmem device.
+ */
+#define SC_REG_OTP_VREF(n)		CCI_REG8(0x36b0 + (n))
+#define SC_REG_OTP_CTRL			CCI_REG8(0x4400)
+#define SC_OTP_CTRL_LOAD		0x11
+#define SC_REG_OTP_MODE			CCI_REG8(0x4401)
+#define SC_OTP_MODE_READ		0x13
+#define SC_REG_OTP_STATUS		CCI_REG8(0x4407)
+#define SC_REG_OTP_START		CCI_REG16(0x4408)
+#define SC_REG_OTP_END			CCI_REG16(0x440a)
+#define SC_REG_OTP_PAGE			CCI_REG8(0x4412)
+#define SC_OTP_BUF(page)		(0x8000 + 0x200 * (page))
+#define SC_OTP_DATA_OFFSET		0x7a
+#define SC_OTP_LOAD_US			(10 * USEC_PER_MSEC)
+
+struct sc_otp_page {
+	u8 page;
+	u16 size;
+};
+
+struct sc_otp {
+	const struct sc_otp_page *pages;
+	unsigned int num_pages;
+	unsigned int size;
+};
+
 #define to_sc(_sd)			container_of(_sd, struct sc, sd)
 
 struct sc_reg_list {
@@ -81,6 +113,7 @@ struct sc_chip {
 	const struct sc_reg_list init;
 	const struct sc_mode *modes;
 	unsigned int num_modes;
+	const struct sc_otp *otp;
 };
 
 enum {
@@ -115,6 +148,8 @@ struct sc {
 
 	const struct sc_chip *chip;
 	const struct sc_mode *mode;
+
+	u8 *otp_data;
 };
 
 /* Global init after the software reset */
@@ -579,6 +614,21 @@ static const struct sc_chip sc_c658 = {
 	.num_modes = ARRAY_SIZE(sc_c658_modes),
 };
 
+/*
+ * Pages 1 to 10 of the D154 hold two copies of the module data, five pages
+ * each, with fewer bytes in the last page of each copy
+ */
+static const struct sc_otp_page sc_d154_otp_pages[] = {
+	{ 1, 390 }, { 2, 390 }, { 3, 390 }, { 4, 390 }, { 5, 273 },
+	{ 6, 390 }, { 7, 390 }, { 8, 390 }, { 9, 390 }, { 10, 273 },
+};
+
+static const struct sc_otp sc_d154_otp = {
+	.pages = sc_d154_otp_pages,
+	.num_pages = ARRAY_SIZE(sc_d154_otp_pages),
+	.size = 2 * (4 * 390 + 273),
+};
+
 /* Stock output pixel clock 264 MHz: 330 MHz link, 30 fps at 2500 lines */
 static const struct sc_chip sc_d154 = {
 	.chip_id = 0xd154,
@@ -595,6 +645,7 @@ static const struct sc_chip sc_d154 = {
 	},
 	.modes = sc_d154_modes,
 	.num_modes = ARRAY_SIZE(sc_d154_modes),
+	.otp = &sc_d154_otp,
 };
 
 static int sc_set_ctrl(struct v4l2_ctrl *ctrl)
@@ -940,6 +991,82 @@ static int sc_identify_sensor(struct sc *sc)
 	return 0;
 }
 
+/* Copy the OTP of a powered sensor before it streams; it never changes */
+static int sc_read_otp(struct sc *sc)
+{
+	const struct sc_otp *otp = sc->chip->otp;
+	unsigned int i, offset = 0;
+	int ret = 0;
+
+	sc->otp_data = devm_kzalloc(sc->dev, otp->size, GFP_KERNEL);
+	if (!sc->otp_data)
+		return -ENOMEM;
+
+	cci_write(sc->regmap, SC_REG_OTP_VREF(0), 0x48, &ret);
+	cci_write(sc->regmap, SC_REG_OTP_VREF(1), 0x38, &ret);
+	cci_write(sc->regmap, SC_REG_OTP_VREF(2), 0x41, &ret);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < otp->num_pages; i++) {
+		const struct sc_otp_page *page = &otp->pages[i];
+		u16 buf = SC_OTP_BUF(page->page);
+
+		cci_write(sc->regmap, SC_REG_OTP_START, buf, &ret);
+		cci_write(sc->regmap, SC_REG_OTP_END, buf | 0x1ff, &ret);
+		cci_write(sc->regmap, SC_REG_OTP_MODE, SC_OTP_MODE_READ, &ret);
+		cci_write(sc->regmap, SC_REG_OTP_PAGE, 2 * page->page + 1, &ret);
+		cci_write(sc->regmap, SC_REG_OTP_STATUS, 0, &ret);
+		cci_write(sc->regmap, SC_REG_OTP_CTRL, SC_OTP_CTRL_LOAD, &ret);
+		if (ret)
+			return ret;
+
+		fsleep(SC_OTP_LOAD_US);
+
+		ret = regmap_bulk_read(sc->regmap, buf + SC_OTP_DATA_OFFSET,
+				       sc->otp_data + offset, page->size);
+		if (ret)
+			return ret;
+
+		offset += page->size;
+	}
+
+	return 0;
+}
+
+static int sc_otp_read(void *priv, unsigned int off, void *val, size_t count)
+{
+	struct sc *sc = priv;
+
+	memcpy(val, sc->otp_data + off, count);
+
+	return 0;
+}
+
+static int sc_register_otp(struct sc *sc)
+{
+	struct nvmem_config config = {
+		.name = dev_name(sc->dev),
+		.id = NVMEM_DEVID_NONE,
+		.dev = sc->dev,
+		.owner = THIS_MODULE,
+		.read_only = true,
+		.root_only = true,
+		.reg_read = sc_otp_read,
+		.size = sc->chip->otp->size,
+		.word_size = 1,
+		.stride = 1,
+		.priv = sc,
+	};
+	int ret;
+
+	ret = sc_read_otp(sc);
+	if (ret)
+		return ret;
+
+	return PTR_ERR_OR_ZERO(devm_nvmem_register(sc->dev, &config));
+}
+
 static int sc_check_hwcfg(struct sc *sc)
 {
 	struct fwnode_handle *fwnode = dev_fwnode(sc->dev), *ep;
@@ -1101,6 +1228,12 @@ static int sc_probe(struct i2c_client *client)
 	if (ret) {
 		dev_err_probe(sc->dev, ret, "failed to find sensor\n");
 		goto power_off;
+	}
+
+	if (sc->chip->otp) {
+		ret = sc_register_otp(sc);
+		if (ret)
+			dev_warn(sc->dev, "OTP not available: %d\n", ret);
 	}
 
 	sc->mode = &sc->chip->modes[0];

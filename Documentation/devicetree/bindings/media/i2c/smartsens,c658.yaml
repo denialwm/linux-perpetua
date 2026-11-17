@@ -1,0 +1,120 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/smartsens,c658.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: SmartSens C658 and D154 CMOS image sensors
+
+maintainers:
+  - Travis Geisinger <travis@geisinger.dev>
+
+description:
+  The C658 (13 MP) and D154 (8 MP) are SmartSens raw Bayer image sensors
+  with a four-lane MIPI CSI-2 D-PHY output, controlled over I2C. Both
+  identify themselves by register 0x3107 and run from a 19.2 MHz clock.
+
+allOf:
+  - $ref: /schemas/media/video-interface-devices.yaml#
+
+properties:
+  compatible:
+    enum:
+      - smartsens,c658
+      - smartsens,d154
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  power-domains:
+    maxItems: 1
+    description:
+      Power domain the sensor clock input depends on, where the SoC drives
+      the clock pad from a switchable domain.
+
+  avdd-supply:
+    description: Analogue circuit voltage supply.
+
+  dovdd-supply:
+    description: I/O circuit voltage supply.
+
+  dvdd-supply:
+    description: Digital core voltage supply.
+
+  reset-gpios:
+    maxItems: 1
+    description: Active low GPIO connected to the reset pad of the sensor.
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    additionalProperties: false
+
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        additionalProperties: false
+
+        properties:
+          data-lanes:
+            items:
+              - const: 1
+              - const: 2
+              - const: 3
+              - const: 4
+          link-frequencies: true
+          remote-endpoint: true
+
+        required:
+          - data-lanes
+          - link-frequencies
+          - remote-endpoint
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - avdd-supply
+  - dovdd-supply
+  - dvdd-supply
+  - port
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        camera@10 {
+            compatible = "smartsens,d154";
+            reg = <0x10>;
+
+            clocks = <&cam_mclk4>;
+            assigned-clocks = <&cam_mclk4>;
+            assigned-clock-rates = <19200000>;
+
+            reset-gpios = <&tlmm 7 GPIO_ACTIVE_LOW>;
+
+            avdd-supply = <&vreg_cam_2p8>;
+            dovdd-supply = <&vreg_cam_1p8>;
+            dvdd-supply = <&vreg_cam_1p2>;
+
+            orientation = <0>;
+            rotation = <0>;
+
+            port {
+                endpoint {
+                    data-lanes = <1 2 3 4>;
+                    link-frequencies = /bits/ 64 <330000000>;
+                    remote-endpoint = <&csiphy5_in_ep>;
+                };
+            };
+        };
+    };
+...

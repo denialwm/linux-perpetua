@@ -14,6 +14,7 @@ description:
   with 100 mA output current sink capability, designed for linear control of
   voice coil motors (VCM) in camera lenses. This chip provides a Smart Actuator
   Control (SAC) mode intended for driving voice coil lenses in camera modules.
+  The Giantec GT9772 has the same register layout behind an advanced mode.
 
 properties:
   compatible:
@@ -22,6 +23,7 @@ properties:
       - dongwoon,dw9719
       - dongwoon,dw9761
       - dongwoon,dw9800k
+      - giantec,gt9772
 
   reg:
     maxItems: 1
