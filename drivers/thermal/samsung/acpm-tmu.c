@@ -15,6 +15,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
@@ -35,6 +36,7 @@
 				  EXYNOS_TMU_SENSOR(5))
 #define GS101_CPUCL0_SENSOR_MASK (EXYNOS_TMU_SENSOR(1) |	\
 				  EXYNOS_TMU_SENSOR(2))
+#define GS101_G3D_SENSOR_MASK	 GENMASK(7, 1)
 
 #define GS101_REG_INTPEND(i)		((i) * 0x50 + 0xf8)
 
@@ -78,6 +80,7 @@ struct acpm_tmu_priv {
 	struct clk *clk;
 	unsigned int mbox_chan_id;
 	unsigned int num_sensors;
+	bool secondary;
 	int irq;
 	struct acpm_tmu_sensor sensors[] __counted_by(num_sensors);
 };
@@ -87,6 +90,12 @@ struct acpm_tmu_driver_data {
 	const struct acpm_tmu_sensor_group *sensor_groups;
 	unsigned int num_sensor_groups;
 	unsigned int mbox_chan_id;
+	/*
+	 * The TMU that owns the firmware's TMU state, for a TMU that shares
+	 * it: the firmware-wide init, suspend and resume messages are the
+	 * primary's, and this TMU probes after it and suspends before it.
+	 */
+	const char *primary;
 };
 
 #define ACPM_TMU_SENSOR_GROUP(_mask, _id)		\
@@ -99,6 +108,10 @@ static const struct acpm_tmu_sensor_group gs101_sensor_groups[] = {
 	ACPM_TMU_SENSOR_GROUP(GS101_CPUCL2_SENSOR_MASK, 0),
 	ACPM_TMU_SENSOR_GROUP(GS101_CPUCL1_SENSOR_MASK, 1),
 	ACPM_TMU_SENSOR_GROUP(GS101_CPUCL0_SENSOR_MASK, 2),
+};
+
+static const struct acpm_tmu_sensor_group gs101_sub_sensor_groups[] = {
+	ACPM_TMU_SENSOR_GROUP(GS101_G3D_SENSOR_MASK, 3),
 };
 
 static const struct reg_field gs101_reg_fields[REG_INTPEND_COUNT] = {
@@ -133,6 +146,14 @@ static const struct acpm_tmu_driver_data acpm_tmu_gs101 = {
 	.sensor_groups = gs101_sensor_groups,
 	.num_sensor_groups = ARRAY_SIZE(gs101_sensor_groups),
 	.mbox_chan_id = 9,
+};
+
+static const struct acpm_tmu_driver_data acpm_tmu_gs101_sub = {
+	.reg_fields = gs101_reg_fields,
+	.sensor_groups = gs101_sub_sensor_groups,
+	.num_sensor_groups = ARRAY_SIZE(gs101_sub_sensor_groups),
+	.mbox_chan_id = 9,
+	.primary = "google,gs101-tmu-top",
 };
 
 static int acpm_tmu_op_tz_control(struct acpm_tmu_sensor *sensor, bool on)
@@ -396,20 +417,60 @@ static irqreturn_t acpm_tmu_thread_fn(int irq, void *id)
 }
 
 static const struct of_device_id acpm_tmu_match[] = {
-	{ .compatible = "google,gs101-tmu-top" },
+	{ .compatible = "google,gs101-tmu-top", .data = &acpm_tmu_gs101 },
+	{ .compatible = "google,gs101-tmu-sub", .data = &acpm_tmu_gs101_sub },
 	{ /* sentinel */ },
 };
 MODULE_DEVICE_TABLE(of, acpm_tmu_match);
 
+/* Order this TMU after the one that owns the firmware's TMU state. */
+static int acpm_tmu_link_primary(struct device *dev, const char *compatible)
+{
+	struct platform_device *primary;
+	struct device_node *np;
+	struct device_link *link;
+
+	np = of_find_compatible_node(NULL, NULL, compatible);
+	if (!np)
+		return dev_err_probe(dev, -ENODEV, "No %s TMU\n", compatible);
+
+	primary = of_find_device_by_node(np);
+	of_node_put(np);
+	if (!primary || !primary->dev.driver) {
+		if (primary)
+			put_device(&primary->dev);
+		return dev_err_probe(dev, -EPROBE_DEFER, "Waiting for %s\n",
+				     compatible);
+	}
+
+	link = device_link_add(dev, &primary->dev, DL_FLAG_AUTOREMOVE_CONSUMER);
+	put_device(&primary->dev);
+	if (!link)
+		return dev_err_probe(dev, -EINVAL, "Failed to link to %s\n",
+				     compatible);
+
+	return 0;
+}
+
 static int acpm_tmu_probe(struct platform_device *pdev)
 {
-	const struct acpm_tmu_driver_data *data = &acpm_tmu_gs101;
+	const struct acpm_tmu_driver_data *data;
 	struct acpm_handle *acpm_handle;
 	struct device *dev = &pdev->dev;
 	struct acpm_tmu_priv *priv;
 	struct regmap *regmap;
 	void __iomem *base;
 	int i, ret;
+
+	data = of_device_get_match_data(dev);
+	if (!data)
+		return -ENODEV;
+
+	if (data->primary) {
+		ret = acpm_tmu_link_primary(dev, data->primary);
+		if (ret)
+			return ret;
+	}
 
 	acpm_handle = devm_acpm_get_by_phandle(dev);
 	if (IS_ERR(acpm_handle))
@@ -426,6 +487,7 @@ static int acpm_tmu_probe(struct platform_device *pdev)
 	priv->handle = acpm_handle;
 	priv->mbox_chan_id = data->mbox_chan_id;
 	priv->num_sensors = data->num_sensor_groups;
+	priv->secondary = data->primary;
 
 	platform_set_drvdata(pdev, priv);
 
@@ -463,10 +525,12 @@ static int acpm_tmu_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "Failed to resume device\n");
 
-	ret = acpm_handle->ops->tmu.init(acpm_handle, priv->mbox_chan_id);
-	if (ret) {
-		ret = dev_err_probe(dev, ret, "Failed to init TMU\n");
-		goto err_pm_put;
+	if (!priv->secondary) {
+		ret = acpm_handle->ops->tmu.init(acpm_handle, priv->mbox_chan_id);
+		if (ret) {
+			ret = dev_err_probe(dev, ret, "Failed to init TMU\n");
+			goto err_pm_put;
+		}
 	}
 
 	for (i = 0; i < priv->num_sensors; i++) {
@@ -542,11 +606,26 @@ static void acpm_tmu_remove(struct platform_device *pdev)
 	acpm_tmu_control(priv, false, false);
 }
 
+/* The firmware-wide suspend and resume messages are the primary TMU's. */
+static int acpm_tmu_fw_suspend(struct acpm_tmu_priv *priv)
+{
+	if (priv->secondary)
+		return 0;
+
+	return priv->handle->ops->tmu.suspend(priv->handle, priv->mbox_chan_id);
+}
+
+static int acpm_tmu_fw_resume(struct acpm_tmu_priv *priv)
+{
+	if (priv->secondary)
+		return 0;
+
+	return priv->handle->ops->tmu.resume(priv->handle, priv->mbox_chan_id);
+}
+
 static int acpm_tmu_suspend(struct device *dev)
 {
 	struct acpm_tmu_priv *priv = dev_get_drvdata(dev);
-	struct acpm_handle *handle = priv->handle;
-	const struct acpm_tmu_ops *ops = &handle->ops->tmu;
 	int ret, restore_ret;
 
 	ret = acpm_tmu_control(priv, false, false);
@@ -554,7 +633,7 @@ static int acpm_tmu_suspend(struct device *dev)
 		goto err_restore_sensors;
 
 	/* APB clock not required for this specific msg */
-	ret = ops->suspend(handle, priv->mbox_chan_id);
+	ret = acpm_tmu_fw_suspend(priv);
 	if (ret)
 		goto err_restore_sensors;
 
@@ -565,7 +644,7 @@ static int acpm_tmu_suspend(struct device *dev)
 	return 0;
 
 err_resume_acpm:
-	restore_ret = ops->resume(handle, priv->mbox_chan_id);
+	restore_ret = acpm_tmu_fw_resume(priv);
 	if (restore_ret)
 		dev_err(dev, "Failed to resume ACPM after force suspend failure: %d\n",
 			restore_ret);
@@ -582,12 +661,10 @@ err_restore_sensors:
 static int acpm_tmu_resume(struct device *dev)
 {
 	struct acpm_tmu_priv *priv = dev_get_drvdata(dev);
-	struct acpm_handle *handle = priv->handle;
-	const struct acpm_tmu_ops *ops = &handle->ops->tmu;
 	int ret, restore_ret;
 
 	/* APB clock not required for this specific msg */
-	ret = ops->resume(handle, priv->mbox_chan_id);
+	ret = acpm_tmu_fw_resume(priv);
 	if (ret)
 		return ret;
 
@@ -607,7 +684,7 @@ err_suspend_pm:
 		dev_err(dev, "Failed to force suspend during resume rollback: %d\n",
 			restore_ret);
 err_suspend_acpm:
-	restore_ret = ops->suspend(handle, priv->mbox_chan_id);
+	restore_ret = acpm_tmu_fw_suspend(priv);
 	if (restore_ret)
 		dev_err(dev, "Failed to suspend ACPM during resume rollback: %d\n",
 			restore_ret);
