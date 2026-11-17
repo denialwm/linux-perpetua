@@ -1507,6 +1507,13 @@
 	status = "okay";
 };
 
+/* OnePlus's signed VPU 4.0 firmware for SoC revision 2, from vendor's firmware/ */
+&iris {
+	firmware-name = "qcom/kaanapali/iceland/vpu40_2v.mbn";
+
+	status = "okay";
+};
+
 &mdss {
 	/*
 	 * The display is handed over as the bootloader runs it, reading the
