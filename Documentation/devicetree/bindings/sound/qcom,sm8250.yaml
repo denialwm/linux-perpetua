@@ -36,6 +36,7 @@ properties:
           - ayaneo,pocket-s2-sndcard
           - fairphone,fp4-sndcard
           - fairphone,fp5-sndcard
+          - google,barbet-sndcard
           - qcom,apq8096-sndcard
           - qcom,glymur-sndcard
           - qcom,qcm6490-idp-sndcard
@@ -72,6 +73,20 @@ properties:
   model:
     $ref: /schemas/types.yaml#/definitions/string
     description: User visible long sound card name
+
+  clocks:
+    items:
+      - description: LPASS hardware macro vote
+      - description: LPASS digital codec vote
+      - description: Primary TDM bit clock
+      - description: Quinary TDM bit clock
+
+  clock-names:
+    items:
+      - const: lpass_audio_hw_vote
+      - const: lpass_dcodec_hw_vote
+      - const: lpass_pri_tdm_ibit
+      - const: lpass_quin_tdm_ibit
 
 patternProperties:
   ".*-dai-link$":
