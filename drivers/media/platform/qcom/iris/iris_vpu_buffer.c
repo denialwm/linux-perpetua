@@ -1871,6 +1871,37 @@ static u32 hfi_vpu4x_buffer_line_h265d(u32 frame_width, u32 frame_height, bool i
 		ALIGN(qp_size, DMA_ALIGNMENT);
 }
 
+/* The resolution class of one dimension, for the vpu4 AV1 line buffer table */
+static u32 vpu4x_av1d_res(u32 size)
+{
+	if (size <= 1280)
+		return 0;
+	if (size <= 1920)
+		return 1;
+	if (size <= 4096)
+		return 2;
+	return 3;
+}
+
+/*
+ * iris4 sizes the AV1 line buffer from a table, not from the iris3 formula:
+ * the left part per VPP pipe by frame height, the top part by frame width.
+ */
+static u32 hfi_vpu4x_buffer_line_av1d(u32 frame_width, u32 frame_height, bool is_opb,
+				      u32 num_vpp_pipes)
+{
+	static const u32 left[] = { 905472, 1356800, 2890752, 5778432 };
+	static const u32 top[][2] = {
+		{  287232,  430080 },
+		{  468992,  683264 },
+		{ 1278464, 1735168 },
+		{ 3604992, 4518400 },
+	};
+
+	return left[vpu4x_av1d_res(frame_height)] * num_vpp_pipes +
+	       top[vpu4x_av1d_res(frame_width)][is_opb];
+}
+
 static u32 iris_vpu4x_dec_line_size(struct iris_inst *inst)
 {
 	u32 num_vpp_pipes = inst->core->iris_platform_data->num_vpp_pipe;
@@ -1890,6 +1921,8 @@ static u32 iris_vpu4x_dec_line_size(struct iris_inst *inst)
 	else if (inst->codec == V4L2_PIX_FMT_VP9)
 		return hfi_vpu4x_buffer_line_vp9d(width, height, out_min_count, is_opb,
 						  num_vpp_pipes);
+	else if (inst->codec == V4L2_PIX_FMT_AV1)
+		return hfi_vpu4x_buffer_line_av1d(width, height, is_opb, num_vpp_pipes);
 
 	return 0;
 }
@@ -1913,14 +1946,30 @@ static u32 hfi_vpu4x_buffer_persist_vp9d(void)
 		HDR10_HIST_EXTRADATA_SIZE;
 }
 
+/* iris4 keeps an ARP area per hardware picture buffer beside iris3's AV1 persist */
+static u32 hfi_vpu4x_buffer_persist_av1d(u32 max_width, u32 max_height, u32 total_ref_count)
+{
+	return ALIGN(hfi_buffer_persist_av1d(max_width, max_height, total_ref_count) +
+		     AV1D_NUM_HW_PIC_BUF * SIZE_AV1D_ARP, DMA_ALIGNMENT);
+}
+
 static u32 iris_vpu4x_dec_persist_size(struct iris_inst *inst)
 {
+	struct platform_inst_caps *caps;
+
 	if (inst->codec == V4L2_PIX_FMT_H264)
 		return hfi_buffer_persist_h264d();
 	else if (inst->codec == V4L2_PIX_FMT_HEVC)
 		return hfi_vpu4x_buffer_persist_h265d(0);
 	else if (inst->codec == V4L2_PIX_FMT_VP9)
 		return hfi_vpu4x_buffer_persist_vp9d();
+	else if (inst->codec == V4L2_PIX_FMT_AV1) {
+		caps = inst->core->iris_platform_data->inst_caps;
+		if (inst->fw_caps[DRAP].value)
+			return hfi_vpu4x_buffer_persist_av1d(caps->max_frame_width,
+							     caps->max_frame_height, 16);
+		return hfi_vpu4x_buffer_persist_av1d(0, 0, 0);
+	}
 
 	return 0;
 }
@@ -2220,6 +2269,7 @@ u32 iris_vpu4x_buf_size(struct iris_inst *inst, enum iris_buffer_type buffer_typ
 		{BUF_PERSIST,     iris_vpu4x_dec_persist_size   },
 		{BUF_DPB,         iris_vpu_dec_dpb_size         },
 		{BUF_SCRATCH_1,   iris_vpu_dec_scratch1_size    },
+		{BUF_PARTIAL,     iris_vpu_dec_partial_size     },
 	};
 
 	static const struct iris_vpu_buf_type_handle enc_internal_buf_type_handle[] = {
