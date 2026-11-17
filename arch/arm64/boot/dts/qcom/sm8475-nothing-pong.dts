@@ -218,6 +218,30 @@
 		regulator-always-on;
 		regulator-boot-on;
 	};
+
+	sound {
+		compatible = "qcom,sm8450-sndcard";
+		model = "Nothing-Phone-2";
+
+		pinctrl-0 = <&tert_mi2s_active>;
+		pinctrl-names = "default";
+
+		tertiary-mi2s-playback-dai-link {
+			link-name = "Tertiary MI2S Playback";
+
+			cpu {
+				sound-dai = <&q6apmbedai TERTIARY_MI2S_RX>;
+			};
+
+			codec {
+				sound-dai = <&tfa_top>, <&tfa_bottom>;
+			};
+
+			platform {
+				sound-dai = <&q6apm>;
+			};
+		};
+	};
 };
 
 &apps_rsc {
@@ -643,8 +667,22 @@
 	clock-frequency = <1000000>;
 	status = "okay";
 
-	/* tfa98xx@34 */
-	/* tfa98xx@35 */
+	tfa_top: audio-codec@34 {
+		compatible = "nxp,tfa9873";
+		reg = <0x34>;
+		reset-gpios = <&tlmm 1 GPIO_ACTIVE_HIGH>;
+		sound-name-prefix = "Top";
+		#sound-dai-cells = <0>;
+	};
+
+	tfa_bottom: audio-codec@35 {
+		compatible = "nxp,tfa9873";
+		reg = <0x35>;
+		reset-gpios = <&tlmm 89 GPIO_ACTIVE_HIGH>;
+		nxp,tdm-slot = <1>;
+		sound-name-prefix = "Bottom";
+		#sound-dai-cells = <0>;
+	};
 };
 
 &i2c18 {
@@ -852,6 +890,29 @@
 &tlmm {
 	/* Reserved I/Os for FP */
 	gpio-reserved-ranges = <28 4>;
+
+	tert_mi2s_active: tert-mi2s-active-state {
+		sck-pins {
+			pins = "gpio121";
+			function = "mi2s2_sck";
+			drive-strength = <8>;
+			bias-disable;
+		};
+
+		data1-pins {
+			pins = "gpio124";
+			function = "mi2s2_data1";
+			drive-strength = <8>;
+			bias-disable;
+		};
+
+		ws-pins {
+			pins = "gpio123";
+			function = "mi2s2_ws";
+			drive-strength = <8>;
+			bias-disable;
+		};
+	};
 
 	haptics_int_default: haptics-int-default-state {
 		pins = "gpio51";
