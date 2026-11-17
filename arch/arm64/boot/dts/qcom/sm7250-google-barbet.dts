@@ -845,7 +845,7 @@
 };
 
 &sound {
-	compatible = "qcom,sm8250-sndcard";
+	compatible = "google,barbet-sndcard";
 	model = "barbet";
 	clocks = <&q6afecc LPASS_HW_MACRO_VOTE 1>,
 		 <&q6afecc LPASS_HW_DCODEC_VOTE 1>,
