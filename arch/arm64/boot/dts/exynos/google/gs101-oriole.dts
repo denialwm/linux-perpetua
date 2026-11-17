@@ -8,6 +8,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/clock/samsung,s2mps11.h>
 #include <dt-bindings/regulator/samsung,s2mpg10-regulator.h>
 #include "gs101-pixel-common.dtsi"
 
@@ -48,6 +49,17 @@
 		      <0x9 0x00000000 0x80000000>,
 		      <0x9 0x80000000 0x80000000>;
 	};
+
+	/* WL_REG_ON of the BCM4389 Wi-Fi and Bluetooth chip */
+	wlan_en: regulator-wlan-en {
+		compatible = "regulator-fixed";
+		regulator-name = "wlan_en";
+		gpio = <&gpp14 2 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <200000>;
+		pinctrl-0 = <&wlan_en_pin>;
+		pinctrl-names = "default";
+	};
 };
 
 &acpm_ipc {
@@ -60,6 +72,12 @@
 				regulator-max-microvolt = <1950000>;
 				regulator-always-on;
 				samsung,ext-control = <S2MPG10_EXTCTRL_TCXO_ON>;
+			};
+
+			s2mpg10_ldo17m: ldo17m {
+			};
+
+			s2mpg10_ldo19m: ldo19m {
 			};
 
 			s2mpg10_ldo25m: ldo25m {
@@ -133,11 +151,43 @@
 	};
 };
 
+&pcie_1 {
+	/* The Wi-Fi chip, on one lane */
+	num-lanes = <1>;
+	max-link-speed = <2>;
+
+	status = "okay";
+};
+
+&pcie_1_phy {
+	vdd085-supply = <&s2mpg10_ldo17m>;
+	vdd18-supply = <&s2mpg10_ldo19m>;
+
+	status = "okay";
+};
+
+&pcie_1_rp {
+	/* The Wi-Fi chip's 32 kHz sleep clock */
+	clocks = <&s2mpg10_clk S2MPS11_CLK_BT>;
+	vpcie3v3-supply = <&wlan_en>;
+};
+
 &pinctrl_gpio_alive {
 	ts_irq: ts-irq-pins {
 		samsung,pins = "gpa9-0";
 		samsung,pin-function = <GS101_PIN_FUNC_EINT>;
 		samsung,pin-pud = <GS101_PIN_PULL_NONE>;
+	};
+};
+
+&pinctrl_peric0 {
+	wlan_en_pin: wlan-en-pins {
+		samsung,pins = "gpp14-2";
+		samsung,pin-function = <GS101_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <GS101_PIN_PULL_NONE>;
+		samsung,pin-drv = <GS101_PIN_DRV_2_5_MA>;
+		samsung,pin-con-pdn = <GS101_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <GS101_PIN_PULL_UP>;
 	};
 };
 

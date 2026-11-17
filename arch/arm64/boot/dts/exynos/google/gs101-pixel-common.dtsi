@@ -130,7 +130,7 @@
 		vinl14m-supply = <&s2mpg11_buckboost>;
 		vinl15m-supply = <&s2mpg11_buckboost>;
 
-		clocks {
+		s2mpg10_clk: clocks {
 			compatible = "samsung,s2mpg10-clk";
 			#clock-cells = <1>;
 			clock-output-names = "rtc32k_ap", "peri32k1",
