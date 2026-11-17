@@ -363,6 +363,25 @@ static void sm8250_add_be_ops(struct snd_soc_card *card)
 	}
 }
 
+static int sm8250_enable_vote_clocks(struct device *dev)
+{
+	struct clk *clk;
+
+	clk = devm_clk_get_optional_enabled(dev, "lpass_audio_hw_vote");
+	if (IS_ERR(clk))
+		return dev_err_probe(dev, PTR_ERR(clk),
+				     "failed to enable LPASS vote clock\n");
+
+	clk = devm_clk_get_optional_enabled(dev, "lpass_dcodec_hw_vote");
+	if (PTR_ERR(clk) == -EPROBE_DEFER)
+		return -EPROBE_DEFER;
+	if (IS_ERR(clk))
+		dev_warn(dev, "failed to enable LPASS dcodec vote: %ld\n",
+			 PTR_ERR(clk));
+
+	return 0;
+}
+
 static void sm8250_disable_tdm_clock(void *data)
 {
 	clk_disable_unprepare(data);
@@ -412,7 +431,6 @@ static int sm8250_platform_probe(struct platform_device *pdev)
 	struct snd_soc_card *card;
 	struct sm8250_snd_data *data;
 	struct device *dev = &pdev->dev;
-	struct clk *lpass_clk, *dcodec_clk;
 	int ret;
 
 	card = devm_kzalloc(dev, sizeof(*card), GFP_KERNEL);
@@ -432,16 +450,9 @@ static int sm8250_platform_probe(struct platform_device *pdev)
 	snd_soc_card_set_drvdata(card, data);
 
 	if (data->is_barbet) {
-		lpass_clk = devm_clk_get_optional_enabled(dev, "lpass_audio_hw_vote");
-		if (IS_ERR(lpass_clk))
-			return dev_err_probe(dev, PTR_ERR(lpass_clk),
-					     "failed to enable LPASS vote clock\n");
-
-		dcodec_clk = devm_clk_get_optional_enabled(dev, "lpass_dcodec_hw_vote");
-		if (IS_ERR(dcodec_clk))
-			dev_warn(dev, "failed to enable LPASS dcodec vote: %ld\n",
-				 PTR_ERR(dcodec_clk));
-
+		ret = sm8250_enable_vote_clocks(dev);
+		if (ret)
+			return ret;
 		ret = sm8250_enable_tdm_clocks(dev);
 		if (ret)
 			return ret;
