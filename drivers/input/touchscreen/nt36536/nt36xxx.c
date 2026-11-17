@@ -24,6 +24,7 @@
 #include <linux/input/mt.h>
 #include <linux/of_irq.h>
 #include <linux/pm_wakeup.h>
+#include <linux/property.h>
 #include <uapi/linux/sched/types.h>
 #include "nt36xxx.h"
 
@@ -756,6 +757,8 @@ static void release_pen_event(void) {
 		input_report_abs(ts->pen_input_dev, ABS_DISTANCE, 0);
 		input_report_key(ts->pen_input_dev, BTN_TOUCH, 0);
 		input_report_key(ts->pen_input_dev, BTN_TOOL_PEN, 0);
+		input_report_key(ts->pen_input_dev, BTN_STYLUS, 0);
+		input_report_key(ts->pen_input_dev, BTN_STYLUS2, 0);
 		input_sync(ts->pen_input_dev);
 	}
 }
@@ -1072,13 +1075,16 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 				input_report_abs(ts->pen_input_dev, ABS_TILT_Y, pen_tilt_y);
 				input_report_abs(ts->pen_input_dev, ABS_DISTANCE, pen_distance);
 				input_report_key(ts->pen_input_dev, BTN_TOOL_PEN, !!pen_distance || !!pen_pressure);
+				input_report_key(ts->pen_input_dev, BTN_STYLUS, pen_btn1);
+				input_report_key(ts->pen_input_dev, BTN_STYLUS2, pen_btn2);
 				// TBD: pen battery event report
 				// NVT_LOG("pen_battery=%d\n", pen_battery);
 			} else if (pen_format_id == 0xF0) {
 				// report Pen ID
 			} else {
-				NVT_ERR("Unknown pen format id!\n");
-				goto XFER_ERROR;
+				dev_warn_ratelimited(&ts->client->dev,
+						     "unknown pen format id 0x%02x\n",
+						     pen_format_id);
 			}
 		} else { // pen_format_id = 0xFF, i.e. no pen present
 			input_report_abs(ts->pen_input_dev, ABS_X, 0);
@@ -1089,6 +1095,8 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 			input_report_abs(ts->pen_input_dev, ABS_DISTANCE, 0);
 			input_report_key(ts->pen_input_dev, BTN_TOUCH, 0);
 			input_report_key(ts->pen_input_dev, BTN_TOOL_PEN, 0);
+			input_report_key(ts->pen_input_dev, BTN_STYLUS, 0);
+			input_report_key(ts->pen_input_dev, BTN_STYLUS2, 0);
 		}
 
 		input_sync(ts->pen_input_dev);
@@ -1259,6 +1267,7 @@ return:
 static int32_t nvt_ts_probe(struct spi_device *client)
 {
 	int32_t ret = 0;
+	u32 val;
 	int32_t retry_count = 0;
 
 	NVT_LOG("start\n");
@@ -1413,6 +1422,8 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		ts->pen_input_dev->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
 		ts->pen_input_dev->keybit[BIT_WORD(BTN_TOOL_PEN)] |= BIT_MASK(BTN_TOOL_PEN);
 		//ts->pen_input_dev->keybit[BIT_WORD(BTN_TOOL_RUBBER)] |= BIT_MASK(BTN_TOOL_RUBBER);
+		input_set_capability(ts->pen_input_dev, EV_KEY, BTN_STYLUS);
+		input_set_capability(ts->pen_input_dev, EV_KEY, BTN_STYLUS2);
 		ts->pen_input_dev->propbit[0] = BIT(INPUT_PROP_DIRECT);
 
 		input_set_abs_params(ts->pen_input_dev, ABS_X, 0, ts->abs_x_max - 1, 0, 0);
@@ -1421,6 +1432,17 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		input_set_abs_params(ts->pen_input_dev, ABS_DISTANCE, 0, PEN_DISTANCE_MAX, 0, 0);
 		input_set_abs_params(ts->pen_input_dev, ABS_TILT_X, PEN_TILT_MIN, PEN_TILT_MAX, 0, 0);
 		input_set_abs_params(ts->pen_input_dev, ABS_TILT_Y, PEN_TILT_MIN, PEN_TILT_MAX, 0, 0);
+
+		/*
+		 * Tablet users (libinput) need the size of the surface. Take
+		 * it in the controller's axes, as touchscreen-size-x/y.
+		 */
+		if (!device_property_read_u32(&client->dev, "touchscreen-x-mm", &val) && val)
+			input_abs_set_res(ts->pen_input_dev, ABS_X,
+					  (ts->prop.max_x + 1) / val);
+		if (!device_property_read_u32(&client->dev, "touchscreen-y-mm", &val) && val)
+			input_abs_set_res(ts->pen_input_dev, ABS_Y,
+					  (ts->prop.max_y + 1) / val);
 
 		sprintf(ts->pen_phys, "input/pen");
 		ts->pen_input_dev->name = NVT_PEN_NAME;
@@ -1693,6 +1715,8 @@ static int32_t nvt_ts_suspend(struct device *dev)
 		input_report_abs(ts->pen_input_dev, ABS_DISTANCE, 0);
 		input_report_key(ts->pen_input_dev, BTN_TOUCH, 0);
 		input_report_key(ts->pen_input_dev, BTN_TOOL_PEN, 0);
+		input_report_key(ts->pen_input_dev, BTN_STYLUS, 0);
+		input_report_key(ts->pen_input_dev, BTN_STYLUS2, 0);
 		input_sync(ts->pen_input_dev);
 	}
 

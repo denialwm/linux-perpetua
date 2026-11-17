@@ -676,15 +676,15 @@ config DRM_PANEL_NOVATEK_NT36536
 	  Gen4.
 
 config DRM_PANEL_ONEPLUS_ICELAND_NT36536
-	tristate "OnePlus Pad 4 NT36536 panel driver"
+	tristate "OnePlus Pad 3 and Pad 4 NT36536 panel driver"
 	depends on OF
 	depends on DRM_MIPI_DSI
 	depends on BACKLIGHT_CLASS_DEVICE
 	select DRM_DISPLAY_HELPER
 	help
-	  Say Y here if you want to enable support for the CSOT panel built
-	  around the Novatek NT36536 display controller in OnePlus Pad 4
-	  tablets.
+	  Say Y here if you want to enable support for the panels built
+	  around the Novatek NT36536 display controller in OnePlus Pad 3 and
+	  OnePlus Pad 4 tablets.
 
 config DRM_PANEL_NOVATEK_NT36532
 	tristate "Novatek NT36532 DSI panel"
