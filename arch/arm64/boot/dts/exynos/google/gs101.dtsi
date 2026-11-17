@@ -687,6 +687,15 @@
 			samsung,acpm-ipc = <&acpm_ipc>;
 		};
 
+		tmu_sub: thermal-sensor@100b0000 {
+			compatible = "google,gs101-tmu-sub";
+			reg = <0x100b0000 0x800>;
+			clocks = <&cmu_misc CLK_GOUT_MISC_TMU_SUB_PCLK>;
+			interrupts = <GIC_SPI 770 IRQ_TYPE_LEVEL_HIGH 0>;
+			#thermal-sensor-cells = <1>;
+			samsung,acpm-ipc = <&acpm_ipc>;
+		};
+
 		trng: rng@10141400 {
 			compatible = "google,gs101-trng",
 				     "samsung,exynos850-trng";
