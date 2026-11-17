@@ -1561,6 +1561,13 @@
 	status = "okay";
 };
 
+/* Nubia's signed VPU 4.0 firmware for SoC revision 2, from vendor's firmware/ */
+&iris {
+	firmware-name = "qcom/kaanapali/nubia/nx809j-vendor/vpu40_2v.mbn";
+
+	status = "okay";
+};
+
 /* No WSA amplifiers on this board */
 &lpass_wsa2macro {
 	status = "disabled";
