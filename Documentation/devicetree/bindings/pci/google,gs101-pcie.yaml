@@ -1,0 +1,161 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/pci/google,gs101-pcie.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Google gs101 PCIe host controller
+
+maintainers:
+  - Noswad <64293615+TheNoswad@users.noreply.github.com>
+
+description:
+  The Google gs101 SoC has two PCIe Gen4 root complexes based on the
+  Synopsys DesignWare PCIe IP, each with its own two-lane PHY. Their
+  interrupts, MSI among them, share one line.
+
+properties:
+  compatible:
+    const: google,gs101-pcie
+
+  reg:
+    items:
+      - description: External Local Bus interface (ELBI) registers
+      - description: Data Bus Interface (DBI) registers
+      - description: PCIe configuration space region
+
+  reg-names:
+    items:
+      - const: elbi
+      - const: dbi
+      - const: config
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    items:
+      - description: DBI clock
+      - description: AXI master clock
+      - description: AXI slave clock
+      - description: APB clock
+      - description: Interrupt aggregator clock
+      - description: DBI UASC AXI clock
+      - description: DBI UASC APB clock
+      - description: AXI slave UASC AXI clock
+      - description: AXI slave UASC APB clock
+
+  clock-names:
+    items:
+      - const: dbi
+      - const: mstr
+      - const: slv
+      - const: apb
+      - const: ia
+      - const: uasc-dbi-aclk
+      - const: uasc-dbi-pclk
+      - const: uasc-slv-aclk
+      - const: uasc-slv-pclk
+
+  phys:
+    maxItems: 1
+
+  reset-gpios:
+    description: GPIO driving PERST#
+    maxItems: 1
+
+  num-lanes:
+    maximum: 2
+
+  max-link-speed:
+    maximum: 4
+
+patternProperties:
+  "^pcie@":
+    type: object
+    $ref: /schemas/pci/pci-pci-bridge.yaml#
+
+    properties:
+      reg:
+        maxItems: 1
+
+      clocks:
+        description: Clock the endpoint needs to power up, such as a
+          32 kHz sleep clock
+        maxItems: 1
+
+    unevaluatedProperties: false
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - "#interrupt-cells"
+  - interrupt-map
+  - interrupt-map-mask
+  - ranges
+  - clocks
+  - clock-names
+  - phys
+  - reset-gpios
+
+allOf:
+  - $ref: /schemas/pci/pci-host-bridge.yaml#
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/google,gs101.h>
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+
+    soc {
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        pcie@14520000 {
+            compatible = "google,gs101-pcie";
+            reg = <0x14520000 0x2000>,
+                  <0x14800000 0x301000>,
+                  <0x60ffe000 0x2000>;
+            reg-names = "elbi", "dbi", "config";
+            device_type = "pci";
+            #address-cells = <3>;
+            #size-cells = <2>;
+            ranges = <0x82000000 0 0x60000000 0x60000000 0 0x00ff0000>;
+            bus-range = <0x00 0xff>;
+            linux,pci-domain = <1>;
+            num-lanes = <2>;
+            max-link-speed = <3>;
+            interrupts = <GIC_SPI 509 IRQ_TYPE_LEVEL_HIGH 0>;
+            #interrupt-cells = <1>;
+            interrupt-map-mask = <0 0 0 0>;
+            interrupt-map = <0 0 0 0 &gic GIC_SPI 509 IRQ_TYPE_LEVEL_HIGH 0>;
+            clocks = <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCIE_003_DBI_ACLK_UG>,
+                     <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCIE_003_MSTR_ACLK_UG>,
+                     <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCIE_003_SLV_ACLK_UG>,
+                     <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCIE_003_I_DRIVER_APB_CLK>,
+                     <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_IA_GEN4A_1_I_CLK>,
+                     <&cmu_hsi2 CLK_GOUT_HSI2_UASC_PCIE_GEN4A_DBI_1_ACLK>,
+                     <&cmu_hsi2 CLK_GOUT_HSI2_UASC_PCIE_GEN4A_DBI_1_PCLK>,
+                     <&cmu_hsi2 CLK_GOUT_HSI2_UASC_PCIE_GEN4A_SLV_1_ACLK>,
+                     <&cmu_hsi2 CLK_GOUT_HSI2_UASC_PCIE_GEN4A_SLV_1_PCLK>;
+            clock-names = "dbi", "mstr", "slv", "apb", "ia",
+                          "uasc-dbi-aclk", "uasc-dbi-pclk",
+                          "uasc-slv-aclk", "uasc-slv-pclk";
+            phys = <&pcie_phy1>;
+            reset-gpios = <&gph2 0 GPIO_ACTIVE_LOW>;
+
+            pcie@0 {
+                compatible = "pciclass,0604";
+                device_type = "pci";
+                reg = <0x0 0x0 0x0 0x0 0x0>;
+                bus-range = <0x01 0xff>;
+                #address-cells = <3>;
+                #size-cells = <2>;
+                ranges;
+            };
+        };
+    };
