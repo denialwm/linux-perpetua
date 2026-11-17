@@ -250,6 +250,7 @@ struct qca_serdev {
 	struct clk	 *susclk;
 	enum qca_btsoc_type btsoc_type;
 	struct qca_power *bt_power;
+	struct device *wakeup_host;
 	u32 init_speed;
 	u32 oper_speed;
 	bool bdaddr_property_broken;
@@ -2628,6 +2629,43 @@ static int qca_init_regulators(struct qca_power *qca,
 	return 0;
 }
 
+static void qca_restore_uart_wakeup(void *data)
+{
+	struct qca_serdev *qcadev = data;
+	struct device *host = qcadev->wakeup_host;
+	int ret;
+
+	if (!device_may_wakeup(host)) {
+		ret = device_set_wakeup_enable(host, true);
+		if (ret)
+			dev_warn(host, "failed to restore UART wake policy: %d\n",
+				 ret);
+	}
+	put_device(host);
+	qcadev->wakeup_host = NULL;
+}
+
+static int qca_disable_uart_wakeup(struct qca_serdev *qcadev)
+{
+	struct serdev_device *serdev = qcadev->serdev_hu.serdev;
+	struct device *host = serdev->ctrl->host;
+
+	if (!host)
+		return -ENODEV;
+	if (!device_may_wakeup(host))
+		return 0;
+
+	/*
+	 * The UART hardware device owns its dedicated system-wake IRQ.
+	 * Borrow its enabled policy while the no-IBS client is bound; leave
+	 * wake capability, runtime-PM wake and other ancestors untouched.
+	 */
+	qcadev->wakeup_host = get_device(host);
+	device_set_wakeup_enable(host, false);
+	return devm_add_action_or_reset(&serdev->dev, qca_restore_uart_wakeup,
+				       qcadev);
+}
+
 static int qca_serdev_probe(struct serdev_device *serdev)
 {
 	struct qca_serdev *qcadev;
@@ -2659,16 +2697,13 @@ static int qca_serdev_probe(struct serdev_device *serdev)
 
 	/*
 	 * The controller stays awake with IBS disabled and keeps its wake
-	 * line asserted, so the serial port must never have a wake IRQ. The
-	 * wakeup-capable device is an ancestor of the serdev controller.
+	 * line asserted. Suppress system wake on the UART host while bound,
+	 * restoring its previous enabled policy on removal or probe failure.
 	 */
 	if (qcadev->disable_ibs) {
-		struct device *wake;
-
-		device_set_wakeup_enable(&serdev->dev, false);
-		for (wake = serdev->ctrl->dev.parent; wake; wake = wake->parent)
-			if (device_can_wakeup(wake))
-				device_set_wakeup_enable(wake, false);
+		err = qca_disable_uart_wakeup(qcadev);
+		if (err)
+			return err;
 	}
 
 	if (data)
@@ -2922,18 +2957,11 @@ static int __maybe_unused qca_suspend(struct device *dev)
 	/*
 	 * IBS is disabled for the whole session on some boards, so
 	 * QCA_IBS_DISABLED never clears and there is no sleep handshake to
-	 * make. The controller stays awake across the system suspend and
-	 * holds its wake line, so the serial controller must not arm the
-	 * wake IRQ or it ends the suspend immediately.
+	 * make. UART system-wake policy is configured at probe rather than
+	 * overriding userspace policy again on every suspend.
 	 */
-	if (qcadev->disable_ibs) {
-		struct device *wake;
-
-		for (wake = serdev->ctrl->dev.parent; wake; wake = wake->parent)
-			if (device_can_wakeup(wake))
-				device_set_wakeup_enable(wake, false);
+	if (qcadev->disable_ibs)
 		return 0;
-	}
 
 	/* if BT SoC is running with default firmware then it does not
 	 * support in-band sleep
