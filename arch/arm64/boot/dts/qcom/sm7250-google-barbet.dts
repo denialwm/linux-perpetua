@@ -805,7 +805,7 @@
 &q6afedai {
 	dai@19 {
 		reg = <PRIMARY_TDM_TX_0>;
-		qcom,tdm-sync-mode = <0>;
+		qcom,tdm-sync-mode = <1>;
 		qcom,tdm-sync-src = <1>;
 		qcom,tdm-data-out = <0>;
 		qcom,tdm-invert-sync = <0>;
@@ -815,7 +815,7 @@
 
 	dai@58 {
 		reg = <QUINARY_TDM_RX_0>;
-		qcom,tdm-sync-mode = <0>;
+		qcom,tdm-sync-mode = <1>;
 		qcom,tdm-sync-src = <1>;
 		qcom,tdm-data-out = <0>;
 		qcom,tdm-invert-sync = <1>;
@@ -825,7 +825,7 @@
 
 	dai@59 {
 		reg = <QUINARY_TDM_TX_0>;
-		qcom,tdm-sync-mode = <0>;
+		qcom,tdm-sync-mode = <1>;
 		qcom,tdm-sync-src = <0>;
 		qcom,tdm-data-out = <1>;
 		qcom,tdm-invert-sync = <1>;
