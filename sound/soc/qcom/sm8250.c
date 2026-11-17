@@ -30,23 +30,13 @@ struct sm8250_snd_data {
 	bool jack_setup;
 };
 
-static int cap_codec_tdm;
-module_param(cap_codec_tdm, int, 0644);
-static int cap_codec_mclk = 12288000;
-module_param(cap_codec_mclk, int, 0644);
-/* Barbet has no MCLK wire to the RT5514; derive its clock from BCLK. */
-static int cap_pll_from_bclk = 1;
-module_param(cap_pll_from_bclk, int, 0644);
 /*
  * Actual TDM bit clock the codec sees: nslots * slot_width * rate. This is
  * NOT tdm_clk_rate, which is the LPASS interface clock requested from the DSP.
  */
-static int cap_bclk_rate = 12288000;
-module_param(cap_bclk_rate, int, 0644);
-static int tdm_slots = 8;
-module_param(tdm_slots, int, 0644);
-static int tdm_slot_width = 32;
-module_param(tdm_slot_width, int, 0644);
+static const int cap_bclk_rate = 12288000;
+static const int tdm_slots = 8;
+static const int tdm_slot_width = 32;
 /*
  * Slot mask must have one bit per active channel. The capture side carries
  * one channel (stock: "PRI_TDM_TX_0 Channels" = One), in slot 0. 0xFF (all
@@ -54,34 +44,18 @@ module_param(tdm_slot_width, int, 0644);
  * AFE_PORT_CMD_DEVICE_START comes back ADSP_EFAILED (-EINVAL at
  * snd_soc_dai_prepare).
  */
-static int tdm_rx_mask = 0x1;
-module_param(tdm_rx_mask, int, 0644);
+static const int tdm_rx_mask = 0x1;
 /*
  * The stock machine driver uses four slots, but this mainline clock path
  * rejects 6.144 MHz. Eight slots at 12.288 MHz have been verified with
  * live TAS2562 clock status and acoustic tone captures on barbet.
  */
-static int quin_tdm_slots = 8;
-module_param(quin_tdm_slots, int, 0644);
-/* 0 = derive rate*slot_width*slots; override for clock debugging. */
-static int quin_clk_rate;
-module_param(quin_clk_rate, int, 0644);
-static int quin_clk_id = Q6AFE_LPASS_CLK_ID_QUIN_TDM_IBIT;
-module_param(quin_clk_id, int, 0644);
-static int tdm_clk_rate = 12288000;
-module_param(tdm_clk_rate, int, 0644);
-static int tdm_clk_id = Q6AFE_LPASS_CLK_ID_QUIN_TDM_IBIT;
-module_param(tdm_clk_id, int, 0644);
-/* Byte offsets of the two capture channels in the TDM frame. Stock barbet
- * puts its mics at 0 and 8 ("1st-mic-only" / "2nd-mic-only"). */
+static const int quin_tdm_slots = 8;
+static const int quin_clk_id = Q6AFE_LPASS_CLK_ID_QUIN_TDM_IBIT;
+static const int tdm_clk_rate = 12288000;
 /* Stock sets the PRI TDM interface clock through LPAIF_DIG_CLK (clk_id 0 in
  * the vendor driver), not through the LPASS TDM IBIT clock id. */
-static int tdm_pri_clk_id = LPAIF_DIG_CLK;
-module_param(tdm_pri_clk_id, int, 0644);
-static int tdm_off0;
-module_param(tdm_off0, int, 0644);
-static int tdm_off1 = 4;
-module_param(tdm_off1, int, 0644);
+static const int tdm_pri_clk_id = LPAIF_DIG_CLK;
 
 static int sm8250_snd_init(struct snd_soc_pcm_runtime *rtd)
 {
@@ -154,9 +128,9 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
 
 	dev_info(rtd->card->dev,
-		 "startup: link=%s cpu_dai=%s id=%d slots=%d width=%d rx_mask=0x%x clk_rate=%d clk_id=%d\n",
+		 "startup: link=%s cpu_dai=%s id=%d slots=%d width=%d rx_mask=0x%x clk_rate=%d\n",
 		 rtd->dai_link->name, cpu_dai->name, cpu_dai->id, tdm_slots,
-		 tdm_slot_width, tdm_rx_mask, tdm_clk_rate, tdm_clk_id);
+		 tdm_slot_width, tdm_rx_mask, tdm_clk_rate);
 
 	switch (cpu_dai->id) {
 	case PRIMARY_MI2S_RX:
@@ -216,7 +190,7 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 		 * interface clock at rate*width*slots, and the codec in TDM
 		 * (PCM_A) mode with only slot 0 as its own TX channel.
 		 */
-		unsigned int tx_slots[] = { tdm_off0 };
+		unsigned int tx_slots[] = { 0 };
 		int ret_pll, ret_clk, ret_ctdm, ret_cfmt;
 		int ret_cpu_clk, ret_cpu_tdm, ret_cpu_map;
 
@@ -240,22 +214,12 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 		 * runs from the TDM bit clock, and stock programs it with the
 		 * bit clock as both input and output.
 		 */
-		if (cap_pll_from_bclk) {
-			ret_pll = snd_soc_dai_set_pll(codec_dai, 0,
-						      RT5514_PLL_S_BCLK,
-						      cap_bclk_rate,
-						      cap_bclk_rate);
-			ret_clk = snd_soc_dai_set_sysclk(codec_dai,
-							 RT5514_SCLK_S_PLL,
-							 cap_bclk_rate,
-							 SND_SOC_CLOCK_IN);
-		} else {
-			ret_pll = 0;
-			ret_clk = snd_soc_dai_set_sysclk(codec_dai,
-							 RT5514_SCLK_S_MCLK,
-							 cap_codec_mclk,
-							 SND_SOC_CLOCK_IN);
-		}
+		ret_pll = snd_soc_dai_set_pll(codec_dai, 0,
+					    RT5514_PLL_S_BCLK,
+					    cap_bclk_rate, cap_bclk_rate);
+		ret_clk = snd_soc_dai_set_sysclk(codec_dai,
+					       RT5514_SCLK_S_PLL,
+					       cap_bclk_rate, SND_SOC_CLOCK_IN);
 		dev_info(rtd->card->dev,
 			 "cap: cpu(clk=%d tdm=%d map=%d) codec(tdm=%d fmt=%d pll=%d clk=%d) slots=%d width=%d mask=0x%x\n",
 			 ret_cpu_clk, ret_cpu_tdm, ret_cpu_map, ret_ctdm, ret_cfmt,
@@ -266,12 +230,10 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 
 		case QUINARY_TDM_RX_0: {
 		unsigned int rx_slots[] = { 0, tdm_slot_width / 8 };
-		unsigned int quin_slots = quin_tdm_slots > 0 ?
-					  quin_tdm_slots : 8;
+		unsigned int quin_slots = quin_tdm_slots;
 		/* Two channels live in slots 0 and 1 (byte offsets 0 and 4). */
 		unsigned int quin_mask = (1U << 2) - 1;
-		unsigned int quin_rate = quin_clk_rate > 0 ? quin_clk_rate :
-					 quin_slots * tdm_slot_width * 48000;
+		unsigned int quin_rate = quin_slots * tdm_slot_width * 48000;
 		int ret_sysclk, ret_tdm, ret_map;
 		int i;
 
