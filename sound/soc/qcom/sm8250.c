@@ -4,6 +4,7 @@
 #include <dt-bindings/sound/qcom,q6afe.h>
 #include <linux/clk.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -21,6 +22,7 @@
 #define MI2S_BCLK_RATE		1536000
 
 struct sm8250_snd_data {
+	bool is_barbet;
 	bool stream_prepared[AFE_PORT_MAX];
 	struct snd_soc_card *card;
 	struct snd_soc_jack jack;
@@ -87,6 +89,7 @@ static void sm8250_snd_exit(struct snd_soc_pcm_runtime *rtd)
 static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 				     struct snd_pcm_hw_params *params)
 {
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
 	struct snd_interval *rate = hw_param_interval(params,
 					SNDRV_PCM_HW_PARAM_RATE);
 	struct snd_interval *channels = hw_param_interval(params,
@@ -100,11 +103,11 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	 * (mixer_paths_bolero_snd.xml: "QUIN_TDM_RX_0 Format" = S24_LE).
 	 * Forcing S16_LE there leaves the amp decoding mostly-zero words.
 	 */
-	if (cpu_dai && cpu_dai->id == QUINARY_TDM_RX_0)
+	if (data->is_barbet && cpu_dai && cpu_dai->id == QUINARY_TDM_RX_0)
 		format = SNDRV_PCM_FORMAT_S24_LE;
 
 	rate->min = rate->max = 48000;
-	if (cpu_dai && cpu_dai->id == PRIMARY_TDM_TX_0)
+	if (data->is_barbet && cpu_dai && cpu_dai->id == PRIMARY_TDM_TX_0)
 		channels->min = channels->max = 1;
 	else
 		channels->min = channels->max = 2;
@@ -113,7 +116,8 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	 * format would still win.  Clear the mask to actually force the BE
 	 * format (stock barbet runs QUIN TDM RX as S24_LE).
 	 */
-	snd_mask_none(fmt);
+	if (data->is_barbet)
+		snd_mask_none(fmt);
 	snd_mask_set_format(fmt, format);
 
 	return 0;
@@ -126,6 +130,7 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
 	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
 
 	dev_info(rtd->card->dev,
 		 "startup: link=%s cpu_dai=%s id=%d slots=%d width=%d rx_mask=0x%x clk_rate=%d\n",
@@ -194,6 +199,9 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 		int ret_pll, ret_clk, ret_ctdm, ret_cfmt;
 		int ret_cpu_clk, ret_cpu_tdm, ret_cpu_map;
 
+		if (!data->is_barbet)
+			break;
+
 		ret_cpu_clk = snd_soc_dai_set_sysclk(cpu_dai,
 				       tdm_pri_clk_id,
 				       tdm_clk_rate,
@@ -236,6 +244,9 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
 		unsigned int quin_rate = quin_slots * tdm_slot_width * 48000;
 		int ret_sysclk, ret_tdm, ret_map;
 		int i;
+
+		if (!data->is_barbet)
+			break;
 
 		/*
 		 * Barbet speakers: TAS2562 on Quinary TDM RX.  Stock runs
@@ -318,8 +329,9 @@ static int sm8250_fe_startup(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
 
-	if (strcmp(rtd->card->name, "barbet") == 0 &&
+	if (data->is_barbet &&
 	    substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 		runtime->hw.rates = SNDRV_PCM_RATE_32000;
 		runtime->hw.rate_min = 32000;
@@ -335,6 +347,7 @@ static const struct snd_soc_ops sm8250_fe_ops = {
 
 static void sm8250_add_be_ops(struct snd_soc_card *card)
 {
+	struct sm8250_snd_data *data = snd_soc_card_get_drvdata(card);
 	struct snd_soc_dai_link *link;
 	int i;
 
@@ -344,7 +357,7 @@ static void sm8250_add_be_ops(struct snd_soc_card *card)
 			link->exit = sm8250_snd_exit;
 			link->be_hw_params_fixup = sm8250_be_hw_params_fixup;
 			link->ops = &sm8250_be_ops;
-		} else if (strcmp(card->name, "barbet") == 0 && !link->ops) {
+		} else if (data->is_barbet && !link->ops) {
 			link->ops = &sm8250_fe_ops;
 		}
 	}
@@ -412,23 +425,27 @@ static int sm8250_platform_probe(struct platform_device *pdev)
 	if (!data)
 		return -ENOMEM;
 
+	data->is_barbet = of_device_is_compatible(dev->of_node,
+						"google,barbet-sndcard");
 	card->dev = dev;
 	dev_set_drvdata(dev, card);
 	snd_soc_card_set_drvdata(card, data);
 
-	lpass_clk = devm_clk_get_optional_enabled(dev, "lpass_audio_hw_vote");
-	if (IS_ERR(lpass_clk))
-		return dev_err_probe(dev, PTR_ERR(lpass_clk),
-				     "failed to enable LPASS vote clock\n");
+	if (data->is_barbet) {
+		lpass_clk = devm_clk_get_optional_enabled(dev, "lpass_audio_hw_vote");
+		if (IS_ERR(lpass_clk))
+			return dev_err_probe(dev, PTR_ERR(lpass_clk),
+					     "failed to enable LPASS vote clock\n");
 
-	dcodec_clk = devm_clk_get_optional_enabled(dev, "lpass_dcodec_hw_vote");
-	if (IS_ERR(dcodec_clk))
-		dev_warn(dev, "failed to enable LPASS dcodec vote: %ld\n",
-			 PTR_ERR(dcodec_clk));
+		dcodec_clk = devm_clk_get_optional_enabled(dev, "lpass_dcodec_hw_vote");
+		if (IS_ERR(dcodec_clk))
+			dev_warn(dev, "failed to enable LPASS dcodec vote: %ld\n",
+				 PTR_ERR(dcodec_clk));
 
-	ret = sm8250_enable_tdm_clocks(dev);
-	if (ret)
-		return ret;
+		ret = sm8250_enable_tdm_clocks(dev);
+		if (ret)
+			return ret;
+	}
 
 	ret = qcom_snd_parse_of(card);
 	if (ret)
@@ -440,6 +457,7 @@ static int sm8250_platform_probe(struct platform_device *pdev)
 }
 
 static const struct of_device_id snd_sm8250_dt_match[] = {
+	{ .compatible = "google,barbet-sndcard", .data = "sm7250" },
 	{ .compatible = "fairphone,fp4-sndcard", .data = "sm7225" },
 	{ .compatible = "fairphone,fp5-sndcard", .data = "qcm6490" },
 	{ .compatible = "qcom,qrb2210-sndcard", .data = "qcm2290" },
