@@ -1,0 +1,5 @@
+# Nothing Phone (2)
+name='Nothing Phone (2)'
+vendor=qcom
+soc=sm8475
+boot=android-gki
