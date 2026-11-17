@@ -894,7 +894,8 @@ return:
 void Boot_Update_Firmware(struct work_struct *work)
 {
 	mutex_lock(&ts->lock);
-	nvt_update_firmware(ts->fw_name);
+	if (!nvt_update_firmware(ts->fw_name))
+		nvt_apply_pen_type();
 	nvt_get_fw_info();
 	mutex_unlock(&ts->lock);
 }

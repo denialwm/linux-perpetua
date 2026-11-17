@@ -1,0 +1,31 @@
+What:		/sys/bus/spi/devices/<device>/pen_type
+Date:		November 2026
+KernelVersion:	7.3
+Contact:	linux-input@vger.kernel.org
+Description:
+		The active stylus the touch controller firmware senses, as
+		the stock Android driver numbers them in its pencil_connected
+		node:
+
+		== ==================================================
+		0  no stylus: the firmware does not look for one
+		1  the default stylus (the OnePlus Pad 3's own)
+		2  stylus type 2
+		3  stylus type 3
+		4  stylus type 4
+		5  stylus type 5
+		== ==================================================
+
+		It starts at the novatek,pen-type of the device tree. The
+		firmware is told the value each time it starts (at boot, at
+		resume, after a controller reset) and at once on a write while
+		the display is on. While the display is off it only waits for
+		a double tap and is told that there is no stylus.
+
+		A write fails with EIO when the firmware did not take the
+		command; the value is kept and sent again at the next resume.
+
+		Present only on controllers described with novatek,pen-type.
+
+		Access: Read, Write
+		Valid values: 0 to 5

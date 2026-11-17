@@ -1,0 +1,115 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/touchscreen/novatek,nvt-ts-spi.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Novatek NT365xx SPI touch controller
+
+maintainers:
+  - Travis Geisinger <travis@geisinger.dev>
+
+description:
+  The touch side of a Novatek NT36532 or NT36536 display and touch driver IC
+  (TDDI), on SPI. The controller has no flash and takes its firmware from the
+  host each time the panel powers it up, so it runs while the panel does. It
+  can also sense an active stylus.
+
+allOf:
+  - $ref: touchscreen.yaml#
+  - $ref: /schemas/spi/spi-peripheral-props.yaml#
+
+properties:
+  compatible:
+    const: novatek,NVT-ts-spi
+
+  reg:
+    maxItems: 1
+
+  irq-gpios:
+    maxItems: 1
+    description: The interrupt line, read as a GPIO.
+
+  reset-gpios:
+    maxItems: 1
+    description: The reset line, on boards where the host drives it.
+
+  panel:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: The display panel the controller is part of.
+
+  firmware-name:
+    maxItems: 1
+    description: The firmware file to load into the controller.
+
+  novatek,pen-support:
+    type: boolean
+    description: An active stylus is used with the panel.
+
+  novatek,pen-max-pressure:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    default: 16384
+    description: The highest stylus pressure the firmware reports.
+
+  novatek,pen-type:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [1, 2, 3, 4, 5]
+    description: |
+      The active stylus the firmware is to sense, as the panel vendor numbers
+      them. The firmware takes a command for each:
+
+        1  the default stylus, command 0x7f 0x10
+        2  0x7f 0x12
+        3  0x7f 0x13
+        4  0x7f 0x15
+        5  0x7f 0x18
+
+      When it is given, the host sends that command each time the firmware
+      starts, and 0x7f 0x11, no stylus, while the display is off. Without
+      it the firmware is left at its own default.
+
+  novatek,spi-rd-fast-addr:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: The address of the firmware's fast read window.
+
+  wakeup-source: true
+
+  pinctrl-0: true
+  pinctrl-names: true
+
+dependencies:
+  novatek,pen-max-pressure: [ 'novatek,pen-support' ]
+  novatek,pen-type: [ 'novatek,pen-support' ]
+
+required:
+  - compatible
+  - reg
+  - irq-gpios
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    spi {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        touchscreen@0 {
+            compatible = "novatek,NVT-ts-spi";
+            reg = <0>;
+            spi-max-frequency = <12000000>;
+            irq-gpios = <&tlmm 162 GPIO_ACTIVE_HIGH>;
+            novatek,pen-support;
+            novatek,pen-max-pressure = <65532>;
+            novatek,pen-type = <1>;
+            panel = <&display_panel>;
+            firmware-name = "novatek/erhai/novatek_nt36536_fw.bin";
+            touchscreen-size-x = <24000>;
+            touchscreen-size-y = <33920>;
+            touchscreen-inverted-x;
+            touchscreen-swapped-x-y;
+            wakeup-source;
+        };
+    };
+...

@@ -32,6 +32,14 @@ properties:
   reset-gpios:
     maxItems: 1
 
+  error-flag-gpios:
+    description:
+      The error flags of the controller, one per DSI link, which it raises
+      when it detected an error and its picture may be lost, for example
+      after an electrostatic discharge. The panel then needs a reset and
+      its setup again.
+    maxItems: 2
+
   vddio-supply:
     description: I/O voltage rail, 1.9 V on the OnePlus Pad 3
 
@@ -65,6 +73,8 @@ examples:
             reg = <0>;
 
             reset-gpios = <&tlmm 98 GPIO_ACTIVE_LOW>;
+            error-flag-gpios = <&tlmm 86 GPIO_ACTIVE_HIGH>,
+                               <&tlmm 87 GPIO_ACTIVE_HIGH>;
             backlight = <&backlight>;
 
             ports {

@@ -115,6 +115,7 @@ struct nvt_ts_data {
 	struct spi_device *client;
 	struct input_dev *input_dev;
 	struct touchscreen_properties prop;
+	struct touchscreen_properties pen_prop;
 	struct delayed_work nvt_fwu_work;
 	struct mutex pen_switch_lock;
 	int ic_state;
@@ -146,6 +147,10 @@ struct nvt_ts_data {
 	struct mutex xbuf_lock;
 	bool irq_enabled;
 	bool pen_support;
+	uint32_t pen_max_pressure;
+	/* The stylus types of novatek,pen-type (0: no such commands) and in use. */
+	uint8_t pen_type_dt;
+	uint8_t pen_type;
 	uint8_t x_gang_num;
 	uint8_t y_gang_num;
 	struct input_dev *pen_input_dev;
@@ -212,6 +217,7 @@ void nvt_read_fw_history(uint32_t fw_history_addr);
 int32_t nvt_update_firmware(const char *firmware_name);
 int32_t nvt_check_fw_reset_state(RST_COMPLETE_STATE check_reset_state);
 int32_t nvt_get_fw_info(void);
+int32_t nvt_apply_pen_type(void);
 int32_t nvt_clear_fw_status(void);
 int32_t nvt_check_fw_status(void);
 int32_t nvt_set_page(uint32_t addr);

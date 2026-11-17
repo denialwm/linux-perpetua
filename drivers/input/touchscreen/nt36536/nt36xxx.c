@@ -54,6 +54,7 @@ static uint8_t bTouchIsAwake = 0;
 
 /* Host commands and gesture ids as the stock driver uses them. */
 #define NVT_CMD_GESTURE		0x13
+#define NVT_CMD_EXT		0x7F
 #define NVT_GESTURE_DOUBLE_TAP	15
 
 /*******************************************************
@@ -308,18 +309,21 @@ void nvt_fw_crc_enable(void)
 	CTP_SPI_WRITE(ts->client, buf, 3);
 }
 
-/* Send a host command and wait until the firmware has taken it. */
-static int32_t nvt_cmd_store(uint8_t cmd)
+/*
+ * Send a host command, with its argument byte for the extended ones (len 2),
+ * and wait until the firmware has taken it.
+ */
+static int32_t nvt_cmd_write(const uint8_t *cmd, int len)
 {
-	uint8_t buf[2];
+	uint8_t buf[3];
 	int32_t i;
 
 	nvt_set_page(ts->mmap->EVENT_BUF_ADDR);
 
 	for (i = 0; i < 5; i++) {
 		buf[0] = EVENT_MAP_HOST_CMD;
-		buf[1] = cmd;
-		CTP_SPI_WRITE(ts->client, buf, 2);
+		memcpy(&buf[1], cmd, len);
+		CTP_SPI_WRITE(ts->client, buf, len + 1);
 
 		msleep(20);
 
@@ -330,8 +334,41 @@ static int32_t nvt_cmd_store(uint8_t cmd)
 			return 0;
 	}
 
-	NVT_ERR("command 0x%02X not taken, status 0x%02X\n", cmd, buf[1]);
+	NVT_ERR("command %*ph not taken, status 0x%02X\n", len, cmd, buf[1]);
 	return -EIO;
+}
+
+static int32_t nvt_cmd_store(uint8_t cmd)
+{
+	return nvt_cmd_write(&cmd, 1);
+}
+
+/*
+ * The extended commands that tell the firmware which active stylus to sense,
+ * by the stock driver's stylus type (nvt_enable_pen_mode()); 0 is none.
+ */
+static const uint8_t nvt_pen_type_cmds[] = { 0x11, 0x10, 0x12, 0x13, 0x15, 0x18 };
+
+/*
+ * With ts->lock held and the firmware running: tell it the stylus in use, or
+ * that there is none while it only waits for gestures (stock does the same
+ * before it turns gesture mode on). A no-op on firmware that does not take
+ * these commands.
+ */
+static int32_t nvt_set_pen_type(bool awake)
+{
+	uint8_t cmd[2] = { NVT_CMD_EXT };
+
+	if (!ts->pen_type_dt)
+		return 0;
+
+	cmd[1] = nvt_pen_type_cmds[awake ? ts->pen_type : 0];
+	return nvt_cmd_write(cmd, 2);
+}
+
+int32_t nvt_apply_pen_type(void)
+{
+	return nvt_set_pen_type(true);
 }
 
 /*******************************************************
@@ -776,6 +813,7 @@ static int32_t nvt_parse_dt(struct device *dev)
 	struct device_node *np = dev->of_node;
 	struct gpio_desc *gpiod;
 	int32_t ret = 0;
+	u32 val;
 
 	gpiod = devm_gpiod_get(dev, "irq", GPIOD_IN);
 	if (IS_ERR(gpiod)) {
@@ -795,6 +833,19 @@ static int32_t nvt_parse_dt(struct device *dev)
 
 	ts->pen_support = of_property_read_bool(np, "novatek,pen-support");
 	NVT_LOG("novatek,pen-support=%d\n", ts->pen_support);
+
+	ts->pen_max_pressure = PEN_PRESSURE_MAX;
+	of_property_read_u32(np, "novatek,pen-max-pressure",
+			     &ts->pen_max_pressure);
+
+	if (ts->pen_support &&
+	    !of_property_read_u32(np, "novatek,pen-type", &val)) {
+		if (val && val < ARRAY_SIZE(nvt_pen_type_cmds))
+			ts->pen_type_dt = val;
+		else
+			NVT_ERR("novatek,pen-type %u is not known\n", val);
+	}
+	ts->pen_type = ts->pen_type_dt;
 
 	ret = of_property_read_u32(np, "novatek,spi-rd-fast-addr", &SPI_RD_FAST_ADDR);
 	if (ret) {
@@ -976,6 +1027,7 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 		release_pen_event();
 		nvt_update_firmware(ts->fw_name);
 		/* The new firmware starts in touch mode. */
+		nvt_set_pen_type(!ts->gesture);
 		if (ts->gesture && nvt_cmd_store(NVT_CMD_GESTURE))
 			ts->gesture = false;
 		goto XFER_ERROR;
@@ -1067,8 +1119,21 @@ static irqreturn_t nvt_ts_work_func(int irq, void *data)
 //				printk("x=%d,y=%d,p=%d,tx=%d,ty=%d,d=%d,b1=%d,b2=%d,bat=%d\n", pen_x, pen_y, pen_pressure,
 //						pen_tilt_x, pen_tilt_y, pen_distance, pen_btn1, pen_btn2, pen_battery);
 
-				input_report_abs(ts->pen_input_dev, ABS_X, pen_x);
-				input_report_abs(ts->pen_input_dev, ABS_Y, pen_y);
+				/*
+				 * Same orientation as the touch device; the
+				 * bounds check keeps the invert from
+				 * underflowing on a bad coordinate.
+				 */
+				if (pen_x > ts->pen_prop.max_x ||
+				    pen_y > ts->pen_prop.max_y) {
+					input_report_abs(ts->pen_input_dev, ABS_X, 0);
+					input_report_abs(ts->pen_input_dev, ABS_Y, 0);
+				} else {
+					touchscreen_report_pos(ts->pen_input_dev,
+							       &ts->pen_prop,
+							       pen_x, pen_y,
+							       false);
+				}
 				input_report_abs(ts->pen_input_dev, ABS_PRESSURE, pen_pressure);
 				input_report_key(ts->pen_input_dev, BTN_TOUCH, !!pen_pressure);
 				input_report_abs(ts->pen_input_dev, ABS_TILT_X, pen_tilt_x);
@@ -1428,21 +1493,44 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 
 		input_set_abs_params(ts->pen_input_dev, ABS_X, 0, ts->abs_x_max - 1, 0, 0);
 		input_set_abs_params(ts->pen_input_dev, ABS_Y, 0, ts->abs_y_max - 1, 0, 0);
-		input_set_abs_params(ts->pen_input_dev, ABS_PRESSURE, 0, PEN_PRESSURE_MAX, 0, 0);
+		input_set_abs_params(ts->pen_input_dev, ABS_PRESSURE, 0,
+				     ts->pen_max_pressure, 0, 0);
 		input_set_abs_params(ts->pen_input_dev, ABS_DISTANCE, 0, PEN_DISTANCE_MAX, 0, 0);
 		input_set_abs_params(ts->pen_input_dev, ABS_TILT_X, PEN_TILT_MIN, PEN_TILT_MAX, 0, 0);
 		input_set_abs_params(ts->pen_input_dev, ABS_TILT_Y, PEN_TILT_MIN, PEN_TILT_MAX, 0, 0);
 
 		/*
-		 * Tablet users (libinput) need the size of the surface. Take
-		 * it in the controller's axes, as touchscreen-size-x/y.
+		 * The pen is a second direct device on the same surface:
+		 * give it the same axis orientation as the touch device.
 		 */
-		if (!device_property_read_u32(&client->dev, "touchscreen-x-mm", &val) && val)
-			input_abs_set_res(ts->pen_input_dev, ABS_X,
-					  (ts->prop.max_x + 1) / val);
-		if (!device_property_read_u32(&client->dev, "touchscreen-y-mm", &val) && val)
-			input_abs_set_res(ts->pen_input_dev, ABS_Y,
-					  (ts->prop.max_y + 1) / val);
+		ts->pen_input_dev->dev.parent = &client->dev;
+		touchscreen_parse_properties(ts->pen_input_dev, false,
+					     &ts->pen_prop);
+
+		/*
+		 * Tablet users (libinput) need the size of the surface. Take
+		 * it in the controller's axes, as touchscreen-size-x/y; a
+		 * swapped axis spans the other physical dimension.
+		 */
+		if (ts->pen_prop.swap_x_y) {
+			if (!device_property_read_u32(&client->dev,
+						      "touchscreen-y-mm", &val) && val)
+				input_abs_set_res(ts->pen_input_dev, ABS_X,
+						  (ts->prop.max_y + 1) / val);
+			if (!device_property_read_u32(&client->dev,
+						      "touchscreen-x-mm", &val) && val)
+				input_abs_set_res(ts->pen_input_dev, ABS_Y,
+						  (ts->prop.max_x + 1) / val);
+		} else {
+			if (!device_property_read_u32(&client->dev,
+						      "touchscreen-x-mm", &val) && val)
+				input_abs_set_res(ts->pen_input_dev, ABS_X,
+						  (ts->prop.max_x + 1) / val);
+			if (!device_property_read_u32(&client->dev,
+						      "touchscreen-y-mm", &val) && val)
+				input_abs_set_res(ts->pen_input_dev, ABS_Y,
+						  (ts->prop.max_y + 1) / val);
+		}
 
 		sprintf(ts->pen_phys, "input/pen");
 		ts->pen_input_dev->name = NVT_PEN_NAME;
@@ -1470,7 +1558,8 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 		NVT_ERR("register gesture input device failed. ret=%d\n", ret);
 		goto err_gesture_input_failed;
 	}
-	device_init_wakeup(&client->dev, true);
+	device_init_wakeup(&client->dev,
+			   device_property_read_bool(&client->dev, "wakeup-source"));
 
 	//---set int-pin & request irq---
 	client->irq = gpio_to_irq(ts->irq_gpio);
@@ -1689,8 +1778,9 @@ static int32_t nvt_ts_suspend(struct device *dev)
 
 	/*
 	 * The panel stays powered while blanked, and the controller in it with
-	 * it: it waits for a double tap.
+	 * it: it waits for a double tap, not for the stylus.
 	 */
+	nvt_set_pen_type(false);
 	ts->gesture = !nvt_cmd_store(NVT_CMD_GESTURE);
 	NVT_LOG("gesture mode %s\n", ts->gesture ? "on" : "failed");
 	mutex_unlock(&ts->lock);
@@ -1772,6 +1862,7 @@ static int32_t nvt_ts_resume(struct device *dev)
 		NVT_ERR("download firmware failed, ignore check fw state\n");
 	} else {
 		nvt_check_fw_reset_state(RESET_STATE_REK);
+		nvt_apply_pen_type();
 	}
 
 	nvt_irq_enable(true);
@@ -1839,6 +1930,52 @@ static struct drm_panel_follower_funcs nt36xxx_panel_follower_funcs = {
 };
 #endif
 
+static ssize_t pen_type_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	return sysfs_emit(buf, "%u\n", ts->pen_type);
+}
+
+static ssize_t pen_type_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	unsigned int type;
+	int ret;
+
+	ret = kstrtouint(buf, 0, &type);
+	if (ret)
+		return ret;
+	if (type >= ARRAY_SIZE(nvt_pen_type_cmds))
+		return -EINVAL;
+
+	mutex_lock(&ts->lock);
+	ts->pen_type = type;
+	/* Otherwise the firmware is told when it runs again, at resume. */
+	if (bTouchIsAwake)
+		ret = nvt_apply_pen_type();
+	mutex_unlock(&ts->lock);
+
+	return ret ?: count;
+}
+static DEVICE_ATTR_RW(pen_type);
+
+static struct attribute *nvt_attrs[] = {
+	&dev_attr_pen_type.attr,
+	NULL
+};
+
+static umode_t nvt_attr_visible(struct kobject *kobj, struct attribute *attr,
+				int n)
+{
+	return ts && ts->pen_type_dt ? attr->mode : 0;
+}
+
+static const struct attribute_group nvt_group = {
+	.attrs = nvt_attrs,
+	.is_visible = nvt_attr_visible,
+};
+__ATTRIBUTE_GROUPS(nvt);
+
 static const struct spi_device_id nvt_ts_id[] = {
 	{ NVT_SPI_NAME, 0 },
 	{ }
@@ -1892,6 +2029,7 @@ static struct spi_driver nvt_spi_driver = {
 	.driver = {
 		.name	= NVT_SPI_NAME,
 		.owner	= THIS_MODULE,
+		.dev_groups = nvt_groups,
 #ifdef CONFIG_OF
 		.of_match_table = nvt_match_table,
 #endif
