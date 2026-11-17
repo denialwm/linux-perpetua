@@ -196,6 +196,17 @@
 		regulator-boot-on;
 	};
 
+	/*
+	 * The battery and charger, reported by the ADSP. The USB-C connector
+	 * (orientation gpio, altmode, the PD role switch) is not described yet:
+	 * USB stays a plain device port.
+	 */
+	pmic-glink {
+		compatible = "qcom,sm8450-pmic-glink", "qcom,pmic-glink";
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
 	vph_pwr: vph-pwr-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vph_pwr";
@@ -770,23 +781,28 @@
 	status = "okay";
 };
 
+/*
+ * The DSPs' firmware is the phone's own, from its modem partition, mounted
+ * at qcom/sm8475/pong/dsp by the early userspace (stock-firmware.conf).
+ */
 &remoteproc_adsp {
-	firmware-name = "qcom/sm8475/pong/adsp.mbn";
+	firmware-name = "qcom/sm8475/pong/dsp/adsp.mdt";
 	status = "okay";
 };
 
 &remoteproc_cdsp {
-	firmware-name = "qcom/sm8475/pong/cdsp.mbn";
+	firmware-name = "qcom/sm8475/pong/dsp/cdsp.mdt";
 	status = "okay";
 };
 
+/* The modem needs rmtfs and its board data first: it stays off for now. */
 &remoteproc_mpss {
-	firmware-name = "qcom/sm8475/pong/modem.mbn";
-	status = "okay";
+	firmware-name = "qcom/sm8475/pong/dsp/modem.mdt";
+	status = "disabled";
 };
 
 &remoteproc_slpi {
-	firmware-name = "qcom/sm8475/pong/slpi.mbn";
+	firmware-name = "qcom/sm8475/pong/dsp/slpi.mdt";
 	status = "okay";
 };
 
