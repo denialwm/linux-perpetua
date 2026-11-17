@@ -1556,6 +1556,8 @@ slumber:
 	/* Tell RPMh to power off the GPU */
 	a6xx_rpmh_stop(gmu);
 
+	return;
+
 force_off:
 	a6xx_gmu_force_off(gmu);
 }

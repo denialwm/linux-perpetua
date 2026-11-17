@@ -2231,7 +2231,7 @@ static int a6xx_gmu_pm_suspend(struct msm_gpu *gpu)
 {
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
 	struct a6xx_gpu *a6xx_gpu = to_a6xx_gpu(adreno_gpu);
-	int i;
+	int i, ret;
 
 	trace_msm_gpu_suspend(0);
 
@@ -2259,8 +2259,10 @@ static int a6xx_gmu_pm_suspend(struct msm_gpu *gpu)
 		a6xx_gpu->irq_quiesced = true;
 		adreno_gpu->funcs->bus_halt(adreno_gpu, false);
 	}
-	a6xx_gmu_stop(a6xx_gpu);
+	ret = a6xx_gmu_stop(a6xx_gpu);
 	mutex_unlock(&a6xx_gpu->gmu.lock);
+	if (ret)
+		return ret;
 
 	if (a6xx_gpu->shadow_bo)
 		for (i = 0; i < gpu->nr_rings; i++)
