@@ -57,6 +57,22 @@ static void a8xx_preempt_keepalive_vote(struct msm_gpu *gpu, bool on)
 	gmu_write(&a6xx_gpu->gmu, REG_A8XX_GMU_PWR_COL_PREEMPT_KEEPALIVE, on);
 }
 
+static int a8xx_preempt_wait_gmu_active(struct a6xx_gpu *a6xx_gpu)
+{
+	struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
+	u32 val;
+
+	if (!gmu_poll_timeout(gmu, REG_A8XX_GPU_GMU_CX_GMU_RPMH_POWER_STATE, val,
+			      (val & 0xf) == GMU_IDLE_STATE_ACTIVE, 10, 100000))
+		return 0;
+
+	dev_err_ratelimited(gmu->dev,
+			    "GMU failed to move to the active state (0x%x), skipping preemption\n",
+			    val);
+
+	return -ETIMEDOUT;
+}
+
 void a8xx_preempt_irq(struct msm_gpu *gpu)
 {
 	uint32_t status;
@@ -134,6 +150,15 @@ void a8xx_preempt_hw_init(struct msm_gpu *gpu)
 
 	/* Enable the GMEM save/restore feature for preemption */
 	gpu_write(gpu, REG_A6XX_RB_CONTEXT_SWITCH_GMEM_SAVE_RESTORE_ENABLE, 0x1);
+
+	/*
+	 * A preemption that was in flight when the GPU went down never
+	 * completes: drop its timer and its keepalive vote, which would
+	 * otherwise keep the GMU out of IFPC for good.
+	 */
+	timer_delete(&a6xx_gpu->preempt_timer);
+	a8xx_preempt_keepalive_vote(gpu, false);
+	a6xx_gpu->next_ring = NULL;
 
 	/* Reset the preemption state */
 	set_preempt_state(a6xx_gpu, PREEMPT_NONE);
@@ -231,6 +256,25 @@ void a8xx_preempt_trigger(struct msm_gpu *gpu)
 	a6xx_fenced_write(a6xx_gpu,
 		REG_A8XX_CP_CONTEXT_SWITCH_SMMU_INFO, a6xx_gpu->preempt_smmu_iova[ring->id],
 		BIT(1), true);
+
+	/*
+	 * The fenced write above wakes the GPU if the GMU had collapsed it, but
+	 * the GMU firmware may still be on its way out of IFPC. Starting the
+	 * context switch now lets the CP interrupt the GMU in the middle of the
+	 * wakeup, so wait for the GMU to report the active state first. In
+	 * atomic context (the IRQ handler, the replay in recovery) the GPU is
+	 * already awake.
+	 */
+	if (!in_interrupt() && !irqs_disabled() &&
+	    a8xx_preempt_wait_gmu_active(a6xx_gpu)) {
+		spin_lock_irqsave(&ring->preempt_lock, flags);
+		ring->restore_wptr = true;
+		spin_unlock_irqrestore(&ring->preempt_lock, flags);
+
+		a8xx_preempt_keepalive_vote(gpu, false);
+		set_preempt_state(a6xx_gpu, PREEMPT_NONE);
+		return;
+	}
 
 	a6xx_fenced_write(a6xx_gpu,
 		REG_A8XX_CP_CONTEXT_SWITCH_PRIV_NON_SECURE_RESTORE_ADDR,

@@ -1137,8 +1137,7 @@ static void a8xx_fault_detect_irq(struct msm_gpu *gpu)
 	 * Force the GPU to stay on until after we finish
 	 * collecting information
 	 */
-	if (!adreno_has_gmu_wrapper(adreno_gpu))
-		gmu_write(&a6xx_gpu->gmu, REG_A6XX_GMU_GMU_PWR_COL_KEEPALIVE, 1);
+	gmu_write(&a6xx_gpu->gmu, REG_A8XX_GMU_GMU_PWR_COL_KEEPALIVE, 1);
 
 	DRM_DEV_ERROR(&gpu->pdev->dev,
 		"gpu fault ring %d fence %x status %8.8X gfx_status %8.8X\n",
@@ -1204,10 +1203,51 @@ static void a8xx_sw_fuse_violation_irq(struct msm_gpu *gpu)
 	}
 }
 
+static void a8xx_gpu_keepalive_vote(struct msm_gpu *gpu, bool on)
+{
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a6xx_gpu *a6xx_gpu = to_a6xx_gpu(adreno_gpu);
+
+	gmu_write(&a6xx_gpu->gmu, REG_A8XX_GMU_GMU_PWR_COL_KEEPALIVE, on);
+}
+
+/*
+ * If the AHB fence is not in ALLOW mode when an RBBM interrupt arrives, the
+ * GMU is in the middle of a power collapse and the GX registers (the IRQ
+ * status and clear registers among them) are not accessible. The GMU aborts
+ * the collapse because of the pending interrupt, so wait for that to happen.
+ */
+static int a8xx_irq_poll_fence(struct msm_gpu *gpu)
+{
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a6xx_gpu *a6xx_gpu = to_a6xx_gpu(adreno_gpu);
+	struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
+	u32 status;
+
+	if (gmu_poll_timeout_atomic(gmu, REG_A6XX_GMU_AO_AHB_FENCE_CTRL, status,
+				    !status, 1, 100)) {
+		dev_err_ratelimited(&gpu->pdev->dev,
+				    "irq fence poll timeout, fence_ctrl=0x%x, unmasked_status=0x%x\n",
+				    status,
+				    gmu_read(gmu, REG_A6XX_GMU_RBBM_INT_UNMASKED_STATUS));
+		return -ETIMEDOUT;
+	}
+
+	return 0;
+}
+
 irqreturn_t a8xx_irq(struct msm_gpu *gpu)
 {
 	struct msm_drm_private *priv = gpu->dev->dev_private;
-	u32 status = gpu_read(gpu, REG_A8XX_RBBM_INT_0_STATUS);
+	u32 status;
+
+	/* Keep GX on until the handler is done with the GPU registers */
+	a8xx_gpu_keepalive_vote(gpu, true);
+
+	if (a8xx_irq_poll_fence(gpu))
+		goto done;
+
+	status = gpu_read(gpu, REG_A8XX_RBBM_INT_0_STATUS);
 
 	gpu_write(gpu, REG_A8XX_RBBM_INT_CLEAR_CMD, status);
 
@@ -1254,6 +1294,9 @@ irqreturn_t a8xx_irq(struct msm_gpu *gpu)
 
 	if (status & A6XX_RBBM_INT_0_MASK_CP_SW)
 		a8xx_preempt_irq(gpu);
+
+done:
+	a8xx_gpu_keepalive_vote(gpu, false);
 
 	return IRQ_HANDLED;
 }

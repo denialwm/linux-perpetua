@@ -839,8 +839,18 @@ static void a6xx_gmu_power_config(struct a6xx_gmu *gmu)
 	gmu_write(gmu, REG_A6XX_GMU_ICACHE_CONFIG, 0x1);
 	gmu_write(gmu, REG_A6XX_GMU_DCACHE_CONFIG, 0x1);
 
-	/* A7xx knows better by default! */
-	if (adreno_is_a7xx(adreno_gpu) || adreno_is_a8xx(adreno_gpu))
+	/*
+	 * A7xx knows better by default!
+	 *
+	 * A8xx is grouped with a7xx here, but that is wrong for the a8xx GMU
+	 * firmware: without programming the PWR_COL inter-frame registers the
+	 * firmware never leaves GMU_IDLE_STATE_ACTIVE, so the 1 s slumber
+	 * wait in a6xx_gmu_shutdown times out, the GMU is force-off, and the
+	 * next cold boot frequently fails (H2F CORE_FW_START timeout, GPU
+	 * dies).  kgsl programs these registers unconditionally on the same
+	 * silicon and slumbers reliably, so take the a6xx path.
+	 */
+	if (adreno_is_a7xx(adreno_gpu))
 		return;
 
 	gmu_write(gmu, REG_A6XX_GMU_PWR_COL_INTER_FRAME_CTRL, 0x9c40400);
@@ -1368,6 +1378,17 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
 	/* Set the bus quota to a reasonable value for boot */
 	a6xx_gmu_set_initial_bw(gpu, gmu);
 
+	if (adreno_is_a8xx(adreno_gpu)) {
+		/*
+		 * The A8xx suspend path halts the GX-side GBIF while
+		 * quiescing the GPU. Release it before the firmware comes
+		 * back and starts using the AHB interface, or every GMU
+		 * write during reinit raises a spurious fence error
+		 * interrupt.
+		 */
+		gpu_write(gpu, REG_A8XX_RBBM_GBIF_HALT, 0);
+	}
+
 	/* Enable the GMU interrupt */
 	gmu_write(gmu, REG_A6XX_GMU_AO_HOST_INTERRUPT_CLR, ~0);
 	gmu_write(gmu, REG_A6XX_GMU_AO_HOST_INTERRUPT_MASK, ~A6XX_GMU_IRQ_MASK);
@@ -1438,10 +1459,11 @@ bool a6xx_gmu_isidle(struct a6xx_gmu *gmu)
 }
 
 /* Gracefully try to shut down the GMU and by extension the GPU */
-static void a6xx_gmu_shutdown(struct a6xx_gmu *gmu)
+static int a6xx_gmu_shutdown(struct a6xx_gmu *gmu)
 {
 	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
 	struct adreno_gpu *adreno_gpu = &a6xx_gpu->base;
+	struct msm_gpu *gpu = &adreno_gpu->base;
 	u32 val;
 	int ret;
 
@@ -1463,9 +1485,40 @@ static void a6xx_gmu_shutdown(struct a6xx_gmu *gmu)
 	ret = a6xx_gmu_wait_for_idle(gmu);
 
 	/* If the GMU isn't responding assume it is hung */
-	if (ret)
-		goto force_off;
+	if (ret) {
+		u32 state = adreno_is_a8xx(adreno_gpu) ?
+			gmu_read(gmu, REG_A8XX_GPU_GMU_CX_GMU_RPMH_POWER_STATE) :
+			gmu_read(gmu, REG_A6XX_GPU_GMU_CX_GMU_RPMH_POWER_STATE);
 
+		/*
+		 * An A8xx GMU that was booted but whose GPU was never
+		 * started (runtime resumed for a query, no submit, so no
+		 * hw_init) stays in the active power state with GX on and
+		 * never collapses to IFPC, so the wait above cannot succeed.
+		 * Forcing the GMU off from there leaves it unable to boot
+		 * again often enough to lose the GPU, and keeping it active
+		 * leaves it unresponsive to the next OOB request (both seen
+		 * on device). If the GPU is not busy, slumber it from the
+		 * active state instead, as with IFPC disabled (kgsl gen8
+		 * idle level GPU_HW_ACTIVE): the firmware powers GX down
+		 * itself. A failed slumber still forces it off below.
+		 */
+		if (adreno_is_a8xx(adreno_gpu) && state == GMU_IDLE_STATE_ACTIVE &&
+		    a6xx_gmu_isidle(gmu)) {
+			dev_info(gmu->dev,
+				 "GMU did not reach IFPC (gx %s, hw_init %s), slumbering from the active state\n",
+				 adreno_gpu->funcs->gx_is_on(adreno_gpu) ? "on" : "off",
+				 gpu->needs_hw_init ? "pending" : "done");
+			goto slumber;
+		}
+
+		DRM_DEV_ERROR(gmu->dev,
+			"GMU not idle before slumber (power state 0x%x, gx %s), forcing it off\n",
+			state, adreno_gpu->funcs->gx_is_on(adreno_gpu) ? "on" : "off");
+		goto force_off;
+	}
+
+slumber:
 	adreno_gpu->funcs->bus_halt(adreno_gpu, a6xx_gpu->hung);
 
 	/* tell the GMU we want to slumber */
@@ -1503,10 +1556,11 @@ static void a6xx_gmu_shutdown(struct a6xx_gmu *gmu)
 	/* Tell RPMh to power off the GPU */
 	a6xx_rpmh_stop(gmu);
 
-	return;
+	return 0;
 
 force_off:
 	a6xx_gmu_force_off(gmu);
+	return 0;
 }
 
 
@@ -1514,6 +1568,7 @@ int a6xx_gmu_stop(struct a6xx_gpu *a6xx_gpu)
 {
 	struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
 	struct msm_gpu *gpu = &a6xx_gpu->base.base;
+	int ret;
 
 	if (!pm_runtime_active(gmu->dev))
 		return 0;
@@ -1524,8 +1579,11 @@ int a6xx_gmu_stop(struct a6xx_gpu *a6xx_gpu)
 	 */
 	if (gmu->hung)
 		a6xx_gmu_force_off(gmu);
-	else
-		a6xx_gmu_shutdown(gmu);
+	else {
+		ret = a6xx_gmu_shutdown(gmu);
+		if (ret)
+			return ret;
+	}
 
 	/* Remove the bus vote */
 	dev_pm_opp_set_opp(&gpu->pdev->dev, NULL);

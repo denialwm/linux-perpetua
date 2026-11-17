@@ -397,9 +397,25 @@ int adreno_get_param(struct msm_gpu *gpu, struct msm_context *ctx,
 		return 0;
 	case MSM_PARAM_TIMESTAMP:
 		if (adreno_gpu->funcs->get_timestamp) {
+			/*
+			 * An A8xx GMU that is booted without the GPU being
+			 * started never reaches IFPC and refuses to slumber,
+			 * so the runtime suspend that follows this query has
+			 * no clean way to power it off. Start the GPU along
+			 * with the GMU, as for a submit (same lock order as
+			 * msm_gpu_submit()).
+			 */
+			bool start = adreno_is_a8xx(adreno_gpu);
+
+			if (start)
+				mutex_lock(&gpu->lock);
 			pm_runtime_get_sync(&gpu->pdev->dev);
+			if (start)
+				msm_gpu_hw_init(gpu);
 			*value = adreno_gpu->funcs->get_timestamp(gpu);
 			pm_runtime_put_autosuspend(&gpu->pdev->dev);
+			if (start)
+				mutex_unlock(&gpu->lock);
 
 			return 0;
 		}

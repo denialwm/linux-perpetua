@@ -117,6 +117,8 @@ struct a6xx_gpu {
 	void *htw_llc_slice;
 	bool have_mmu500;
 	bool hung;
+	/* The GPU interrupt is disabled across an A8xx slumber */
+	bool irq_quiesced;
 
 	u32 cached_aperture;
 	spinlock_t aperture_lock;
