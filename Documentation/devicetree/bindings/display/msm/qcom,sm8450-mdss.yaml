@@ -17,7 +17,11 @@ $ref: /schemas/display/msm/mdss-common.yaml#
 
 properties:
   compatible:
-    const: qcom,sm8450-mdss
+    oneOf:
+      - const: qcom,sm8450-mdss
+      - items:
+          - const: qcom,sm8475-mdss
+          - const: qcom,sm8450-mdss
 
   clocks:
     items:
@@ -42,7 +46,11 @@ patternProperties:
 
     properties:
       compatible:
-        const: qcom,sm8450-dpu
+        oneOf:
+          - const: qcom,sm8450-dpu
+          - items:
+              - const: qcom,sm8475-dpu
+              - const: qcom,sm8450-dpu
 
   "^displayport-controller@[0-9a-f]+$":
     type: object
@@ -60,9 +68,14 @@ patternProperties:
 
     properties:
       compatible:
-        items:
-          - const: qcom,sm8450-dsi-ctrl
-          - const: qcom,mdss-dsi-ctrl
+        oneOf:
+          - items:
+              - const: qcom,sm8450-dsi-ctrl
+              - const: qcom,mdss-dsi-ctrl
+          - items:
+              - const: qcom,sm8475-dsi-ctrl
+              - const: qcom,sm8450-dsi-ctrl
+              - const: qcom,mdss-dsi-ctrl
 
   "^phy@[0-9a-f]+$":
     type: object
