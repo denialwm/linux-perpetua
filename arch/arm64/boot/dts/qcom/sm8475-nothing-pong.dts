@@ -651,7 +651,15 @@
 	clock-frequency = <1000000>;
 	status = "okay";
 
-	/* haptic_hv@5a awinic,aw8692x */
+	vibrator@5a {
+		compatible = "awinic,aw86927";
+		reg = <0x5a>;
+		interrupts-extended = <&tlmm 51 IRQ_TYPE_EDGE_FALLING>;
+		reset-gpios = <&tlmm 99 GPIO_ACTIVE_LOW>;
+
+		pinctrl-0 = <&haptics_int_default>, <&haptics_rst_default>;
+		pinctrl-names = "default";
+	};
 };
 
 &mdss {
@@ -844,6 +852,20 @@
 &tlmm {
 	/* Reserved I/Os for FP */
 	gpio-reserved-ranges = <28 4>;
+
+	haptics_int_default: haptics-int-default-state {
+		pins = "gpio51";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	haptics_rst_default: haptics-rst-default-state {
+		pins = "gpio99";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
 
 	disp_reset_n_active: disp0-reset-n-active-state {
 		pins = "gpio0";
