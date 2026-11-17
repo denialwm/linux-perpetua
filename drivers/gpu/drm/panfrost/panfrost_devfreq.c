@@ -150,6 +150,21 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 		}
 	}
 
+	if (pfdev->comp->opp_config_clks) {
+		/* { NULL, NULL }: the device's first (unnamed) clock */
+		static const char * const clk_names[] = { NULL, NULL };
+		struct dev_pm_opp_config config = {
+			.clk_names = clk_names,
+			.config_clks = pfdev->comp->opp_config_clks,
+		};
+
+		ret = devm_pm_opp_set_config(dev, &config);
+		if (ret < 0) {
+			DRM_DEV_ERROR(dev, "Couldn't set OPP clock config\n");
+			return ret;
+		}
+	}
+
 	ret = devm_pm_opp_of_add_table(dev);
 	if (ret) {
 		/* Optional, continue without devfreq */

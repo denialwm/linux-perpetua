@@ -7,6 +7,7 @@
 #include <asm/arch_timer.h>
 #endif
 
+#include <linux/clk.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/pagemap.h>
@@ -1153,6 +1154,65 @@ static const struct panfrost_compatible mediatek_mt8370_data = {
 	.gpu_quirks = BIT(GPU_QUIRK_FORCE_AARCH64_PGTABLE),
 };
 
+/*
+ * gs101 G3D (shaders, "core") and G3DL2 (L2 and tiler, "bus") are ACPM DVFS
+ * clocks, and the ACPM firmware sets the GPU voltages for each rate, so
+ * there are no supplies. Each G3D rate is paired with the L2 rate of the
+ * vendor gpu_dvfs_table_v1, and L2 never runs below G3D: raise L2 first,
+ * lower G3D first.
+ */
+static const struct {
+	unsigned long g3d;
+	unsigned long l2;
+} gs101_l2_rates[] = {
+	{ 151000000, 302000000 },
+	{ 302000000, 434000000 },
+	{ 455000000, 603000000 },
+	{ 572000000, 750000000 },
+};
+
+static int gs101_opp_config_clks(struct device *dev, struct opp_table *opp_table,
+				 struct dev_pm_opp *opp, void *data, bool scaling_down)
+{
+	struct panfrost_device *pfdev = dev_get_drvdata(dev);
+	unsigned long *target = data;
+	unsigned long g3d, l2;
+	int i, ret;
+
+	g3d = target ? *target : dev_pm_opp_get_freq(opp);
+
+	l2 = gs101_l2_rates[ARRAY_SIZE(gs101_l2_rates) - 1].l2;
+	for (i = 0; i < ARRAY_SIZE(gs101_l2_rates); i++) {
+		if (g3d <= gs101_l2_rates[i].g3d) {
+			l2 = gs101_l2_rates[i].l2;
+			break;
+		}
+	}
+
+	if (scaling_down) {
+		ret = clk_set_rate(pfdev->clock, g3d);
+		if (!ret)
+			ret = clk_set_rate(pfdev->bus_clock, l2);
+	} else {
+		ret = clk_set_rate(pfdev->bus_clock, l2);
+		if (!ret)
+			ret = clk_set_rate(pfdev->clock, g3d);
+	}
+	if (ret)
+		dev_err(dev, "failed to set G3D %lu / L2 %lu: %d\n", g3d, l2, ret);
+
+	return ret;
+}
+
+static const struct panfrost_compatible google_gs101_data = {
+	.num_supplies = 0,
+	.supply_names = NULL,
+	.num_pm_domains = 1, /* optional */
+	.pm_domain_names = NULL,
+	.gpu_quirks = BIT(GPU_QUIRK_FORCE_AARCH64_PGTABLE),
+	.opp_config_clks = gs101_opp_config_clks,
+};
+
 static const struct of_device_id dt_match[] = {
 	/* Set first to probe before the generic compatibles */
 	{ .compatible = "amlogic,meson-gxm-mali",
@@ -1172,6 +1232,7 @@ static const struct of_device_id dt_match[] = {
 	{ .compatible = "arm,mali-t880", .data = &default_data, },
 	{ .compatible = "arm,mali-bifrost", .data = &default_data, },
 	{ .compatible = "arm,mali-valhall-jm", .data = &default_data, },
+	{ .compatible = "google,gs101-mali", .data = &google_gs101_data },
 	{ .compatible = "mediatek,mt8183-mali", .data = &mediatek_mt8183_data },
 	{ .compatible = "mediatek,mt8183b-mali", .data = &mediatek_mt8183_b_data },
 	{ .compatible = "mediatek,mt8186-mali", .data = &mediatek_mt8186_data },

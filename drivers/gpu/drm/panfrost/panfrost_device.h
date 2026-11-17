@@ -8,6 +8,7 @@
 #include <linux/atomic.h>
 #include <linux/io-pgtable.h>
 #include <linux/pm.h>
+#include <linux/pm_opp.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spinlock.h>
 #include <drm/drm_auth.h>
@@ -115,6 +116,9 @@ struct panfrost_compatible {
 
 	/* GPU configuration quirks */
 	u8 gpu_quirks;
+
+	/* Optional OPP clock callback, for SoCs that pair a second clock */
+	config_clks_t opp_config_clks;
 };
 
 /**
