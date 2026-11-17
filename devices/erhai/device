@@ -1,0 +1,5 @@
+# OnePlus Pad 3 (OPD2415)
+name='OnePlus Pad 3'
+vendor=qcom
+soc=sm8750
+boot=android-gki
