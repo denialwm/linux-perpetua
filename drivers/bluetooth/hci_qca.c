@@ -2254,7 +2254,7 @@ retry:
 		qca_debugfs_init(hdev);
 		hu->hdev->hw_error = qca_hw_error;
 		hu->hdev->reset = qca_reset;
-		if (hu->serdev) {
+		if (hu->serdev && !qcadev->disable_ibs) {
 			if (device_can_wakeup(hu->serdev->ctrl->dev.parent))
 				hu->hdev->wakeup = qca_wakeup;
 		}
@@ -2657,6 +2657,20 @@ static int qca_serdev_probe(struct serdev_device *serdev)
 	qcadev->use_firmware_bdaddr = device_property_read_bool(&serdev->dev,
 			"qcom,use-firmware-bdaddr");
 
+	/*
+	 * The controller stays awake with IBS disabled and keeps its wake
+	 * line asserted, so the serial port must never have a wake IRQ. The
+	 * wakeup-capable device is an ancestor of the serdev controller.
+	 */
+	if (qcadev->disable_ibs) {
+		struct device *wake;
+
+		device_set_wakeup_enable(&serdev->dev, false);
+		for (wake = serdev->ctrl->dev.parent; wake; wake = wake->parent)
+			if (device_can_wakeup(wake))
+				device_set_wakeup_enable(wake, false);
+	}
+
 	if (data)
 		qcadev->btsoc_type = data->soc_type;
 	else
@@ -2908,10 +2922,18 @@ static int __maybe_unused qca_suspend(struct device *dev)
 	/*
 	 * IBS is disabled for the whole session on some boards, so
 	 * QCA_IBS_DISABLED never clears and there is no sleep handshake to
-	 * make. The controller stays awake across the system suspend.
+	 * make. The controller stays awake across the system suspend and
+	 * holds its wake line, so the serial controller must not arm the
+	 * wake IRQ or it ends the suspend immediately.
 	 */
-	if (qcadev->disable_ibs)
+	if (qcadev->disable_ibs) {
+		struct device *wake;
+
+		for (wake = serdev->ctrl->dev.parent; wake; wake = wake->parent)
+			if (device_can_wakeup(wake))
+				device_set_wakeup_enable(wake, false);
 		return 0;
+	}
 
 	/* if BT SoC is running with default firmware then it does not
 	 * support in-band sleep
