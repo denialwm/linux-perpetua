@@ -29,6 +29,17 @@ config PHY_EXYNOS_PCIE
 	  Enable PCIe PHY support for Exynos SoC series.
 	  This driver provides PHY interface for Exynos PCIe controller.
 
+config PHY_GS101_PCIE
+	tristate "Google gs101 PCIe PHY driver"
+	depends on OF && (ARCH_EXYNOS || COMPILE_TEST)
+	select GENERIC_PHY
+	select MFD_SYSCON
+	help
+	  Enable support for the PCIe PHYs of the Google gs101 SoC. Each of
+	  its two PCIe controllers has its own two-lane PHY, which the
+	  controller driver configures through the generic PHY framework.
+	  Say Y or M here if you enable the gs101 PCIe controller.
+
 config PHY_SAMSUNG_UFS
 	tristate "Exynos SoC series UFS PHY driver"
 	depends on OF && (ARCH_EXYNOS || COMPILE_TEST)

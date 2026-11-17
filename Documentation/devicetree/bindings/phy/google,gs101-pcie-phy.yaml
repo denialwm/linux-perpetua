@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/phy/google,gs101-pcie-phy.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Google gs101 PCIe PHY
+
+maintainers:
+  - Noswad <64293615+TheNoswad@users.noreply.github.com>
+
+description:
+  The two-lane PCIe Gen4 PHY of the Google gs101 SoC, one for each PCIe
+  controller. The PHY's reset inputs are driven by its controller, which
+  calls the PHY between asserting and releasing them.
+
+properties:
+  compatible:
+    const: google,gs101-pcie-phy
+
+  reg:
+    items:
+      - description: PMA registers
+      - description: PCS registers
+
+  reg-names:
+    items:
+      - const: pma
+      - const: pcs
+
+  clocks:
+    items:
+      - description: PIPE PAL APB clock
+      - description: PHY Q-channel APB clock
+      - description: PHY debug APB clock
+      - description: PHY reference clock
+
+  clock-names:
+    items:
+      - const: pipe-pal
+      - const: qch
+      - const: udbg
+      - const: ref
+
+  "#phy-cells":
+    const: 0
+
+  vdd085-supply:
+    description: 0.85 V analog supply
+
+  vdd18-supply:
+    description: 1.8 V analog supply
+
+  samsung,pmu-syscon:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    items:
+      - items:
+          - description: phandle of the PMU
+          - description: offset of this PHY's control register in the PMU
+    description:
+      The PMU register that isolates the PHY.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - clocks
+  - clock-names
+  - "#phy-cells"
+  - samsung,pmu-syscon
+  - vdd085-supply
+  - vdd18-supply
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/google,gs101.h>
+
+    phy@14550000 {
+        compatible = "google,gs101-pcie-phy";
+        reg = <0x14550000 0x2000>, <0x14540000 0x1000>;
+        reg-names = "pma", "pcs";
+        clocks = <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCS_PMA_PIPE_PAL_PCIE_I_APB_PCLK>,
+                 <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCS_PMA_PCIEPHY210X2_QCH_I_APB_PCLK>,
+                 <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCS_PMA_PHY_UDBG_I_APB_PCLK>,
+                 <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCIE_003_PHY_REFCLK_IN>;
+        clock-names = "pipe-pal", "qch", "udbg", "ref";
+        #phy-cells = <0>;
+        samsung,pmu-syscon = <&pmu_system_controller 0x3ec4>;
+        vdd085-supply = <&s2mpg10_ldo17m>;
+        vdd18-supply = <&s2mpg10_ldo19m>;
+    };
