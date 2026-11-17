@@ -1,0 +1,301 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * OnePlus Pad 3 (erhai)
+ *
+ * The rails, tuning values and GPIOs below are the ones the stock
+ * bootloader tree of this tablet gives its own kernel. Rails that are not
+ * described here, the panel and backlight supplies among them, keep the
+ * state the bootloader left them in.
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/linux-event-codes.h>
+#include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+#include "sm8750.dtsi"
+#include "pm8550.dtsi"
+#include "pmih0108.dtsi"
+#include "pmk8550.dtsi"
+
+/ {
+	model = "OnePlus Pad 3";
+	compatible = "oneplus,erhai", "qcom,sm8750";
+	chassis-type = "tablet";
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* The init_boot every phone shares carries the boot userspace. */
+		bootargs = "rdinit=/init console=tty0 panic=0 loglevel=7 log_buf_len=2M bootconfig";
+
+		/*
+		 * The bootloader picks one of the erhai overlays of dtbo, all on
+		 * the same SunP base tree; its project id names the tablet.
+		 */
+		fdt-handoff {
+			stock-compatible = "qcom,sun", "qcom,sunp";
+			stock-bootargs = "oplusboot.prjname=24924",
+					 "oplusboot.prjname=24926",
+					 "oplusboot.prjname=24974",
+					 "oplusboot.prjname=24976";
+			keep-initrd;
+		};
+
+		/* Bootloader splash, left running by ABL (XN242, two video-mode links) */
+		framebuffer: framebuffer@fc800000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0xfc800000 0x0 (3392 * 2400 * 4)>;
+			width = <3392>;
+			height = <2400>;
+			stride = <(3392 * 4)>;
+			format = "a8r8g8b8";
+
+			/*
+			 * Held while no display driver runs, or the boot clean-up
+			 * of unused clocks and power domains stops the scanout.
+			 */
+			clocks = <&gcc GCC_DISP_HF_AXI_CLK>,
+				 <&dispcc DISP_CC_MDSS_AHB_CLK>,
+				 <&dispcc DISP_CC_MDSS_MDP_CLK>,
+				 <&dispcc DISP_CC_MDSS_VSYNC_CLK>,
+				 <&dispcc DISP_CC_MDSS_ESC0_CLK>,
+				 <&dispcc DISP_CC_MDSS_BYTE0_CLK>,
+				 <&dispcc DISP_CC_MDSS_BYTE0_INTF_CLK>,
+				 <&dispcc DISP_CC_MDSS_PCLK0_CLK>,
+				 <&dispcc DISP_CC_MDSS_ESC1_CLK>,
+				 <&dispcc DISP_CC_MDSS_BYTE1_CLK>,
+				 <&dispcc DISP_CC_MDSS_BYTE1_INTF_CLK>,
+				 <&dispcc DISP_CC_MDSS_PCLK1_CLK>;
+			power-domains = <&dispcc MDSS_GDSC>,
+					<&dispcc MDSS_INT2_GDSC>;
+			/* The level of the fastest MDP clock of mdp_opp_table */
+			required-opps = <&rpmhpd_opp_nom_l1>, <&rpmhpd_opp_nom_l1>;
+		};
+	};
+
+	clocks {
+		xo_board: xo-board {
+			compatible = "fixed-clock";
+			clock-frequency = <76800000>;
+			#clock-cells = <0>;
+		};
+
+		sleep_clk: sleep-clk {
+			compatible = "fixed-clock";
+			clock-frequency = <32000>;
+			#clock-cells = <0>;
+		};
+
+		bi_tcxo_div2: bi-tcxo-div2-clk {
+			compatible = "fixed-factor-clock";
+			#clock-cells = <0>;
+
+			clocks = <&rpmhcc RPMH_CXO_CLK>;
+			clock-mult = <1>;
+			clock-div = <2>;
+		};
+
+		bi_tcxo_ao_div2: bi-tcxo-ao-div2-clk {
+			compatible = "fixed-factor-clock";
+			#clock-cells = <0>;
+
+			clocks = <&rpmhcc RPMH_CXO_CLK_A>;
+			clock-mult = <1>;
+			clock-div = <2>;
+		};
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		pinctrl-0 = <&key_vol_down_default>;
+		pinctrl-names = "default";
+
+		key-volume-down {
+			label = "Volume Down";
+			linux,code = <KEY_VOLUMEDOWN>;
+			gpios = <&pm8550_gpios 6 GPIO_ACTIVE_LOW>;
+			debounce-interval = <32>;
+			linux,can-disable;
+			wakeup-source;
+		};
+	};
+
+	reserved-memory {
+		/* The splash the bootloader scans out, splash_region downstream. */
+		cont_splash_mem: cont-splash@fc800000 {
+			reg = <0x0 0xfc800000 0x0 0x2b00000>;
+			no-map;
+		};
+
+		/*
+		 * Where the stock kernel places its dynamic ramoops region, with
+		 * its zones: no dmesg records, the console, then pmsg. Recovery
+		 * then shows this kernel's console after a warm reset.
+		 */
+		ramoops@880000000 {
+			compatible = "ramoops";
+			reg = <0x8 0x80000000 0x0 0x240000>;
+			console-size = <0x40000>;
+			pmsg-size = <0x200000>;
+			no-map;
+		};
+	};
+};
+
+&apps_rsc {
+	regulators-0 {
+		compatible = "qcom,pm8550-rpmh-regulators";
+		qcom,pmic-id = "b";
+
+		vreg_l5b_3p1: ldo5 {
+			regulator-name = "vreg_l5b_3p1";
+			regulator-min-microvolt = <3100000>;
+			regulator-max-microvolt = <3148000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l15b_1p8: ldo15 {
+			regulator-name = "vreg_l15b_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l17b_2p5: ldo17 {
+			regulator-name = "vreg_l17b_2p5";
+			regulator-min-microvolt = <2504000>;
+			regulator-max-microvolt = <2504000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-1 {
+		compatible = "qcom,pm8550ve-rpmh-regulators";
+		qcom,pmic-id = "d";
+
+		vreg_l1d_1p2: ldo1 {
+			regulator-name = "vreg_l1d_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l2d_0p88: ldo2 {
+			regulator-name = "vreg_l2d_0p88";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <912000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-3 {
+		compatible = "qcom,pm8550ve-rpmh-regulators";
+		qcom,pmic-id = "g";
+
+		vreg_l3g_1p2: ldo3 {
+			regulator-name = "vreg_l3g_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1256000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	regulators-5 {
+		compatible = "qcom,pm8550vs-rpmh-regulators";
+		qcom,pmic-id = "j";
+
+		/* The stock UFS PHY driver asks 912 mV of this 880-920 mV rail. */
+		vreg_l1j_0p91: ldo1 {
+			regulator-name = "vreg_l1j_0p91";
+			regulator-min-microvolt = <912000>;
+			regulator-max-microvolt = <920000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+};
+
+&pm8550_gpios {
+	key_vol_down_default: key-vol-down-default-state {
+		pins = "gpio6";
+		function = "normal";
+		input-enable;
+		bias-pull-up;
+		power-source = <1>;
+	};
+};
+
+&pmih0108_eusb2_repeater {
+	qcom,tune-usb2-amplitude = /bits/ 8 <0xb>;
+	qcom,tune-usb2-disc-thres = /bits/ 8 <0x7>;
+	qcom,tune-usb2-preem = /bits/ 8 <0x3>;
+	qcom,squelch-detector-bp = <(-2000)>;
+
+	vdd18-supply = <&vreg_l15b_1p8>;
+	vdd3-supply = <&vreg_l5b_3p1>;
+};
+
+&pon_pwrkey {
+	status = "okay";
+};
+
+&pon_resin {
+	linux,code = <KEY_VOLUMEUP>;
+
+	status = "okay";
+};
+
+&tlmm {
+	/* Reserved I/Os that are not accessible from the application processor */
+	gpio-reserved-ranges = <36 4>, <74 1>;
+};
+
+&ufs_mem_hc {
+	reset-gpios = <&tlmm 215 GPIO_ACTIVE_LOW>;
+
+	vcc-supply = <&vreg_l17b_2p5>;
+	vcc-max-microamp = <1300000>;
+	vccq-supply = <&vreg_l1d_1p2>;
+	vccq-max-microamp = <1200000>;
+
+	status = "okay";
+};
+
+&ufs_mem_phy {
+	vdda-phy-supply = <&vreg_l1j_0p91>;
+	vdda-pll-supply = <&vreg_l3g_1p2>;
+
+	status = "okay";
+};
+
+&usb {
+	/*
+	 * Role changes from the Type-C port are not wired up yet: stay a
+	 * high-speed peripheral.
+	 */
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+	/delete-property/ usb-role-switch;
+
+	status = "okay";
+};
+
+&usb_dp_qmpphy {
+	vdda-phy-supply = <&vreg_l2d_0p88>;
+	vdda-pll-supply = <&vreg_l3g_1p2>;
+
+	status = "okay";
+};
+
+&usb_hsphy {
+	vdd-supply = <&vreg_l2d_0p88>;
+	vdda12-supply = <&vreg_l3g_1p2>;
+
+	phys = <&pmih0108_eusb2_repeater>;
+
+	status = "okay";
+};
