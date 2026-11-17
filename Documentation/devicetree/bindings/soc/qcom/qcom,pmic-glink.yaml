@@ -57,6 +57,11 @@ properties:
           - const: qcom,sm8550-pmic-glink
           - const: qcom,pmic-glink
       - items:
+          - const: oneplus,sm8750-pmic-glink
+          - const: qcom,sm8750-pmic-glink
+          - const: qcom,sm8550-pmic-glink
+          - const: qcom,pmic-glink
+      - items:
           - enum:
               - oneplus,kaanapali-pmic-glink
               - xiaomi,kaanapali-pmic-glink

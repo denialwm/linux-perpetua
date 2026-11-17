@@ -365,6 +365,8 @@ patternProperties:
     description: ComVetia AG
   "^congatec,.*":
     description: congatec GmbH
+  "^convenientpower,.*":
+    description: ConvenientPower HK Ltd.
   "^coolpi,.*":
     description: cool-pi.com
   "^coreriver,.*":
