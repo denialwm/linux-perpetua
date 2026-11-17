@@ -606,7 +606,9 @@
 		compatible = "simple-bus";
 		#address-cells = <1>;
 		#size-cells = <1>;
-		ranges = <0x0 0x0 0x0 0x40000000>;
+		ranges = <0x0 0x0 0x0 0x40000000>,
+			 /* PCIe memory and configuration window of HSI2 */
+			 <0x60000000 0x0 0x60000000 0x01000000>;
 
 		efuse@10000000 {
 			compatible = "google,gs101-otp";
@@ -1795,6 +1797,67 @@
 			clocks = <&cmu_hsi2 CLK_GOUT_HSI2_GPIO_HSI2_PCLK>;
 			clock-names = "pclk";
 			interrupts = <GIC_SPI 503 IRQ_TYPE_LEVEL_HIGH 0>;
+		};
+
+		pcie_1: pcie@14520000 {
+			compatible = "google,gs101-pcie";
+			reg = <0x14520000 0x2000>,
+			      <0x14800000 0x301000>,
+			      <0x60ffe000 0x2000>;
+			reg-names = "elbi", "dbi", "config";
+			device_type = "pci";
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges = <0x82000000 0 0x60000000 0x60000000 0 0x00ff0000>;
+			bus-range = <0x00 0xff>;
+			linux,pci-domain = <1>;
+			num-lanes = <2>;
+			max-link-speed = <3>;
+			interrupts = <GIC_SPI 509 IRQ_TYPE_LEVEL_HIGH 0>;
+			#interrupt-cells = <1>;
+			interrupt-map-mask = <0 0 0 0>;
+			interrupt-map = <0 0 0 0 &gic GIC_SPI 509 IRQ_TYPE_LEVEL_HIGH 0>;
+			clocks = <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCIE_003_DBI_ACLK_UG>,
+				 <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCIE_003_MSTR_ACLK_UG>,
+				 <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCIE_003_SLV_ACLK_UG>,
+				 <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCIE_003_I_DRIVER_APB_CLK>,
+				 <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_IA_GEN4A_1_I_CLK>,
+				 <&cmu_hsi2 CLK_GOUT_HSI2_UASC_PCIE_GEN4A_DBI_1_ACLK>,
+				 <&cmu_hsi2 CLK_GOUT_HSI2_UASC_PCIE_GEN4A_DBI_1_PCLK>,
+				 <&cmu_hsi2 CLK_GOUT_HSI2_UASC_PCIE_GEN4A_SLV_1_ACLK>,
+				 <&cmu_hsi2 CLK_GOUT_HSI2_UASC_PCIE_GEN4A_SLV_1_PCLK>;
+			clock-names = "dbi", "mstr", "slv", "apb", "ia",
+				      "uasc-dbi-aclk", "uasc-dbi-pclk",
+				      "uasc-slv-aclk", "uasc-slv-pclk";
+			phys = <&pcie_1_phy>;
+			reset-gpios = <&gph2 0 GPIO_ACTIVE_LOW>;
+			pinctrl-0 = <&pcie1_clkreq>, <&pcie1_perst>;
+			pinctrl-names = "default";
+			status = "disabled";
+
+			pcie_1_rp: pcie@0 {
+				compatible = "pciclass,0604";
+				device_type = "pci";
+				reg = <0x0 0x0 0x0 0x0 0x0>;
+				bus-range = <0x01 0xff>;
+				#address-cells = <3>;
+				#size-cells = <2>;
+				ranges;
+			};
+		};
+
+		pcie_1_phy: phy@14550000 {
+			compatible = "google,gs101-pcie-phy";
+			reg = <0x14550000 0x2000>, <0x14540000 0x1000>;
+			reg-names = "pma", "pcs";
+			clocks = <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCS_PMA_PIPE_PAL_PCIE_I_APB_PCLK>,
+				 <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCS_PMA_PCIEPHY210X2_QCH_I_APB_PCLK>,
+				 <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCS_PMA_PHY_UDBG_I_APB_PCLK>,
+				 <&cmu_hsi2 CLK_GOUT_HSI2_PCIE_GEN4_1_PCIE_003_PHY_REFCLK_IN>;
+			clock-names = "pipe-pal", "qch", "udbg", "ref";
+			#phy-cells = <0>;
+			samsung,pmu-syscon = <&pmu_system_controller 0x3ec4>;
+			status = "disabled";
 		};
 
 		ufs_0: ufs@14700000 {
