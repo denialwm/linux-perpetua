@@ -1513,7 +1513,8 @@ void q6afe_tdm_port_prepare(struct q6afe_port *port,
 	pcfg->tdm_cfg.slot_mask = cfg->slot_mask;
 
 	if (q6afe_slot_map_v2(port->afe)) {
-		port->scfg_v2 = kzalloc_obj(*port->scfg_v2);
+		if (!port->scfg_v2)
+			port->scfg_v2 = kzalloc_obj(*port->scfg_v2);
 		if (!port->scfg_v2)
 			return;
 
@@ -1528,7 +1529,8 @@ void q6afe_tdm_port_prepare(struct q6afe_port *port,
 		return;
 	}
 
-	port->scfg = kzalloc_obj(*port->scfg);
+	if (!port->scfg)
+		port->scfg = kzalloc_obj(*port->scfg);
 	if (!port->scfg)
 		return;
 
