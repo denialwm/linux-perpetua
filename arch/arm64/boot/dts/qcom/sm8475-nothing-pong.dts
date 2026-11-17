@@ -492,10 +492,10 @@
 };
 
 &gpu {
-	status = "disabled";
+	status = "okay";
 
 	zap-shader {
-		firmware-name = "qcom/a730_zap.mbn";
+		firmware-name = "qcom/sm8475/pong/a730_zap.mbn";
 	};
 };
 
