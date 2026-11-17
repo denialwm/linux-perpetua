@@ -140,6 +140,8 @@
 		vddrfa1p9-supply = <&pm8350c_s1>;
 		vddpcie1p3-supply = <&pm8350_s12>;
 		vddpcie1p9-supply = <&pm8350c_s1>;
+		/* On with the chip, off with it: the stock tree's qcom,vreg_ipa. */
+		vddipa-supply = <&pmr735a_s3>;
 
 		regulators {
 			vreg_pmu_rfa_cmn_0p8: ldo0 {
@@ -502,14 +504,22 @@
 
 		pmr735a_s2: smps2 {
 			regulator-name = "pmr735a_s2";
-			regulator-min-microvolt = <500000>;
-			regulator-max-microvolt = <1040000>;
+			/* The QCA6490's always-on supply, 1.012 V in the stock tree */
+			regulator-min-microvolt = <1012000>;
+			regulator-max-microvolt = <1012000>;
 		};
 
 		pmr735a_s3: smps3 {
 			regulator-name = "pmr735a_s3";
-			regulator-min-microvolt = <300000>;
-			regulator-max-microvolt = <2352000>;
+			/*
+			 * The QCA6490's internal power amplifier (the stock tree's
+			 * qcom,vreg_ipa = "s3e", 2.2 V, which Nothing's cnss2 driver
+			 * enables explicitly). Unpowered, receiving works and
+			 * transmitted frames are lost. The power sequencer switches
+			 * it with the chip (vddipa-supply), so it is off with Wi-Fi.
+			 */
+			regulator-min-microvolt = <2192000>;	/* 16 mV steps: no exact 2.2 V */
+			regulator-max-microvolt = <2208000>;
 		};
 
 		pmr735a_l1: ldo1 {
