@@ -13,6 +13,8 @@
 
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/linux-event-codes.h>
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/media/video-interfaces.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 #include <dt-bindings/spmi/spmi.h>
@@ -178,7 +180,7 @@
 	gpio-keys {
 		compatible = "gpio-keys";
 
-		pinctrl-0 = <&key_vol_down_default>;
+		pinctrl-0 = <&key_vol_down_default &lid_default>;
 		pinctrl-names = "default";
 
 		key-volume-down {
@@ -187,6 +189,21 @@
 			gpios = <&pm8550_gpios 6 GPIO_ACTIVE_LOW>;
 			debounce-interval = <32>;
 			linux,can-disable;
+			wakeup-source;
+		};
+
+		/*
+		 * The case's hall sensor (ROHM BU52053NVX, whose ADSP DRI
+		 * reads the same line) pulls gpio97 low when the keyboard
+		 * case is closed over the tablet. The stock kernel exposes
+		 * it as a SW_LID switch, as here.
+		 */
+		key-lid {
+			label = "Lid";
+			linux,code = <SW_LID>;
+			linux,input-type = <EV_SW>;
+			gpios = <&tlmm 97 GPIO_ACTIVE_LOW>;
+			debounce-interval = <15>;
 			wakeup-source;
 		};
 	};
@@ -210,6 +227,9 @@
 		#address-cells = <1>;
 		#size-cells = <0>;
 		#cooling-cells = <2>;
+
+		/* The plug orientation line, as the stock tree gives it */
+		orientation-gpios = <&tlmm 61 GPIO_ACTIVE_HIGH>;
 
 		/*
 		 * The ADSP battery-charge-current cap (BATT_CHG_CTRL_LIM),
@@ -244,6 +264,22 @@
 
 				port@0 {
 					reg = <0>;
+
+					pmic_glink_hs_in: endpoint {
+						remote-endpoint = <&usb_dwc3_hs>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+
+					pmic_glink_ss_in: endpoint {
+						remote-endpoint = <&usb_dp_qmpphy_out>;
+					};
+				};
+
+				port@2 {
+					reg = <2>;
 
 					pmic_glink_sbu: endpoint {
 						remote-endpoint = <&wcd_usbss_sbu_mux>;
@@ -619,11 +655,44 @@
 			regulator-max-microvolt = <4000000>;
 		};
 
+		/*
+		 * The camera I/O rail is also the panel's touch I/O (tvdd)
+		 * rail on stock: keep it on, so that a camera powering down
+		 * cannot take it from the panel.
+		 */
+		vreg_l4b_1p8: ldo4 {
+			regulator-name = "vreg_l4b_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+		};
+
 		vreg_l5b_3p1: ldo5 {
 			regulator-name = "vreg_l5b_3p1";
 			regulator-min-microvolt = <3100000>;
 			regulator-max-microvolt = <3148000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* Rear camera autofocus rail */
+		vreg_l9b_2p8: ldo9 {
+			regulator-name = "vreg_l9b_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * The front camera's core rail is also the panel's vdd rail on
+		 * stock, which keeps it on from boot: keep it on here too.
+		 */
+		vreg_l11b_1p2: ldo11 {
+			regulator-name = "vreg_l11b_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
 		};
 
 		/*
@@ -641,6 +710,14 @@
 			regulator-name = "vreg_l15b_1p8";
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* Analogue rail of both cameras */
+		vreg_l16b_2p8: ldo16 {
+			regulator-name = "vreg_l16b_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
@@ -748,6 +825,14 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
+		/* Rear camera core rail */
+		vreg_l1i_1p2: ldo1 {
+			regulator-name = "vreg_l1i_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
 		vreg_l2i_1p2: ldo2 {
 			regulator-name = "vreg_l2i_1p2";
 			regulator-min-microvolt = <1200000>;
@@ -777,8 +862,155 @@
 	};
 };
 
+/*
+ * Rear SmartSens C658 on CCI0 master 1 into CSIPHY4, front SmartSens D154
+ * on QUPv3 SE9 into CSIPHY5, four lanes each, as the stock camera
+ * overlay wires them. The CSIPHYs take their 0.9 V rails from L3I (rear)
+ * and L1F (front) and their 1.2 V rail from L3G.
+ */
+&camss {
+	status = "okay";
+};
+
+&camss_csiphy4_in_port {
+	camss_csiphy4_inep: endpoint {
+		data-lanes = <1 2 3 4>;
+		remote-endpoint = <&csiphy4_out_ep>;
+	};
+};
+
+&camss_csiphy5_in_port {
+	camss_csiphy5_inep: endpoint {
+		data-lanes = <1 2 3 4>;
+		remote-endpoint = <&csiphy5_out_ep>;
+	};
+};
+
+/* Stock drives only master 1; gpio113/114 of master 0 stay unclaimed */
+&cci0 {
+	pinctrl-0 = <&cci0_1_default>;
+	pinctrl-1 = <&cci0_1_sleep>;
+
+	status = "okay";
+};
+
+&cci0_i2c0 {
+	status = "disabled";
+};
+
+&cci0_i2c1 {
+	clock-frequency = <400000>;
+
+	/* Rear, SmartSens chip ID 0xc658, 8-bit address 0x6c in stock */
+	camera@36 {
+		compatible = "smartsens,c658";
+		reg = <0x36>;
+
+		/* CAMIF_MCLK1 on gpio90, 19.2 MHz */
+		clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK1_CLK>;
+		assigned-clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK1_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
+
+		/* CAM_RESET1 */
+		reset-gpios = <&pm8550ve_i_gpios 5 GPIO_ACTIVE_LOW>;
+
+		avdd-supply = <&vreg_l16b_2p8>;
+		dvdd-supply = <&vreg_l1i_1p2>;
+		dovdd-supply = <&vreg_l4b_1p8>;
+
+		orientation = <1>;
+		rotation = <0>;
+
+		lens-focus = <&cam_rear_vcm>;
+		flash-leds = <&flash_rear_0>, <&flash_rear_1>;
+
+		pinctrl-0 = <&cam1_default>, <&cam_rear_reset_default>;
+		pinctrl-names = "default";
+
+		port {
+			cam_rear_ep: endpoint {
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <662400000>;
+				remote-endpoint = <&csiphy4_in_ep>;
+			};
+		};
+	};
+
+	/* Autofocus, 8-bit address 0x18 in stock */
+	cam_rear_vcm: actuator@c {
+		compatible = "giantec,gt9772";
+		reg = <0x0c>;
+
+		vdd-supply = <&vreg_l9b_2p8>;
+	};
+
+	/*
+	 * Module calibration, 8-bit address 0xa0 in stock, data up to 0x6d2a.
+	 * Stock powers every camera rail to read it; the I/O rail is always
+	 * on, so the autofocus rail is the one this node switches.
+	 */
+	eeprom@50 {
+		compatible = "atmel,24c256";
+		reg = <0x50>;
+
+		vcc-supply = <&vreg_l9b_2p8>;
+		read-only;
+	};
+};
+
+&csiphy4 {
+	vdda-0p9-supply = <&vreg_l3i_0p88>;
+	vdda-1p2-supply = <&vreg_l3g_1p2>;
+
+	status = "okay";
+};
+
+&csiphy4_in_port {
+	csiphy4_in_ep: endpoint {
+		bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+		clock-lanes = <0>;
+		data-lanes = <1 2 3 4>;
+		remote-endpoint = <&cam_rear_ep>;
+	};
+};
+
+&csiphy4_out_port {
+	csiphy4_out_ep: endpoint {
+		remote-endpoint = <&camss_csiphy4_inep>;
+	};
+};
+
+&csiphy5 {
+	vdda-0p9-supply = <&vreg_l1f_0p88>;
+	vdda-1p2-supply = <&vreg_l3g_1p2>;
+
+	status = "okay";
+};
+
+&csiphy5_in_port {
+	csiphy5_in_ep: endpoint {
+		bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+		clock-lanes = <0>;
+		data-lanes = <1 2 3 4>;
+		remote-endpoint = <&cam_front_ep>;
+	};
+};
+
+&csiphy5_out_port {
+	csiphy5_out_ep: endpoint {
+		remote-endpoint = <&camss_csiphy5_inep>;
+	};
+};
+
 /* The touchscreen's SPI engine runs in GSI mode, on GPI DMA. */
 &gpi_dma1 {
+	status = "okay";
+};
+
+/* The front camera's SE9 I2C engine runs in GSI mode, on GPI DMA. */
+&gpi_dma2 {
 	status = "okay";
 };
 
@@ -881,6 +1113,47 @@
 	};
 };
 
+/* Only the front camera and its in-sensor EEPROM sit on this bus */
+&i2c9 {
+	clock-frequency = <400000>;
+
+	status = "okay";
+
+	/* Front, SmartSens chip ID 0xd154, 8-bit address 0x20 in stock */
+	camera@10 {
+		compatible = "smartsens,d154";
+		reg = <0x10>;
+
+		/* CAMIF_MCLK4 on gpio93, 19.2 MHz */
+		clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK4_CLK>;
+		assigned-clocks = <&cambistmclkcc CAM_BIST_MCLK_CC_MCLK4_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		power-domains = <&camcc CAM_CC_TITAN_TOP_GDSC>;
+
+		/* CAM_RESET4 */
+		reset-gpios = <&tlmm 7 GPIO_ACTIVE_LOW>;
+
+		avdd-supply = <&vreg_l16b_2p8>;
+		dvdd-supply = <&vreg_l11b_1p2>;
+		dovdd-supply = <&vreg_l4b_1p8>;
+
+		orientation = <0>;
+		rotation = <0>;
+
+		pinctrl-0 = <&cam4_default>, <&cam_front_reset_default>;
+		pinctrl-names = "default";
+
+		port {
+			cam_front_ep: endpoint {
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <330000000>;
+				remote-endpoint = <&csiphy5_in_ep>;
+			};
+		};
+	};
+};
+
 &i2c_hub_2 {
 	clock-frequency = <400000>;
 	status = "okay";
@@ -941,14 +1214,21 @@
 			oneplus,svooc-max-microamp = <6200000>;
 
 			/*
-			 * The stock board data. Sessions follow it only with
-			 * oneplus,svooc-stock-strategy, and top up after it only
-			 * with oneplus,svooc-fast-full-charge; both stay out
-			 * until verified on the device (the driver's debugfs
-			 * switches them for a bench test). Numbers from the
-			 * stock DT (notes/erhai/step0/captures/fdt.dts) and
-			 * the Lineage oplus charger.
-			 *
+			 * Sessions follow the stock board data; the driver's
+			 * debugfs stock_strategy switch turns it off for the
+			 * next session. Numbers from the stock DT
+			 * (notes/erhai/step0/captures/fdt.dts) and the Lineage
+			 * oplus charger.
+			 */
+			oneplus,svooc-stock-strategy;
+			/*
+			 * After a full session, top up at the raised voltage
+			 * limit of fast-full-charge; debugfs fast_full_charge
+			 * turns it off for the next session.
+			 */
+			oneplus,svooc-fast-full-charge;
+
+			/*
 			 * SuperVOOC adapter models and their power,
 			 * oplus_chg_vooc.c:467-512; VOOC-only models have none.
 			 */
@@ -1554,6 +1834,27 @@
 	status = "okay";
 };
 
+&mdss_mdp {
+	/*
+	 * The panel's 144 Hz mode needs the four mixers this display clock
+	 * can drive, which the stock kernel runs as one source pipe per
+	 * mixer. The driver's multi-rect pairing instead shares one pipe
+	 * between a pair of mixers, and the panel garbles at 144 Hz on
+	 * that topology.
+	 */
+	qcom,dpu-disable-multirect;
+};
+
+&mdss_dp0 {
+	status = "okay";
+};
+
+&mdss_dp0_out {
+	/* The stock link rates (fdt displayport-controller@af54000) */
+	link-frequencies = /bits/ 64 <1620000000 2700000000
+				      5400000000 8100000000>;
+};
+
 &mdss_dsi0 {
 	vdda-supply = <&vreg_l3g_1p2>;
 
@@ -1686,6 +1987,34 @@
 		vddrfa1p8-supply = <&vreg_pmu_rfa_1p8>;
 		vddpcie0p9-supply = <&vreg_pmu_pcie_0p9>;
 		vddpcie1p8-supply = <&vreg_pmu_pcie_1p8>;
+	};
+};
+
+/*
+ * The rear camera's two flash LEDs on channels 1 and 2, at the stock 1.5 A
+ * flash and 500 mA torch per LED and the longest flash the block allows
+ */
+&pm8550_flash {
+	status = "okay";
+
+	flash_rear_0: led-0 {
+		function = LED_FUNCTION_FLASH;
+		color = <LED_COLOR_ID_WHITE>;
+		function-enumerator = <0>;
+		led-sources = <1>;
+		led-max-microamp = <500000>;
+		flash-max-microamp = <1500000>;
+		flash-max-timeout-us = <1280000>;
+	};
+
+	flash_rear_1: led-1 {
+		function = LED_FUNCTION_FLASH;
+		color = <LED_COLOR_ID_WHITE>;
+		function-enumerator = <1>;
+		led-sources = <2>;
+		led-max-microamp = <500000>;
+		flash-max-microamp = <1500000>;
+		flash-max-timeout-us = <1280000>;
 	};
 };
 
@@ -1841,11 +2170,41 @@
 			#interrupt-cells = <2>;
 		};
 	};
+
+	/* The rear camera's reset line is its GPIO 5. */
+	pm8550ve_i: pmic@8 {
+		compatible = "qcom,pm8550ve", "qcom,spmi-pmic";
+		reg = <0x8 SPMI_USID>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		pm8550ve_i_gpios: gpio@8800 {
+			compatible = "qcom,pm8550ve-gpio", "qcom,spmi-gpio";
+			reg = <0x8800>;
+			gpio-controller;
+			gpio-ranges = <&pm8550ve_i_gpios 0 0 6>;
+			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
+		};
+	};
 };
 
 &pm8550ve_f_gpios {
 	bt_default: bt-default-state {
 		pins = "gpio3";
+		function = "normal";
+		input-disable;
+		output-enable;
+		output-low;
+		bias-disable;
+		power-source = <1>;
+	};
+};
+
+&pm8550ve_i_gpios {
+	cam_rear_reset_default: cam-rear-reset-default-state {
+		pins = "gpio5";
 		function = "normal";
 		input-disable;
 		output-enable;
@@ -2119,6 +2478,24 @@
 			bias-disable;
 		};
 	};
+
+	cam_front_reset_default: cam-front-reset-default-state {
+		pins = "gpio7";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	/*
+	 * The case's hall sensor interrupt line: an input, pulled high,
+	 * driven low while the keyboard case is closed over the tablet.
+	 */
+	lid_default: lid-default-state {
+		pins = "gpio97";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
 };
 
 /*
@@ -2194,12 +2571,12 @@
 
 &usb {
 	/*
-	 * Role changes from the Type-C port are not wired up yet: stay a
-	 * high-speed peripheral.
+	 * The UCSI port of pmic-glink switches the role; without it (no
+	 * ADSP) the controller stays in its default, peripheral, role.
+	 * SuperSpeed over the QMP combo PHY, which takes the plug
+	 * orientation from the Type-C port, as stock runs it.
 	 */
-	dr_mode = "peripheral";
-	maximum-speed = "high-speed";
-	/delete-property/ usb-role-switch;
+	maximum-speed = "super-speed";
 
 	status = "okay";
 };
@@ -2209,6 +2586,14 @@
 	vdda-pll-supply = <&vreg_l3g_1p2>;
 
 	status = "okay";
+};
+
+&usb_dp_qmpphy_out {
+	remote-endpoint = <&pmic_glink_ss_in>;
+};
+
+&usb_dwc3_hs {
+	remote-endpoint = <&pmic_glink_hs_in>;
 };
 
 &usb_hsphy {
