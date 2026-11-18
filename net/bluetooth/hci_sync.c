@@ -4700,12 +4700,28 @@ static int hci_le_read_def_data_len_sync(struct hci_dev *hdev)
 /* Read LE Number of Supported Advertising Sets */
 static int hci_le_read_num_support_adv_sets_sync(struct hci_dev *hdev)
 {
+	int err;
+
 	if (!ext_adv_capable(hdev))
 		return 0;
 
-	return __hci_cmd_sync_status(hdev,
-				     HCI_OP_LE_READ_NUM_SUPPORTED_ADV_SETS,
-				     0, NULL, HCI_CMD_TIMEOUT);
+	err = __hci_cmd_sync_status(hdev,
+				    HCI_OP_LE_READ_NUM_SUPPORTED_ADV_SETS,
+				    0, NULL, HCI_CMD_TIMEOUT);
+	/* Some controllers (a WCN3991 with Samsung's firmware) set the extended
+	 * advertising feature bit but answer Command Disallowed, and refuse the
+	 * extended scan and create-connection commands too: use the legacy
+	 * commands instead of failing the whole init.
+	 */
+	if (err == -EBUSY) {
+		bt_dev_warn(hdev, "extended LE commands refused, using legacy");
+		hdev->le_features[1] &= ~HCI_LE_EXT_ADV;
+		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_EXT_SCAN);
+		hci_set_quirk(hdev, HCI_QUIRK_BROKEN_EXT_CREATE_CONN);
+		return 0;
+	}
+
+	return err;
 }
 
 /* Write LE Host Supported */
