@@ -1,0 +1,769 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Samsung Galaxy Tab S7 FE 5G (SM-T736B, board revision 7).
+ *
+ * Every regulator and board node is checked against the stock device tree
+ * (T736BXXS9DYF1). Not described yet: audio, the modem and the cameras; the
+ * touchscreen has no kernel driver (spidev).
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/firmware/qcom,scm.h>
+#include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+
+#include "sm7225.dtsi"
+/*
+ * PMIC: power key (wake from screen-off), temperature alarm, GPIO controller; as the Fairphone 4.
+ */
+#include "pm6350.dtsi"
+/* PMIC: the ADC that reads the battery thermistor, temperature alarm, GPIO controller */
+#include "pm6150l.dtsi"
+
+/ {
+	model = "Samsung Galaxy Tab S7 FE 5G";
+	compatible = "samsung,gts7xllite", "qcom,sm7225";
+	chassis-type = "tablet";
+
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* Messages go to the screen: the first boot has no USB or serial. */
+		bootargs = "rdinit=/init console=tty0 panic=0 clk_ignore_unused pd_ignore_unused";
+
+		fdt-handoff {
+			/*
+			 * Stock tree of the tablet at board revision 7, as captured from the
+			 * running device: the bootloader selects the board-id 05 overlay.
+			 */
+			stock-compatible = "qcom,lagoon-mtp", "qcom,lagoon", "qcom,mtp";
+			stock-model = "Samsung GTS7XLLITE PROJECT (board-id,05)";
+			keep-initrd;
+		};
+
+		/*
+		 * The bootloader's splash buffer, reserved by cont_splash_memory in
+		 * sm6350.dtsi. The panel is 1600x2560 natively. The pixel format is
+		 * not verified.
+		 */
+		framebuffer0: framebuffer@a0000000 {
+			compatible = "simple-framebuffer";
+			reg = <0 0xa0000000 0 (1600 * 2560 * 4)>;
+			width = <1600>;
+			height = <2560>;
+			stride = <(1600 * 4)>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	/* The bootloader passes the real memory map; handoff replaces this. */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0 0x80000000 0 0>;
+	};
+};
+
+/*
+ * Rails of the USB 2.0 PHY only. The limits are the levels that Samsung's PHY
+ * driver requests (phy-msm-qusb-v2.c, QUSB2PHY_1P8_VOL_* and QUSB2PHY_3P3_VOL_*;
+ * lagoon-usb.dtsi, qusb@88e3000 qcom,vdd-voltage-level), inside the windows of
+ * the same rails in Samsung's lagoon-regulators.dtsi and in the Fairphone 4 tree,
+ * and equal to the voltages measured on the running tablet.
+ */
+&apps_rsc {
+	regulators-0 {
+		compatible = "qcom,pm6350-rpmh-regulators";
+		qcom,pmic-id = "a";
+
+		/* PHY 1.8 V: pm6350_l2, window 1.503-1.98 V; the PHY driver asks for 1.8 V. */
+		vreg_l2a: ldo2 {
+			regulator-name = "vreg_l2a";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* PHY 3.3 V: pm6350_l3, window 2.7-3.3 V; the PHY driver asks for 3.075-3.2 V. */
+		vreg_l3a: ldo3 {
+			regulator-name = "vreg_l3a";
+			regulator-min-microvolt = <3075000>;
+			regulator-max-microvolt = <3200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* PHY core: pm6350_l18, window 0.788-1.049 V; lagoon-usb.dtsi asks for 0.88 V. */
+		vreg_l18a: ldo18 {
+			regulator-name = "vreg_l18a";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <880000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * DSI controller 1.2 V: pm6350_l22, window 1.08-1.305 V (lagoon-regulators.dtsi
+		 * L454-460); Samsung's dsi_ctrl0 asks for exactly 1.2 V (lagoon-sde.dtsi L356,
+		 * ctrl-supply-entry vdda-1p2 L373-375). The Fairphone 4 uses the same rail.
+		 */
+		vreg_l22a: ldo22 {
+			regulator-name = "vreg_l22a";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * Wi-Fi rails. Supplies from Samsung's icnss node
+		 * (lagoon.dtsi L3235-3239), windows from lagoon-regulators.dtsi, each pinned to the
+		 * voltage measured on stock with Wi-Fi on. Wi-Fi
+		 * cx-mx: pm6350_l4, window 352-801 mV (L135), stock 352 mV.
+		 */
+		vreg_l4a: ldo4 {
+			regulator-name = "vreg_l4a";
+			regulator-min-microvolt = <352000>;
+			regulator-max-microvolt = <352000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * Book Cover Keyboard power over the pogo pins (stm32_vddo-supply): pm6350_l6,
+		 * window 1.71-3.544 V (lagoon-regulators.dtsi L165-181), pinned to 3.3 V by the
+		 * gts7xllite overlay (fragment@47), HPM only (fragment@95/96, levels.h mode 4). The
+		 * keyboard is its only consumer (stock's other, a synaptics node, is disabled); the
+		 * driver turns it on while the connect line (gpio8) is high. 3.304 V: mainline's
+		 * pldo grid is 1.504 V + n x 8 mV, so 3.3 V has no selector and fails the whole
+		 * block; 3.304 V is the nearest step at or above stock's request.
+		 */
+		vreg_l6a: ldo6 {
+			regulator-name = "vreg_l6a";
+			regulator-min-microvolt = <3304000>;
+			regulator-max-microvolt = <3304000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * Wi-Fi 1.8 V XO: pm6350_l7, window 1.62-1.98 V (L192), stock 1.8 V, shared (2
+		 * users on stock).
+		 */
+		vreg_l7a: ldo7 {
+			regulator-name = "vreg_l7a";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * S Pen digitizer (wacom,regulator_avdd = "wacom_avdd"): pm6350_l8, stock min = max
+		 * = init 3.3 V, init-mode HPM (live fdt L931-938). Stock also lists it as the DSI
+		 * display's vdd-supply. As 3.304 V: mainline's pldo grid is 1.504 V + n x 8 mV, so
+		 * 3.3 V has no selector (as vreg_l6a).
+		 */
+		vreg_l8a: ldo8 {
+			regulator-name = "vreg_l8a";
+			regulator-min-microvolt = <3304000>;
+			regulator-max-microvolt = <3304000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	/* PM6150L (pmic e; "pm6150a" on stock). Wi-Fi rails only. */
+	regulators-1 {
+		compatible = "qcom,pm6150l-rpmh-regulators";
+		qcom,pmic-id = "e";
+
+		/*
+		 * Wi-Fi 1.3 V RF: pm6150l_l2, window 1.17-1.305 V (L558), stock 1.304 V, shared (2
+		 * users on stock).
+		 */
+		vreg_l2e: ldo2 {
+			regulator-name = "vreg_l2e";
+			regulator-min-microvolt = <1304000>;
+			regulator-max-microvolt = <1304000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * Wi-Fi 3.3 V chain 0: pm6150l_l10, window 3.0-3.401 V (L710), stock 3.0 V. Chain 1
+		 * (pm6150l_l11) stays off on stock even with Wi-Fi on, so it is not declared and
+		 * ath10k gets a dummy for vdd-3.3-ch1.
+		 */
+		vreg_l10e: ldo10 {
+			regulator-name = "vreg_l10e";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * microSD I/O: pm6150l_l6, window 1.7-3.544 V (lagoon-regulators.dtsi
+		 * L634). Samsung's sdhc_2 switches it between 1.8 V (UHS) and 2.96 V
+		 * (qcom,vdd-io-voltage-level); stock runs 1.8 V.
+		 */
+		vreg_l6e: ldo6 {
+			regulator-name = "vreg_l6e";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <2960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * microSD card power: pm6150l_l9, window 2.7-3.544 V (L691). Samsung's
+		 * sdhc_2 asks exactly 2.96 V (qcom,vdd-voltage-level); stock runs
+		 * 2.96 V.
+		 */
+		vreg_l9e: ldo9 {
+			regulator-name = "vreg_l9e";
+			regulator-min-microvolt = <2960000>;
+			regulator-max-microvolt = <2960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+};
+
+/* Debug channel: a USB 2.0 serial gadget. No SuperSpeed PHY, no Type-C controller yet. */
+&usb_1 {
+	/*
+	 * No SS PHY: the controller would wait forever on a PIPE clock; DEPCFG times out without
+	 * this.
+	 */
+	qcom,select-utmi-as-pipe-clk;
+	status = "okay";
+};
+
+&usb_1_dwc3 {
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+	phys = <&usb_1_hsphy>;
+	phy-names = "usb2-phy";
+	/delete-property/ usb-role-switch;
+};
+
+&usb_1_hsphy {
+	vdd-supply = <&vreg_l18a>;
+	vdda-pll-supply = <&vreg_l2a>;
+	vdda-phy-dpdm-supply = <&vreg_l3a>;
+
+	status = "okay";
+};
+
+/*
+ * The bus of the SM5714 charger block (0x49), MUIC (0x25) and fuel gauge (0x71):
+ * controller 984000.i2c, SDA/SCL on gpio27/gpio28 (function qup11, 2 mA, pull-up).
+ * Read-only use for now. Sources: the same controller and pins in Samsung's
+ * lagoon-qupv3.dtsi (qupv3_se7_i2c, L253) and lagoon-pinctrl.dtsi (L467-480), in the
+ * tree that the bootloader passed on the running tablet (pinctrl-0 = qupv3_se7_i2c_active)
+ * and in the mainline i2c7 / qup_i2c7_default nodes of sm6350.dtsi. The bus runs at
+ * the default 100 kHz; Samsung uses 400 kHz.
+ */
+&gpi_dma1 {
+	status = "okay";
+};
+
+&qupv3_id_1 {
+	status = "okay";
+};
+
+&i2c7 {
+	status = "okay";
+
+	/*
+	 * SM5714 fuel gauge, 7-bit 0x71 (Samsung's 8-bit 0xE2, sm5714-private.h; live client of
+	 * stock). Read only: battery percentage, voltage, current, temperature, and the charging
+	 * status of the charger block at 0x49. No gauge setting is written; the charge current
+	 * follows the charger type and the battery temperature (see the driver). Battery
+	 * temperature from the thermistor Samsung's sec_battery reads (adc-temp: pm6150l_vadc
+	 * 0x53, live fdt L27628).
+	 */
+	fuel-gauge@71 {
+		compatible = "siliconmitus,sm5714-fuel-gauge";
+		reg = <0x71>;
+		/*
+		 * the chip's shared interrupt (stock sm5714,irq-gpio, live fdt L16348-16356;
+		 * IRQF_TRIGGER_LOW)
+		 */
+		interrupts-extended = <&tlmm 84 IRQ_TYPE_LEVEL_LOW>;
+		io-channels = <&pm6150l_adc ADC5_GPIO2_100K_PU>;
+		io-channel-names = "batt-therm";
+		pinctrl-0 = <&pmic_int>;
+		pinctrl-names = "default";
+	};
+};
+
+/*
+ * Touch bus, read-only identification first. QUP wrapper 1 engine 0 (0x980000) is an SPI controller
+ * on this tablet (stock qupv3_se6_spi, rev7 tree L18062, Samsung lagoon-qupv3.dtsi L215);
+ * sm6350.dtsi describes the same engine as i2c6, so that node is replaced. Pins gpio13-15 function
+ * qup10, 6 mA, no pull: Samsung lagoon-pinctrl.dtsi L615-629 (qupv3_se6_spi_active). Chip select
+ * gpio16 as a plain GPIO, output high (idle), as in the rev7 tree (cs-gpios = <&tlmm 16>, pinctrl
+ * state gpio16 output-high). The stock tree lists gpio16 twice, once per touch driver (himax cs0,
+ * focaltech cs1): one chip, one select line. The child has no kernel driver yet: bind spidev to it
+ * from init (driver_override). 6 MHz is the focaltech node's spi-max-frequency (rev7 tree L18136).
+ */
+/delete-node/ &i2c6;
+
+&tlmm {
+	qup_spi6_data_clk: qup-spi6-data-clk-state {
+		pins = "gpio13", "gpio14", "gpio15";
+		function = "qup10";
+		drive-strength = <6>;
+		bias-disable;
+	};
+
+	/*
+	 * Touch chip reset, step A: a pull-up only, nothing is driven. The bootloader leaves gpio18
+	 * as an input with a pull-down, which is Samsung's own sleep state (ft820x_tsp_rst_sleep,
+	 * rev7 tree L13048): the chip is held in reset and does not answer on SPI. This state is
+	 * Samsung's active one (ft820x_tsp_rst_active, L13032): input, pull-up, 8 mA. Low = reset,
+	 * high = run (focaltech_core.c fts_reset_proc). The line is never driven by us, neither
+	 * high nor low. Step B (drive it high, as the stock driver does at probe) only if this does
+	 * not wake the chip.
+	 */
+	qup_spi6_rst: qup-spi6-rst-state {
+		pins = "gpio18";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-up;
+		output-disable;
+	};
+
+	qup_spi6_cs: qup-spi6-cs-state {
+		pins = "gpio16";
+		function = "gpio";
+		drive-strength = <6>;
+		bias-disable;
+		output-high;
+	};
+};
+
+&qupv3_id_1 {
+	spi6: spi@980000 {
+		compatible = "qcom,geni-spi";
+		reg = <0x0 0x00980000 0x0 0x4000>;
+		clock-names = "se";
+		clocks = <&gcc GCC_QUPV3_WRAP1_S0_CLK>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&qup_spi6_data_clk>, <&qup_spi6_cs>, <&qup_spi6_rst>;
+		interrupts = <GIC_SPI 353 IRQ_TYPE_LEVEL_HIGH>;
+		dmas = <&gpi_dma1 0 0 QCOM_GPI_SPI>,
+		       <&gpi_dma1 1 0 QCOM_GPI_SPI>;
+		dma-names = "tx", "rx";
+		interconnects = <&clk_virt MASTER_QUP_CORE_1 0 &clk_virt SLAVE_QUP_CORE_1 0>,
+				<&gem_noc MASTER_AMPSS_M0 0 &config_noc SLAVE_QUP_1 0>,
+				<&aggre2_noc MASTER_QUP_1 0 &clk_virt SLAVE_EBI_CH0 0>;
+		interconnect-names = "qup-core", "qup-config", "qup-memory";
+		cs-gpios = <&tlmm 16 GPIO_ACTIVE_LOW>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		touch@0 {
+			compatible = "focaltech,ft8203-spi";
+			reg = <0>;
+			spi-max-frequency = <6000000>;
+		};
+	};
+};
+
+/*
+ * GPU: Adreno 619, in the same msm DRM device as the display (the earlier msm.separate_gpu_kms=1
+ * split them while simpledrm showed the screen). One device lets buffers stay in the GPU's
+ * compressed tiled layout (UBWC) up to scanout; across two devices they had to be linear, which
+ * made landscape (90/270 degree) rendering about six times slower.
+ * - gpu@3d00000, gmu@3d6a000, adreno_smmu@3d40000 and gpucc@3d90000 are described in sm6350.dtsi
+ *   (the last three are enabled by default); mainline matches the chip 0x06010900 and asks for
+ *   a630_sqe.fw, a619_gmu.bin and the zap shader.
+ * - The zap shader (a615_zap.mdt + .b00/.b01/.b02, from the device's own firmware) is loaded into a
+ *   reserved region and authenticated by the secure world. sm6350.dtsi places that region where
+ *   Fairphone's firmware wants it (0xf0d00000); Samsung's map puts it at 0x8b715400, size 0x2000,
+ *   right after the IPA regions: arch/arm64/boot/dts/vendor/qcom/lagoon.dtsi L416-420 (pil_gpu_mem
+ *   / gpu_region@8b715400) and the rev7 tree L26548. That range does not overlap any other reserved
+ *   region of sm6350.dtsi (pil_ipa_gsi_mem ends at 0x8b715400).
+ */
+/delete-node/ &pil_gpu_mem;
+
+&reserved_memory {
+	/*
+	 * The zap image is relocatable, so the loader tells the secure world where it sits
+	 * (qcom_pas_mem_setup) with the start of this node. A first test with the whole Samsung
+	 * range, whose start 0x8b715400 is not page aligned, got -EINVAL from exactly that call
+	 * (the signed metadata had been accepted just before). Samsung's own driver allocates a
+	 * page-aligned chunk inside its region; the first one is 0x8b716000. The zap node is that
+	 * page, size 0x1000 (qcom_mdt_get_size of a615_zap.mdt is 0x1000). The rest of Samsung's
+	 * range stays reserved, in whole pages (head 0x8b715400-0x8b716000 after pil_ipa_gsi_mem,
+	 * tail 0x8b717000-0x8b718000 including 0xc00 of padding), so no reservation overlaps
+	 * another and no page is left half mapped.
+	 */
+	pil_gpu_head: memory@8b715400 {
+		reg = <0x0 0x8b715400 0x0 0xc00>;
+		no-map;
+	};
+
+	pil_gpu_mem: memory@8b716000 {
+		reg = <0x0 0x8b716000 0x0 0x1000>;
+		no-map;
+	};
+
+	pil_gpu_tail: memory@8b717000 {
+		reg = <0x0 0x8b717000 0x0 0x1000>;
+		no-map;
+	};
+
+	/*
+	 * The modem's remote file system buffer (rmtfs). Samsung allocates it dynamically
+	 * (qcom,sharedmem-uio, size 0x280000); on the running stock system it sits at 0xf9201000
+	 * (uio map0), where the modem expects it.
+	 */
+	rmtfs_mem: memory@f9201000 {
+		compatible = "qcom,rmtfs-mem";
+		reg = <0x0 0xf9201000 0x0 0x280000>;
+		no-map;
+
+		qcom,client-id = <1>;
+		qcom,vmid = <QCOM_SCM_VMID_MSS_MSA>;
+	};
+};
+
+/* The modem DSP: Wi-Fi's firmware service (WLFW) runs there. Calls and data are not set up. */
+&mpss {
+	firmware-name = "qcom/sm7225/gts7xllite/modem.mdt";
+	status = "okay";
+};
+
+/*
+ * microSD slot (sdhc_2). Rails above (L9E card power, L6E I/O). Card detect
+ * gpio94, active low, as Samsung's tree: pull-up while on, no pull while off,
+ * 2 mA (lagoon-pinctrl.dtsi L862-886). The clock/command/data pin states of
+ * sm6350.dtsi already equal Samsung's (16/10/10 mA, L814-850).
+ */
+&sdc2_off_state {
+	sd-cd-pins {
+		pins = "gpio94";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+};
+
+&sdc2_on_state {
+	sd-cd-pins {
+		pins = "gpio94";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+};
+
+&sdhc_2 {
+	vmmc-supply = <&vreg_l9e>;
+	vqmmc-supply = <&vreg_l6e>;
+
+	cd-gpios = <&tlmm 94 GPIO_ACTIVE_LOW>;
+
+	status = "okay";
+};
+
+/* Wi-Fi: WCN3990-family over SNOC (ath10k). Rails above. */
+&wifi {
+	vdd-0.8-cx-mx-supply = <&vreg_l4a>;
+	vdd-1.8-xo-supply = <&vreg_l7a>;
+	vdd-1.3-rfa-supply = <&vreg_l2e>;
+	vdd-3.3-ch0-supply = <&vreg_l10e>;
+	status = "okay";
+};
+
+/*
+ * Stage 2 of the GPU bring-up: the GPU is enabled (stage 1 had the region and the firmware name
+ * only). The zap shader is not loaded at boot: the msm driver loads the firmware and the zap on the
+ * first open of the render node.
+ */
+&gpu {
+	status = "okay";
+};
+
+&gpu_zap_shader {
+	firmware-name = "qcom/sm7225/gts7xllite/a615_zap.mdt";
+};
+
+/*
+ * Display: BOE TS124QDM on DSI0 (FocalTech FT8203, video mode, DSC), from Samsung's rev7 tree
+ * (gts7xllite_eur_openx_w00_r05.dts, ss_dsi_panel_FT8203_TS124QDM_WQXGA, qcom,dsi-ctrl-num 0 /
+ * qcom,dsi-phy-num 0). Ours: the reset line and the 5 V backlight boost. The other panel rails
+ * (pm6350_l14 1.9 V VDDI; gpio88/89 enables of the ISL98608 +-5.6 V buck, which Samsung reprograms
+ * over I2C after each power-on) are NOT described: Linux never touches them. No LP8558 on this
+ * board (compatible lp8558,display_backlight is absent from the rev7 tree).
+ * - Backlight boost: MAX77816 at 0x18 on qupv3_se8_i2c = i2c@988000 (r05 fragment@76
+ *   display_boost@18 -> __fixups__ qupv3_se8_i2c, r05 L10770; lagoon-qupv3.dtsi L273-291). Bus pins
+ *   gpio19/20 qup12, 2 mA, pull-up (lagoon-pinctrl.dtsi L495-507) = mainline qup_i2c8_default.
+ *   Enable: Samsung's panel_boost_en fixed regulator, gpio72 active high (r05 L382-391), pin state
+ *   ldo_gpio5: gpio, bias-disable, output-high (r05 L6652-6664). VOUT 0x04 = 0x78 = 5.00 V after
+ *   each enable (ss_boost_control; datasheet VOUT table, reset value 0x23 = 3.30 V). The Wacom
+ *   w90xx (0x56) shares this bus and has no node.
+ * - Reset: Samsung's panel_reset fixed regulator, gpio73, enable-active-high (r05 L413-421),
+ *   pin state ldo_gpio4: function gpio, bias-disable, output-high (r05 L6719-6731). Low = reset.
+ * - The DSI PHY's 0.9 V comes from the S5A level rail downstream (lagoon-sde.dtsi L403, vdda-0p9),
+ *   not from an LDO; vdds-supply is left out (a dummy regulator) so no rail is switched for it.
+ * The simple-framebuffer stays as the fallback: msm removes it when it takes over the display.
+ */
+&tlmm {
+	backlight_boost_en: backlight-boost-en-state {
+		pins = "gpio72";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	panel_reset_default: panel-reset-default-state {
+		pins = "gpio73";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+};
+
+/*
+ * Real-time clock of the PMK8350, which sits at SPMI SID 6 on this tablet (stock qcom,pmk8350@6;
+ * mainline's pmk8350.dtsi assumes 0). Only the RTC: stock rtc@6100 (rtc 0x6100, alarm 0x6200,
+ * interrupt 0x62 0x1 rising). Read-only time as on every Qualcomm phone (no allow-set-time;
+ * Phonewave's rtc-offset keeps the offset in userspace); its alarm wakes the tablet from suspend.
+ * The PMIC's other blocks stay undescribed.
+ */
+&spmi_bus {
+	pmic@6 {
+		compatible = "qcom,pmk8350", "qcom,spmi-pmic";
+		reg = <0x6 SPMI_USID>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		pmk8350_rtc: rtc@6100 {
+			compatible = "qcom,pmk8350-rtc";
+			reg = <0x6100>, <0x6200>;
+			reg-names = "rtc", "alarm";
+			interrupts = <0x6 0x62 0x1 IRQ_TYPE_EDGE_RISING>;
+		};
+	};
+};
+
+/*
+ * Book Cover Keyboard (EF-DT970, EF-DT730 Slim) on the pogo connector: its STM32 MCU at 0x2a on QUP
+ * SE10 (stock qupv3_se10_i2c; gpio4/5 = mainline i2c10). Stock node: fragment@93 stm32@2a (board-id
+ * 05 overlay). As live stock (/proc/device-tree, T736BXXS9DYF1, 2026-11-18): 400 kHz
+ * (qcom,clk-freq-out 0x61a80), and a sleep pin state with no bias that the controller takes
+ * whenever it is runtime-suspended, i.e. nearly always. Without it the SoC's pull-ups stay on
+ * SDA/SCL and back-feed the keyboard: its connect line pulses even with vdd off.
+ * gpio9 interrupt, level low (irq_type 0x2008); gpio8 connect, high while a cover is attached;
+ * gpio10 MCU reset, idle high; gpio47 the MCU's SWD clock, held low. Keymaps from stock pogo_kpd
+ * (linux,keymap1 and 2, 8 x 24).
+ */
+&i2c10 {
+	clock-frequency = <400000>;
+	pinctrl-0 = <&qup_i2c10_default>;
+	pinctrl-1 = <&pogo_i2c_sleep>;
+	pinctrl-names = "default", "sleep";
+	status = "okay";
+
+	keyboard@2a {
+		compatible = "samsung,pogo-keyboard";
+		reg = <0x2a>;
+		interrupts-extended = <&tlmm 9 IRQ_TYPE_LEVEL_LOW>;
+		connect-gpios = <&tlmm 8 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&tlmm 10 GPIO_ACTIVE_LOW>;
+		vdd-supply = <&vreg_l6a>;
+		pinctrl-0 = <&pogo_int>, <&pogo_conn>, <&pogo_nrst>, <&pogo_swclk>;
+		pinctrl-names = "default";
+		linux,keymap = <
+			0x0004002c 0x00050056 0x0007002f 0x00080032 0x0009006c 0x000b0039
+			0x000c0067 0x00100001 0x00110072 0x001602c2 0x010201d0 0x0103007d
+			0x0104001e 0x0105002d 0x01060020 0x01070030 0x01090033 0x010a0034
+			0x010b0035 0x011002c1 0x01110073 0x01160066 0x0202007a 0x02040010
+			0x0206002e 0x02070021 0x02080024 0x02090025 0x020a0026 0x020b0027
+			0x020d001c 0x021000fe 0x021100a5 0x02160068 0x03020038 0x0304000f
+			0x03050011 0x03060012 0x03070022 0x03080023 0x03090017 0x030a0028
+			0x030b0019 0x031000ac 0x031100a4 0x0316006d 0x0400003a 0x04010064
+			0x04040002 0x04050003 0x04060004 0x04070013 0x04080016 0x04090009
+			0x040a0018 0x040b000b 0x040f002b 0x041000e0 0x041100a3 0x0416006b
+			0x0501001d 0x0503006a 0x05040029 0x0505003e 0x05060041 0x05070014
+			0x05080015 0x05090044 0x050a001a 0x050b000e 0x050d000c 0x050f001b
+			0x051000e1 0x051102c5 0x051502bd 0x051602cb 0x06000036 0x06010069
+			0x0604003b 0x0605003d 0x06060040 0x06070005 0x06080008 0x06090043
+			0x060a000a 0x060b0058 0x060c0031 0x0610007d 0x0611006f 0x061602ca
+			0x0700002a 0x070102c6 0x0703001f 0x07040001 0x0705003c 0x0706003f
+			0x07070006 0x07080007 0x07090042 0x070a000d 0x070b0057 0x070d0063
+			0x070e006f 0x07100071 0x07110214 0x07120213>;
+		samsung,keymap-slim = <
+			0x0004002c 0x00050056 0x0007002f 0x00080032 0x0009006c 0x000b0039
+			0x000c0067 0x00100001 0x00110072 0x001602c2 0x010201d0 0x0103007d
+			0x0104001e 0x0105002d 0x01060020 0x01070030 0x01090033 0x010a0034
+			0x010b0035 0x011002c1 0x01110073 0x01160066 0x0202007a 0x02040010
+			0x0206002e 0x02070021 0x02080024 0x02090025 0x020a0026 0x020b0027
+			0x020d001c 0x021000fe 0x021100a5 0x02160068 0x03020038 0x0304000f
+			0x03050011 0x03060012 0x03070022 0x03080023 0x03090017 0x030a0028
+			0x030b0019 0x031000ac 0x031100a4 0x0316006d 0x0400003a 0x04010064
+			0x04040002 0x04050003 0x04060004 0x04070013 0x04080016 0x04090009
+			0x040a0018 0x040b000b 0x040f002b 0x041000e0 0x041100a3 0x0416006b
+			0x0501001d 0x0503006a 0x05040029 0x0505003e 0x05060041 0x05070014
+			0x05080015 0x05090044 0x050a001a 0x050b000e 0x050d000c 0x050f001b
+			0x051000e1 0x051102c5 0x051502bd 0x051602cb 0x06000036 0x06010069
+			0x0604003b 0x0605003d 0x06060040 0x06070005 0x06080008 0x06090043
+			0x060a000a 0x060b0058 0x060c0031 0x0610007d 0x0611006f 0x061602ca
+			0x0700002a 0x070102c6 0x0703001f 0x07040001 0x0705003c 0x0706003f
+			0x07070006 0x07080007 0x07090042 0x070a000d 0x070b0057 0x070d0063
+			0x070e006f 0x07100071 0x071102c9>;
+	};
+};
+
+&tlmm {
+	/* Stock qupv3_se10_i2c_sleep (lagoon-pinctrl.dtsi L537-548): plain GPIO, 2 mA, no bias */
+	pogo_i2c_sleep: pogo-i2c-sleep-state {
+		pins = "gpio4", "gpio5";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	/* Stock fragment@89-92: 2 mA, no pull; inputs for the interrupt and connect lines */
+	/*
+	 * stock charger-chip irq pin: gpio84, gpio function, 2 mA, no bias (live fdt L10510-10518)
+	 */
+	pmic_int: pmic-int-state {
+		pins = "gpio84";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	/* stock epen-int-active: gpio85, input, no bias */
+	pen_int: pen-int-state {
+		pins = "gpio85";
+		function = "gpio";
+		output-disable;
+		bias-disable;
+	};
+
+	pogo_int: pogo-int-state {
+		pins = "gpio9";
+		function = "gpio";
+		drive-strength = <2>;
+		output-disable;
+		bias-disable;
+	};
+
+	pogo_conn: pogo-conn-state {
+		pins = "gpio8";
+		function = "gpio";
+		drive-strength = <2>;
+		output-disable;
+		bias-disable;
+	};
+
+	pogo_nrst: pogo-nrst-state {
+		pins = "gpio10";
+		function = "gpio";
+		drive-strength = <2>;
+		output-high;
+		bias-disable;
+	};
+
+	pogo_swclk: pogo-swclk-state {
+		pins = "gpio47";
+		function = "gpio";
+		drive-strength = <2>;
+		output-low;
+		bias-disable;
+	};
+};
+
+&i2c8 {
+	status = "okay";
+
+	backlight_boost: regulator@18 {
+		compatible = "maxim,max77816";
+		reg = <0x18>;
+		enable-gpios = <&tlmm 72 GPIO_ACTIVE_HIGH>;
+		pinctrl-0 = <&backlight_boost_en>;
+		pinctrl-names = "default";
+		regulator-name = "backlight_boost";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+	};
+
+	/*
+	 * S Pen: stock wacom@56 on qupv3_se8_i2c (live fdt L16420-16446); firmware-update pin
+	 * gpio86 stays low (unclaimed).
+	 */
+	digitizer@56 {
+		compatible = "wacom,w9021";
+		reg = <0x56>;
+		interrupts-extended = <&tlmm 85 IRQ_TYPE_LEVEL_LOW>;	/* stock IRQF_TRIGGER_LOW */
+		pinctrl-0 = <&pen_int>;
+		pinctrl-names = "default";
+		vdd-supply = <&vreg_l8a>;
+		/* stock wacom,invert = <1 0 1>: x inverted, then x/y swapped */
+		touchscreen-inverted-x;
+		touchscreen-swapped-x-y;
+	};
+};
+
+&mdss {
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	vdda-supply = <&vreg_l22a>;
+	status = "okay";
+
+	panel@0 {
+		compatible = "boe,ts124qdm";
+		reg = <0>;
+
+		reset-gpios = <&tlmm 73 GPIO_ACTIVE_LOW>;
+		boost-supply = <&backlight_boost>;
+		pinctrl-0 = <&panel_reset_default>;
+		pinctrl-names = "default";
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&mdss_dsi0_out>;
+			};
+		};
+	};
+};
+
+&mdss_dsi0_out {
+	data-lanes = <0 1 2 3>;
+	remote-endpoint = <&panel_in>;
+};
+
+&mdss_dsi0_phy {
+	status = "okay";
+};
+
+/*
+ * Battery thermistor: pm6150l gpio6 as ADC input GPIO2, 100k pull-up, ratiometric, 200 us settle,
+ * high impedance (stock pm6150l_vadc bat_thm and rfc_cam_therm_default, live fdt L4840-4960). The
+ * adc5 driver's 100k table matches Samsung's battery,temp_table_adc within 0.5 C over 0-50 C.
+ */
+&pm6150l_adc {
+	pinctrl-0 = <&bat_therm_default>;
+	pinctrl-names = "default";
+
+	channel@53 {
+		reg = <ADC5_GPIO2_100K_PU>;
+		label = "bat_therm";
+		qcom,hw-settle-time = <200>;
+		qcom,pre-scaling = <1 1>;
+		qcom,ratiometric;
+	};
+};
+
+&pm6150l_gpios {
+	bat_therm_default: bat-therm-default-state {
+		pins = "gpio6";
+		function = PMIC_GPIO_FUNC_NORMAL;
+		bias-high-impedance;
+	};
+};
