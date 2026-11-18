@@ -39,17 +39,20 @@
 #define POGO_ROWS		8
 #define POGO_COLS		24
 #define POGO_ROW_SHIFT		5	/* get_count_order(POGO_COLS) */
+#define POGO_MAX_CYCLES		3	/* power cycles per attach before giving up */
 
 struct pogo_kbd {
 	struct i2c_client *client;
 	struct regulator *vdd;
 	struct gpio_desc *conn;
-	struct gpio_desc *reset;
 	struct input_dev *input;
 	struct delayed_work conn_work;
 	struct mutex lock;	/* powered, input */
 	bool powered;
-	int hello_tries;
+	bool irq_on;		/* the event interrupt is enabled */
+	bool stuck;		/* an event read failed: power-cycle the keyboard */
+	unsigned long on_since;	/* jiffies of the last power on */
+	int cycles;		/* power cycles since the last good handshake */
 	int model;
 	unsigned short keycode[POGO_ROWS << POGO_ROW_SHIFT];
 };
@@ -112,14 +115,6 @@ static int pogo_reg_read(struct pogo_kbd *kbd, u8 cmd, u8 *val, int size)
 	return pogo_ep_read(kbd, POGO_ID_MCU, cmd, val, size);
 }
 
-static void pogo_reset_mcu(struct pogo_kbd *kbd)
-{
-	gpiod_set_value_cansleep(kbd->reset, 1);
-	usleep_range(3000, 4000);
-	gpiod_set_value_cansleep(kbd->reset, 0);
-	usleep_range(10000, 11000);
-}
-
 static void pogo_release_keys(struct pogo_kbd *kbd)
 {
 	int i;
@@ -169,7 +164,7 @@ static void pogo_attach(struct pogo_kbd *kbd)
 
 	/*
 	 * The rest of stock's check_ic_work: its CRC and the touchpad's version (0xff00 on the
-	 * Slim, which has none). The MCU reports keys only after this handshake (boot-test39: no
+	 * Slim, which has none). The MCU reports keys only after this handshake (no
 	 * interrupt on any key without it).
 	 */
 	ret = pogo_reg_read(kbd, POGO_CMD_CRC, ver, sizeof(ver));
@@ -181,6 +176,7 @@ static void pogo_attach(struct pogo_kbd *kbd)
 		dev_dbg(dev, "touchpad version read %d: %6ph\n", ret, tc);
 	}
 
+	kbd->cycles = 0;
 	if (kbd->input)
 		return;
 	input = input_allocate_device();
@@ -243,8 +239,12 @@ static irqreturn_t pogo_irq(int irq, void *data)
 		goto out;
 	}
 	if (len < 0 || pogo_recv(kbd, ev, len)) {
+		/* An MCU in this state stays silent, as after a driver reload: power-cycle it */
 		dev_err_ratelimited(&kbd->client->dev, "event read failed: %d\n", len);
-		pogo_reset_mcu(kbd);
+		kbd->stuck = true;
+		kbd->irq_on = false;
+		disable_irq_nosync(irq);
+		mod_delayed_work(system_dfl_wq, &kbd->conn_work, 0);
 		goto out;
 	}
 	dev_dbg(&kbd->client->dev, "event %*ph\n", len, ev);
@@ -257,44 +257,83 @@ out:
 	return IRQ_HANDLED;
 }
 
+/*
+ * Under kbd->lock; returns with it released. The event interrupt is off while the MCU is
+ * unpowered.
+ */
+static void pogo_power(struct pogo_kbd *kbd, bool on)
+{
+	struct device *dev = &kbd->client->dev;
+	bool irq_on = kbd->irq_on;
+	int ret;
+
+	if (!on) {
+		kbd->powered = false;
+		kbd->irq_on = false;
+		mutex_unlock(&kbd->lock);
+		if (irq_on)
+			disable_irq(kbd->client->irq);
+		regulator_disable(kbd->vdd);
+		return;
+	}
+	ret = regulator_enable(kbd->vdd);
+	if (ret) {
+		dev_err(dev, "vdd on: %d\n", ret);
+		mutex_unlock(&kbd->lock);
+		return;
+	}
+	kbd->powered = true;
+	kbd->stuck = false;
+	kbd->on_since = jiffies;
+	msleep(50);
+	kbd->irq_on = true;
+	mutex_unlock(&kbd->lock);
+	enable_irq(kbd->client->irq);
+	/* look again once the MCU has had time to say hello */
+	queue_delayed_work(system_dfl_wq, &kbd->conn_work, HZ + 1);
+}
+
 static void pogo_conn_work(struct work_struct *work)
 {
 	struct pogo_kbd *kbd = container_of(work, struct pogo_kbd, conn_work.work);
+	struct device *dev = &kbd->client->dev;
 	bool attached = gpiod_get_value_cansleep(kbd->conn);
-	int ret;
 
 	mutex_lock(&kbd->lock);
-	if (attached && kbd->powered && !kbd->input) {
+	if (attached && kbd->powered && (kbd->stuck || !kbd->input)) {
 		/*
-		 * No hello yet: the MCU keeps its connect line pulsing until a host has handshaken
-		 * with it
+		 * No hello within a second of power on (the MCU keeps its connect line
+		 * pulsing until a host has handshaken with it), or a failed event read. An
+		 * MCU left powered by a previous driver instance never says hello again;
+		 * both clear on a power cycle, as on a physical reattach.
 		 */
-		if (!kbd->hello_tries++)
-			dev_err(&kbd->client->dev, "no hello from the keyboard\n");
-		goto out;
+		if (!kbd->stuck && time_before(jiffies, kbd->on_since + HZ))
+			goto out;
+		if (kbd->cycles >= POGO_MAX_CYCLES) {
+			if (kbd->cycles++ == POGO_MAX_CYCLES)
+				dev_err(dev, "keyboard not answering: detach and reattach it\n");
+			goto out;
+		}
+		kbd->cycles++;
+		dev_info(dev, "keyboard not answering (%s), power-cycling it\n",
+			 kbd->stuck ? "read error" : "no hello");
+		pogo_release_keys(kbd);
+		pogo_power(kbd, false);
+		msleep(100);
+		mutex_lock(&kbd->lock);
+		pogo_power(kbd, true);
+		return;
 	}
 	if (attached == kbd->powered)
 		goto out;
-	dev_info(&kbd->client->dev, "keyboard %s\n", attached ? "attached" : "detached");
+	dev_info(dev, "keyboard %s\n", attached ? "attached" : "detached");
 	if (attached) {
-		ret = regulator_enable(kbd->vdd);
-		if (ret) {
-			dev_err(&kbd->client->dev, "vdd on: %d\n", ret);
-			goto out;
-		}
-		kbd->powered = true;
-		kbd->hello_tries = 0;
-		msleep(50);
-		mutex_unlock(&kbd->lock);
-		enable_irq(kbd->client->irq);
-		queue_delayed_work(system_dfl_wq, &kbd->conn_work, HZ);
+		kbd->cycles = 0;
+		pogo_power(kbd, true);
 		return;
 	}
-	kbd->powered = false;
 	pogo_remove_input(kbd);
-	mutex_unlock(&kbd->lock);
-	disable_irq(kbd->client->irq);
-	regulator_disable(kbd->vdd);
+	pogo_power(kbd, false);
 	return;
 out:
 	mutex_unlock(&kbd->lock);
@@ -304,8 +343,12 @@ static irqreturn_t pogo_conn_irq(int irq, void *data)
 {
 	struct pogo_kbd *kbd = data;
 
-	/* The pins bounce as the cover seats: act on the line once it has settled */
-	mod_delayed_work(system_dfl_wq, &kbd->conn_work, msecs_to_jiffies(250));
+	/*
+	 * The pins bounce as the cover seats: act on the line once it has settled. Do not push a
+	 * pending check back: an MCU waiting for its handshake pulses this line without end, which
+	 * would starve the worker (and with it the no-hello recovery).
+	 */
+	queue_delayed_work(system_dfl_wq, &kbd->conn_work, msecs_to_jiffies(250));
 	return IRQ_HANDLED;
 }
 
@@ -329,9 +372,6 @@ static int pogo_probe(struct i2c_client *client)
 	kbd->conn = devm_gpiod_get(dev, "connect", GPIOD_IN);
 	if (IS_ERR(kbd->conn))
 		return dev_err_probe(dev, PTR_ERR(kbd->conn), "connect gpio\n");
-	kbd->reset = devm_gpiod_get(dev, "reset", GPIOD_OUT_LOW);
-	if (IS_ERR(kbd->reset))
-		return dev_err_probe(dev, PTR_ERR(kbd->reset), "reset gpio\n");
 
 	ret = devm_request_threaded_irq(dev, client->irq, NULL, pogo_irq,
 					IRQF_ONESHOT | IRQF_NO_AUTOEN, "pogo-kbd", kbd);
@@ -352,17 +392,15 @@ static void pogo_remove(struct i2c_client *client)
 	struct pogo_kbd *kbd = i2c_get_clientdata(client);
 
 	disable_irq(gpiod_to_irq(kbd->conn));
+	disable_irq(client->irq);
 	cancel_delayed_work_sync(&kbd->conn_work);
 	mutex_lock(&kbd->lock);
-	if (kbd->powered) {
-		kbd->powered = false;
-		pogo_remove_input(kbd);
+	/* also registered when a power cycle left the keyboard unpowered */
+	pogo_remove_input(kbd);
+	if (kbd->powered)
+		pogo_power(kbd, false);
+	else
 		mutex_unlock(&kbd->lock);
-		disable_irq(client->irq);
-		regulator_disable(kbd->vdd);
-		return;
-	}
-	mutex_unlock(&kbd->lock);
 }
 
 static const struct of_device_id pogo_of_match[] = {
