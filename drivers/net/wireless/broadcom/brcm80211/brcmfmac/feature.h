@@ -33,6 +33,7 @@
  * SCAN_V2: Version 2 scan params
  * EVENT_MSGS_EXT: Firmware supports event_msgs_ext for event masks
  * SAE_EXT: SAE authentication handled by user-space supplicant
+ * HOST_SFHLLC: host inserts the 802.2 LLC/SNAP header of TX data frames
  */
 #define BRCMF_FEAT_LIST \
 	BRCMF_FEAT_DEF(MBSS) \
@@ -63,7 +64,8 @@
 	BRCMF_FEAT_DEF(EVENT_MSGS_EXT) \
 	BRCMF_FEAT_DEF(SAE_EXT) \
 	BRCMF_FEAT_DEF(FBT) \
-	BRCMF_FEAT_DEF(OKC)
+	BRCMF_FEAT_DEF(OKC) \
+	BRCMF_FEAT_DEF(HOST_SFHLLC)
 
 /*
  * Quirks:

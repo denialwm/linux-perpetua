@@ -11,6 +11,8 @@
 #include <linux/types.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
+#include <linux/unaligned.h>
+#include <net/cfg80211.h>
 
 #include <brcm_hw_ids.h>
 #include <brcmu_utils.h>
@@ -24,6 +26,7 @@
 #include "flowring.h"
 #include "bus.h"
 #include "tracepoint.h"
+#include "feature.h"
 
 
 #define MSGBUF_IOCTL_RESP_TIMEOUT		msecs_to_jiffies(2000)
@@ -66,6 +69,7 @@
 #define BRCMF_MSGBUF_PKT_FLAGS_FRAME_802_11	0x02
 #define BRCMF_MSGBUF_PKT_FLAGS_FRAME_MASK	0x07
 #define BRCMF_MSGBUF_PKT_FLAGS_PRIO_SHIFT	5
+#define BRCMF_MSGBUF_PKT_FLAGS_HOST_SFH_LLC	0x10
 
 #define BRCMF_MSGBUF_TX_FLUSH_CNT1		32
 #define BRCMF_MSGBUF_TX_FLUSH_CNT2		96
@@ -733,6 +737,57 @@ static u32 brcmf_msgbuf_flowring_create(struct brcmf_msgbuf *msgbuf, int ifidx,
 }
 
 
+/* Firmware advertising "host_sfhllc" (BCM4389) takes TX data frames from
+ * the host already converted to 802.3 with the 802.1H LLC/SNAP header,
+ * flagged BRCMF_MSGBUF_PKT_FLAGS_HOST_SFH_LLC; an Ethernet II payload makes
+ * it trap. The original Ethernet header still goes in the work item.
+ */
+#define BRCMF_MSGBUF_LLC_SNAP_LEN	8
+
+static bool brcmf_msgbuf_tx_host_llc(struct brcmf_msgbuf *msgbuf, int ifidx)
+{
+	struct brcmf_if *ifp = brcmf_get_ifp(msgbuf->drvr, ifidx);
+
+	return ifp && brcmf_feat_is_enabled(ifp, BRCMF_FEAT_HOST_SFHLLC);
+}
+
+static int brcmf_msgbuf_tx_to_8023(struct sk_buff *skb)
+{
+	struct ethhdr eh;
+	u8 *llc;
+
+	if (skb_cow_head(skb, BRCMF_MSGBUF_LLC_SNAP_LEN))
+		return -ENOMEM;
+
+	memcpy(&eh, skb->data, ETH_HLEN);
+	skb_push(skb, BRCMF_MSGBUF_LLC_SNAP_LEN);
+	memcpy(skb->data, eh.h_dest, ETH_ALEN);
+	memcpy(skb->data + ETH_ALEN, eh.h_source, ETH_ALEN);
+	put_unaligned_be16(skb->len - ETH_HLEN, skb->data + 2 * ETH_ALEN);
+
+	llc = skb->data + ETH_HLEN;
+	if (eh.h_proto == htons(ETH_P_AARP) || eh.h_proto == htons(ETH_P_IPX))
+		memcpy(llc, bridge_tunnel_header, sizeof(bridge_tunnel_header));
+	else
+		memcpy(llc, rfc1042_header, sizeof(rfc1042_header));
+	memcpy(llc + sizeof(rfc1042_header), &eh.h_proto, sizeof(eh.h_proto));
+
+	return 0;
+}
+
+/* Undo brcmf_msgbuf_tx_to_8023(), for requeueing and for the TX status. */
+static void brcmf_msgbuf_tx_from_8023(struct sk_buff *skb)
+{
+	__be16 proto;
+
+	memcpy(&proto, skb->data + ETH_HLEN + sizeof(rfc1042_header),
+	       sizeof(proto));
+	memmove(skb->data + BRCMF_MSGBUF_LLC_SNAP_LEN, skb->data, 2 * ETH_ALEN);
+	skb_pull(skb, BRCMF_MSGBUF_LLC_SNAP_LEN);
+	((struct ethhdr *)skb->data)->h_proto = proto;
+}
+
+
 static void brcmf_msgbuf_txflow(struct brcmf_msgbuf *msgbuf, u16 flowid)
 {
 	struct brcmf_flowring *flow = msgbuf->flow;
@@ -744,6 +799,9 @@ static void brcmf_msgbuf_txflow(struct brcmf_msgbuf *msgbuf, u16 flowid)
 	dma_addr_t physaddr;
 	u32 pktid;
 	struct msgbuf_tx_msghdr *tx_msghdr;
+	struct ethhdr eh;
+	bool host_llc;
+	u8 ifidx;
 	u64 address;
 
 	commonring = msgbuf->flowrings[flowid];
@@ -761,9 +819,19 @@ static void brcmf_msgbuf_txflow(struct brcmf_msgbuf *msgbuf, u16 flowid)
 			break;
 		}
 		skb_orphan(skb);
+		memcpy(&eh, skb->data, ETH_HLEN);
+		ifidx = brcmf_flowring_ifidx_get(flow, flowid);
+		host_llc = brcmf_msgbuf_tx_host_llc(msgbuf, ifidx);
+		if (host_llc && brcmf_msgbuf_tx_to_8023(skb)) {
+			brcmf_flowring_reinsert(flow, flowid, skb);
+			break;
+		}
 		if (brcmf_msgbuf_alloc_pktid(msgbuf->drvr->bus_if->dev,
-					     msgbuf->tx_pktids, skb, ETH_HLEN,
+					     msgbuf->tx_pktids, skb,
+					     host_llc ? 0 : ETH_HLEN,
 					     &physaddr, &pktid)) {
+			if (host_llc)
+				brcmf_msgbuf_tx_from_8023(skb);
 			brcmf_flowring_reinsert(flow, flowid, skb);
 			bphy_err(drvr, "No PKTID available !!\n");
 			break;
@@ -772,6 +840,8 @@ static void brcmf_msgbuf_txflow(struct brcmf_msgbuf *msgbuf, u16 flowid)
 		if (!ret_ptr) {
 			brcmf_msgbuf_get_pktid(msgbuf->drvr->bus_if->dev,
 					       msgbuf->tx_pktids, pktid);
+			if (host_llc)
+				brcmf_msgbuf_tx_from_8023(skb);
 			brcmf_flowring_reinsert(flow, flowid, skb);
 			break;
 		}
@@ -781,13 +851,16 @@ static void brcmf_msgbuf_txflow(struct brcmf_msgbuf *msgbuf, u16 flowid)
 
 		tx_msghdr->msg.msgtype = MSGBUF_TYPE_TX_POST;
 		tx_msghdr->msg.request_id = cpu_to_le32(pktid + 1);
-		tx_msghdr->msg.ifidx = brcmf_flowring_ifidx_get(flow, flowid);
+		tx_msghdr->msg.ifidx = ifidx;
 		tx_msghdr->flags = BRCMF_MSGBUF_PKT_FLAGS_FRAME_802_3;
 		tx_msghdr->flags |= (skb->priority & 0x07) <<
 				    BRCMF_MSGBUF_PKT_FLAGS_PRIO_SHIFT;
+		if (host_llc)
+			tx_msghdr->flags |= BRCMF_MSGBUF_PKT_FLAGS_HOST_SFH_LLC;
 		tx_msghdr->seg_cnt = 1;
-		memcpy(tx_msghdr->txhdr, skb->data, ETH_HLEN);
-		tx_msghdr->data_len = cpu_to_le16(skb->len - ETH_HLEN);
+		memcpy(tx_msghdr->txhdr, &eh, ETH_HLEN);
+		tx_msghdr->data_len = cpu_to_le16(host_llc ? skb->len :
+						  skb->len - ETH_HLEN);
 		address = (u64)physaddr;
 		tx_msghdr->data_buf_addr.high_addr = cpu_to_le32(address >> 32);
 		tx_msghdr->data_buf_addr.low_addr =
@@ -928,6 +1001,11 @@ brcmf_msgbuf_process_txstatus(struct brcmf_msgbuf *msgbuf, void *buf)
 				     msgbuf->tx_pktids, idx);
 	if (!skb)
 		return;
+
+	if (skb->len >= ETH_HLEN &&
+	    get_unaligned_be16(skb->data + 2 * ETH_ALEN) < ETH_P_802_3_MIN &&
+	    brcmf_msgbuf_tx_host_llc(msgbuf, tx_status->msg.ifidx))
+		brcmf_msgbuf_tx_from_8023(skb);
 
 	if (!brcmf_msgbuf_get_flowid(msgbuf, flow_ring_id, &flowid)) {
 		brcmf_txfinalize(brcmf_get_ifp(msgbuf->drvr, tx_status->msg.ifidx),
