@@ -207,7 +207,8 @@ def main():
               'a root compatible names a SoC that many devices share; name the device too')
         known = phandles(tree, set())
         for name, node in handoff.get('/nodes', {}).items():
-            missing = [p for p in ['stock-path', 'stock-property', 'stock-key', 'target',
+            # stock-key is optional: without it the property is the address.
+            missing = [p for p in ['stock-path', 'stock-property', 'target',
                                    'target-property'] if p not in node]
             target = node.get('target', '').strip('<>')
             check(name.endswith('-address') and not missing and target and

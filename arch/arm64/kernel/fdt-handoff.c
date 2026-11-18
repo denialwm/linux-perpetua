@@ -296,6 +296,7 @@ static int __init fdt_handoff_hex(char c)
 
 /*
  * Parses the first "KEY=XX:XX:XX:XX:XX:XX" of a command line or bootconfig,
+ * or without a KEY a property that is just "XX:XX:XX:XX:XX:XX",
  * byte-reversed for a little-endian property (local-bd-address). Returns
  * false when it is absent or malformed: the device then keeps its own
  * default address instead of the boot failing.
@@ -303,11 +304,12 @@ static int __init fdt_handoff_hex(char c)
 static bool __init fdt_handoff_macaddr(const char *source, const char *key,
 				       bool reverse, u8 address[6])
 {
-	const char *at = fdt_handoff_word(source, key);
+	const char *at = key ? fdt_handoff_word(source, key) : source;
 
 	if (!at)
 		return false;
-	at += strlen(key);
+	if (key)
+		at += strlen(key);
 	for (int i = 0; i < 6; i++) {
 		int hi = fdt_handoff_hex(at[i * 3]);
 		int lo = hi < 0 ? -1 : fdt_handoff_hex(at[i * 3 + 1]);
@@ -343,7 +345,8 @@ static int __init fdt_handoff_import(void *output, const void *stock,
 	u8 address[6];
 
 	target = fdt_getprop(mainline, import, "target", &length);
-	if (!path || !name || !key || !*key || !property || !target || length != 4)
+	if (!path || !name || (key && !*key) || !property || !target ||
+	    length != 4)
 		return -FDT_ERR_BADVALUE;
 	node = fdt_node_offset_by_phandle(output, fdt32_ld(target));
 	if (node < 0)

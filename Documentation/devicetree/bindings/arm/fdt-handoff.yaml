@@ -65,8 +65,9 @@ patternProperties:
     additionalProperties: false
     description:
       A MAC or Bluetooth address that the bootloader passes as text, for
-      example as KEY=12:34:56:78:9a:bc in its boot arguments. When the address
-      is missing or malformed, the target keeps its own.
+      example as KEY=12:34:56:78:9a:bc in its boot arguments, or as a
+      property of its own. When the address is missing or malformed, the
+      target keeps its own.
 
     properties:
       stock-path:
@@ -81,7 +82,8 @@ patternProperties:
         $ref: /schemas/types.yaml#/definitions/string
         description:
           The address follows the first word that starts with this key, as
-          six hexadecimal bytes separated by colons.
+          six hexadecimal bytes separated by colons. Without it, the whole
+          property is the address.
 
       target:
         $ref: /schemas/types.yaml#/definitions/phandle
@@ -100,7 +102,6 @@ patternProperties:
     required:
       - stock-path
       - stock-property
-      - stock-key
       - target
       - target-property
 
