@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/siliconmitus,sm5714-fuel-gauge.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Silicon Mitus SM5714 fuel gauge
+
+maintainers:
+  - rafroad <rafan.second@gmail.com>
+
+description:
+  The fuel gauge of the SM5714 charger and power management chip. The
+  charger block of the same chip answers at I2C address 0x49 on the same
+  bus; the driver reads its status from there. The chip has one shared
+  interrupt line for its charger, MUIC and gauge blocks.
+
+allOf:
+  - $ref: power-supply.yaml#
+
+properties:
+  compatible:
+    const: siliconmitus,sm5714-fuel-gauge
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description: The chip's shared, level-low interrupt line.
+
+  io-channels:
+    maxItems: 1
+    description:
+      ADC channel of the battery's thermistor, processed to a temperature.
+      The gauge's own temperature follows the chip, not the cells.
+
+  io-channel-names:
+    const: batt-therm
+
+required:
+  - compatible
+  - reg
+  - io-channels
+  - io-channel-names
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/iio/qcom,spmi-vadc.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        fuel-gauge@71 {
+            compatible = "siliconmitus,sm5714-fuel-gauge";
+            reg = <0x71>;
+            interrupts-extended = <&tlmm 84 IRQ_TYPE_LEVEL_LOW>;
+            io-channels = <&pm6150l_adc ADC5_GPIO2_100K_PU>;
+            io-channel-names = "batt-therm";
+        };
+    };
+...
