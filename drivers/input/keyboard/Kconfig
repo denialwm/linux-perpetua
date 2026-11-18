@@ -556,6 +556,18 @@ config KEYBOARD_GOLDFISH_EVENTS
 	  To compile this driver as a module, choose M here: the
 	  module will be called goldfish-events.
 
+config KEYBOARD_SAMSUNG_POGO
+	tristate "Samsung Book Cover Keyboard (pogo connector)"
+	depends on I2C
+	select INPUT_MATRIXKMAP
+	help
+	  Say Y here for the Samsung Book Cover Keyboard (EF-DT970,
+	  EF-DT730 Slim) attached to the pogo connector of a Galaxy Tab
+	  S7 FE: an STM32 microcontroller on I2C.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called samsung-pogo-kbd.
+
 config KEYBOARD_STOWAWAY
 	tristate "Stowaway keyboard"
 	select SERIO
