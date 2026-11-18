@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/samsung,pogo-keyboard.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Samsung Book Cover Keyboard on the pogo connector
+
+maintainers:
+  - rafroad <rafan.second@gmail.com>
+
+description:
+  The Book Cover Keyboards of the Galaxy Tab S7 FE (EF-DT730 Slim and
+  EF-DT970) attach through pogo pins. Their STM32 microcontroller answers
+  on I2C while the tablet powers it, which it does while the connect line
+  is high. The microcontroller reports keys as matrix positions.
+
+allOf:
+  - $ref: /schemas/input/matrix-keymap.yaml#
+
+properties:
+  compatible:
+    const: samsung,pogo-keyboard
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description: Level-low event line of the keyboard microcontroller.
+
+  vdd-supply:
+    description: Supply of the keyboard on the pogo pins.
+
+  connect-gpios:
+    maxItems: 1
+    description: High while a keyboard is attached.
+
+  reset-gpios:
+    maxItems: 1
+    description: Reset of the keyboard microcontroller.
+
+  linux,keymap: true
+
+  samsung,keymap-slim:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description:
+      Keymap of the EF-DT730 Slim cover, in the linux,keymap format. Its
+      matrix differs from the EF-DT970's, which uses linux,keymap.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - vdd-supply
+  - connect-gpios
+  - reset-gpios
+  - linux,keymap
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/input/input.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        keyboard@2a {
+            compatible = "samsung,pogo-keyboard";
+            reg = <0x2a>;
+            interrupts-extended = <&tlmm 9 IRQ_TYPE_LEVEL_LOW>;
+            connect-gpios = <&tlmm 8 GPIO_ACTIVE_HIGH>;
+            reset-gpios = <&tlmm 10 GPIO_ACTIVE_LOW>;
+            vdd-supply = <&vreg_l6a>;
+            linux,keymap = <MATRIX_KEY(0, 4, KEY_Q)>;
+            samsung,keymap-slim = <MATRIX_KEY(0, 4, KEY_Q)>;
+        };
+    };
+...
