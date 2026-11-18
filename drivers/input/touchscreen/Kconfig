@@ -600,6 +600,16 @@ config TOUCHSCREEN_WACOM_W8001
 	  To compile this driver as a module, choose M here: the
 	  module will be called wacom_w8001.
 
+config TOUCHSCREEN_WACOM_W9021
+	tristate "Wacom W9021 EMR digitizer (Samsung S Pen)"
+	depends on I2C
+	help
+	  Say Y here for the Wacom W9021 pen digitizer with Samsung's
+	  firmware, as on the Galaxy Tab S7 FE (S Pen).
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called wacom_w9021.
+
 config TOUCHSCREEN_WACOM_I2C
 	tristate "Wacom Tablet support (I2C)"
 	depends on I2C
