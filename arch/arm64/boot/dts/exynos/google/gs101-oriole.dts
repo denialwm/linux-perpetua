@@ -38,6 +38,13 @@
 			stock-compatible = "google,GS101 Oriole";
 			stock-model = "Oriole DVT";
 			keep-initrd;
+
+			wifi-address {
+				stock-path = "/chosen/config";
+				stock-property = "wlan_mac1";
+				target = <&wifi>;
+				target-property = "local-mac-address";
+			};
 		};
 	};
 
@@ -170,6 +177,13 @@
 	/* The Wi-Fi chip's 32 kHz sleep clock */
 	clocks = <&s2mpg10_clk S2MPS11_CLK_BT>;
 	vpcie3v3-supply = <&wlan_en>;
+
+	wifi: wifi@0 {
+		compatible = "pci14e4,4441";
+		reg = <0x10000 0x0 0x0 0x0 0x0>;
+		/* Filled in from the bootloader (fdt-handoff wifi-address) */
+		local-mac-address = [00 00 00 00 00 00];
+	};
 };
 
 &pinctrl_gpio_alive {
