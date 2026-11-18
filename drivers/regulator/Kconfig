@@ -668,6 +668,18 @@ config REGULATOR_MAX77675
 	  It supports four programmable buck-boost outputs.
 	  Say Y here to enable the regulator driver
 
+config REGULATOR_MAX77816
+	tristate "Maxim MAX77816 buck-boost (fixed 5.0 V)"
+	depends on I2C && OF
+	help
+	  Support for the Maxim MAX77816 buck-boost as a switched 5.0 V supply,
+	  the backlight boost of the Samsung Galaxy Tab S7 FE panel. Enabling
+	  the regulator raises the enable GPIO and programs the 5.0 V output;
+	  disabling it lowers the GPIO. No other register is written.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called max77816-regulator.
+
 config REGULATOR_MAX77857
 	tristate "ADI MAX77857/MAX77831 regulator support"
 	depends on I2C
