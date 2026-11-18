@@ -427,6 +427,18 @@
  */
 /delete-node/ &pil_gpu_mem;
 
+/*
+ * Samsung's map of the peripheral image regions differs from sm6350.dtsi's (Fairphone's): the ADSP
+ * gets 64 MB at 0x84800000 and camera/NPU/video/CDSP follow it. Values: rev7 tree reserved-memory
+ * (pil_adsp_mem L26520-26523 and the four after it). The whole block 0x84800000-0x8b500000 is
+ * redefined, so no region overlaps another; it ends where wlan_fw_mem starts (same in both maps).
+ */
+/delete-node/ &pil_adsp_mem;
+/delete-node/ &pil_camera_mem;
+/delete-node/ &pil_npu_mem;
+/delete-node/ &pil_video_mem;
+/delete-node/ &pil_cdsp_mem;
+
 &reserved_memory {
 	/*
 	 * The zap image is relocatable, so the loader tells the secure world where it sits
@@ -439,6 +451,31 @@
 	 * tail 0x8b717000-0x8b718000 including 0xc00 of padding), so no reservation overlaps
 	 * another and no page is left half mapped.
 	 */
+	pil_adsp_mem: memory@84800000 {
+		reg = <0x0 0x84800000 0x0 0x4000000>;
+		no-map;
+	};
+
+	pil_camera_mem: memory@88800000 {
+		reg = <0x0 0x88800000 0x0 0x500000>;
+		no-map;
+	};
+
+	pil_npu_mem: memory@88d00000 {
+		reg = <0x0 0x88d00000 0x0 0x500000>;
+		no-map;
+	};
+
+	pil_video_mem: memory@89200000 {
+		reg = <0x0 0x89200000 0x0 0x500000>;
+		no-map;
+	};
+
+	pil_cdsp_mem: memory@89700000 {
+		reg = <0x0 0x89700000 0x0 0x1e00000>;
+		no-map;
+	};
+
 	pil_gpu_head: memory@8b715400 {
 		reg = <0x0 0x8b715400 0x0 0xc00>;
 		no-map;
@@ -472,6 +509,12 @@
 /* The modem DSP: Wi-Fi's firmware service (WLFW) runs there. Calls and data are not set up. */
 &mpss {
 	firmware-name = "qcom/sm7225/gts7xllite/modem.mdt";
+	status = "okay";
+};
+
+/* The audio DSP (q6afe, q6asm, q6adm). The sensors (SSC) also run there; not set up yet. */
+&adsp {
+	firmware-name = "qcom/sm7225/gts7xllite/adsp.mdt";
 	status = "okay";
 };
 
