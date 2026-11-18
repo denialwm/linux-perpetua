@@ -22,4 +22,11 @@ properties:
     description:
       boot firmware is incorrectly passing the address in big-endian order
 
+  qcom,no-inband-sleep:
+    type: boolean
+    description:
+      The board runs the controller without software in-band sleep, as its
+      vendor NVM configures it. The host leaves the NVM's in-band sleep bit
+      as shipped and does not use the sleep protocol on the UART.
+
 additionalProperties: true
