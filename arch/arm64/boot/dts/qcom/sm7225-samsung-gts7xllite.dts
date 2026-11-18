@@ -29,6 +29,11 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 
+	aliases {
+		/* qcom_geni_serial takes the port line from the alias (as FP4) */
+		serial1 = &uart1;
+	};
+
 	chosen {
 		#address-cells = <2>;
 		#size-cells = <2>;
@@ -176,6 +181,19 @@
 		 */
 		vreg_l12a: ldo12 {
 			regulator-name = "vreg_l12a";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * Bluetooth I/O (qca,bt-vdd-io-supply): pm6350_l11, stock min = max = init
+		 * 1.8 V (live fdt L967-974), modes LPM/HPM with HPM from 1 uA
+		 * (qcom,mode-threshold-currents <0 1>).
+		 * Shared 1.8 V I/O rail on stock (NFC, audio codec: 8 users).
+		 */
+		vreg_l11a: ldo11 {
+			regulator-name = "vreg_l11a";
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
@@ -516,6 +534,67 @@
 	vdd-1.3-rfa-supply = <&vreg_l2e>;
 	vdd-3.3-ch0-supply = <&vreg_l10e>;
 	status = "okay";
+};
+
+/* Bluetooth on QUP0 SE1 (stock qupv3_se1_4uart @884000, gpio61-64) */
+&qupv3_id_0 {
+	status = "okay";
+};
+
+/*
+ * Bluetooth UART pin biases as sm7225-fairphone-fp4.dts (same SoC, pins and chip family): with
+ * stock's no-pull RX the line floats while the chip sleeps and the first command after idle
+ * timed out.
+ */
+&qup_uart1_cts {
+	/* bus-hold keeps CTS at a low-power level whether the module drives it or is unpowered */
+	/delete-property/ bias-disable;
+	bias-bus-hold;
+};
+
+&qup_uart1_rts {
+	/* we drive RTS, so no pull */
+	/delete-property/ bias-pull-down;
+	bias-disable;
+};
+
+&qup_uart1_rx {
+	/* pull-up: no garbage while the module's TX is tri-stated (off or asleep) */
+	/delete-property/ bias-disable;
+	bias-pull-up;
+};
+
+&qup_uart1_tx {
+	/* we drive TX, so no pull */
+	/delete-property/ bias-pull-up;
+	bias-disable;
+};
+
+&uart1 {
+	status = "okay";
+
+	bluetooth {
+		/*
+		 * Stock describes it as qca,wcn3990, but the chip answers the version request in
+		 * WCN3991 form (15 bytes); firmware crbtfw32.tlv + crnv32u.bin.
+		 */
+		compatible = "qcom,wcn3991-bt";
+
+		vddio-supply = <&vreg_l11a>;	/* qca,bt-vdd-io 1.7-1.9 V */
+		vddxo-supply = <&vreg_l7a>;	/* qca,bt-vdd-xtal 1.7-1.9 V */
+		vddrf-supply = <&vreg_l2e>;	/* qca,bt-vdd-core 1.304 V */
+		vddch0-supply = <&vreg_l10e>;	/* qca,bt-vdd-pa 3.0-3.3 V */
+		swctrl-gpios = <&tlmm 69 GPIO_ACTIVE_HIGH>;	/* qca,bt-sw-ctrl-gpio */
+
+		max-speed = <3200000>;
+
+		/*
+		 * As stock (sys.config.ibs.enable=false; NVM crnv32u.bin tag 17 with the in-band
+		 * sleep bit clear): with mainline's forced in-band sleep the first command after
+		 * idle timed out and the controller crash-looped.
+		 */
+		qcom,no-inband-sleep;
+	};
 };
 
 /*
