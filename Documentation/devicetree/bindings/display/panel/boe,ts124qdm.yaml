@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/panel/boe,ts124qdm.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: BOE TS124QDM DSI panel
+
+maintainers:
+  - rafroad <rafan.second@gmail.com>
+
+description:
+  The 12.4" 1600x2560 LCD of the Samsung Galaxy Tab S7 FE, on a FocalTech
+  FT8203 touch and display controller, in video mode with DSC. Its other
+  supplies are left to the bootloader for now.
+
+allOf:
+  - $ref: panel-common.yaml#
+
+properties:
+  compatible:
+    const: boe,ts124qdm
+
+  reg:
+    maxItems: 1
+    description: DSI virtual channel
+
+  port: true
+  reset-gpios: true
+
+  boost-supply:
+    description: 5 V backlight boost; switched off before the panel stops
+
+required:
+  - compatible
+  - reg
+  - port
+  - reset-gpios
+  - boost-supply
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    dsi {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        panel@0 {
+            compatible = "boe,ts124qdm";
+            reg = <0>;
+
+            reset-gpios = <&tlmm 73 GPIO_ACTIVE_LOW>;
+            boost-supply = <&backlight_boost>;
+
+            port {
+                endpoint {
+                    remote-endpoint = <&mdss_dsi0_out>;
+                };
+            };
+        };
+    };
+...
