@@ -24355,6 +24355,23 @@ S:	Maintained
 F:	Documentation/admin-guide/laptops/samsung-galaxybook.rst
 F:	drivers/platform/x86/samsung-galaxybook.c
 
+SAMSUNG GALAXY TAB S7 FE (GTS7XLLITE) SUPPORT
+M:	rafroad <rafan.second@gmail.com>
+S:	Maintained
+F:	Documentation/devicetree/bindings/display/panel/boe,ts124qdm.yaml
+F:	Documentation/devicetree/bindings/input/samsung,pogo-keyboard.yaml
+F:	Documentation/devicetree/bindings/input/touchscreen/focaltech,ft8203-spi.yaml
+F:	Documentation/devicetree/bindings/input/touchscreen/wacom,w9021.yaml
+F:	Documentation/devicetree/bindings/power/supply/siliconmitus,sm5714-fuel-gauge.yaml
+F:	Documentation/devicetree/bindings/regulator/maxim,max77816.yaml
+F:	arch/arm64/boot/dts/qcom/sm7225-samsung-gts7xllite.dts
+F:	devices/gts7xllite/
+F:	drivers/gpu/drm/panel/panel-boe-ts124qdm.c
+F:	drivers/input/keyboard/samsung-pogo-kbd.c
+F:	drivers/input/touchscreen/wacom_w9021.c
+F:	drivers/power/supply/sm5714_fuel_gauge.c
+F:	drivers/regulator/max77816-regulator.c
+
 SAMSUNG INTERCONNECT DRIVERS
 M:	Sylwester Nawrocki <s.nawrocki@samsung.com>
 M:	Artur Świgoń <a.swigon@samsung.com>
