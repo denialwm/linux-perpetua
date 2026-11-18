@@ -90,6 +90,19 @@ config ARM_EXYNOS_BUS_DEVFREQ
 	  and adjusts the operating frequencies and voltages with OPP support.
 	  This does not yet operate with optimal voltages.
 
+config ARM_GS101_MIF_DEVFREQ
+	tristate "Google gs101 MIF DEVFREQ Driver"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	depends on CPU_FREQ
+	select DEVFREQ_GOV_PASSIVE
+	select PM_OPP
+	help
+	  This adds a devfreq driver for the memory interface (MIF) of the
+	  Google gs101 SoC, which clocks the DRAM controllers and the memory
+	  bus. The rate is set through the ACPM firmware, which also sets
+	  the voltage, and follows the CPU frequencies with the passive
+	  governor.
+
 config ARM_HISI_UNCORE_DEVFREQ
 	tristate "HiSilicon uncore DEVFREQ Driver"
 	depends on ACPI && ACPI_PPTT && PCC
