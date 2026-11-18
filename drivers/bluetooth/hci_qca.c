@@ -253,9 +253,30 @@ struct qca_serdev {
 	u32 init_speed;
 	u32 oper_speed;
 	bool bdaddr_property_broken;
+	bool no_ibs;
 	bool support_hfp_hw_offload;
 	const char *firmware_name[2];
 };
+
+/* True when the board runs the controller without in-band sleep (qcom,no-inband-sleep) */
+static bool qca_no_ibs(struct hci_uart *hu)
+{
+	struct qca_serdev *qcadev;
+
+	if (!hu->serdev)
+		return false;
+	qcadev = serdev_device_get_drvdata(hu->serdev);
+	return qcadev && qcadev->no_ibs;
+}
+
+/* In-band sleep back on after setup, recovery or a memory dump, unless the board runs without it */
+static void qca_ibs_enable(struct hci_uart *hu)
+{
+	struct qca_data *qca = hu->priv;
+
+	if (!qca_no_ibs(hu))
+		clear_bit(QCA_IBS_DISABLED, &qca->flags);
+}
 
 static int qca_regulator_enable(struct qca_serdev *qcadev);
 static void qca_regulator_disable(struct qca_serdev *qcadev);
@@ -1121,7 +1142,7 @@ static void qca_controller_memdump(struct work_struct *work)
 				qca->qca_memdump = NULL;
 				qca->memdump_state = QCA_MEMDUMP_COLLECTED;
 				clear_and_wake_up_bit(QCA_MEMDUMP_COLLECTION, &qca->flags);
-				clear_bit(QCA_IBS_DISABLED, &qca->flags);
+				qca_ibs_enable(hu);
 				kfree_skb(skb);
 				mutex_unlock(&qca->hci_memdump_lock);
 				return;
@@ -1142,7 +1163,7 @@ static void qca_controller_memdump(struct work_struct *work)
 				qca->memdump_state = QCA_MEMDUMP_COLLECTED;
 				cancel_delayed_work(&qca->ctrl_memdump_timeout);
 				clear_and_wake_up_bit(QCA_MEMDUMP_COLLECTION, &qca->flags);
-				clear_bit(QCA_IBS_DISABLED, &qca->flags);
+				qca_ibs_enable(hu);
 				mutex_unlock(&qca->hci_memdump_lock);
 				return;
 			}
@@ -1873,7 +1894,7 @@ static void qca_hw_error(struct hci_dev *hdev, u8 code)
 		msleep(100);
 
 		clear_bit(QCA_SSR_TRIGGERED, &qca->flags);
-		clear_bit(QCA_IBS_DISABLED, &qca->flags);
+		qca_ibs_enable(hu);
 
 		qca->tx_ibs_state = HCI_IBS_TX_AWAKE;
 		qca->memdump_state = QCA_MEMDUMP_IDLE;
@@ -2238,13 +2259,13 @@ retry:
 
 	/* Setup patch / NVM configurations */
 	ret = qca_uart_setup(hdev, qca_baudrate, soc_type, ver,
-			firmware_name, rampatch_name);
+			firmware_name, rampatch_name, qca_no_ibs(hu));
 	if (!ret) {
 		if (soc_type == QCA_WCN7860) {
 			bt_dev_info(hdev, "Pad4 Peri post-Bluetooth-firmware checkpoint");
 			qca_pad4_read_peri_version(hu);
 		}
-		clear_bit(QCA_IBS_DISABLED, &qca->flags);
+		qca_ibs_enable(hu);
 		qca_debugfs_init(hdev);
 		hu->hdev->hw_error = qca_hw_error;
 		hu->hdev->reset = qca_reset;
@@ -2646,6 +2667,7 @@ static int qca_serdev_probe(struct serdev_device *serdev)
 
 	qcadev->bdaddr_property_broken = device_property_read_bool(&serdev->dev,
 			"qcom,local-bd-address-broken");
+	qcadev->no_ibs = device_property_read_bool(&serdev->dev, "qcom,no-inband-sleep");
 
 	if (data)
 		qcadev->btsoc_type = data->soc_type;
@@ -2895,10 +2917,10 @@ static int __maybe_unused qca_suspend(struct device *dev)
 
 	set_bit(QCA_SUSPENDING, &qca->flags);
 
-	/* if BT SoC is running with default firmware then it does not
-	 * support in-band sleep
+	/* if BT SoC is running with default firmware, or the board runs it
+	 * without in-band sleep, there is no sleep handshake to do
 	 */
-	if (test_bit(QCA_ROM_FW, &qca->flags))
+	if (test_bit(QCA_ROM_FW, &qca->flags) || qca_no_ibs(hu))
 		return 0;
 
 	/* During SSR after memory dump collection, controller will be

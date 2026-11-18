@@ -442,9 +442,11 @@ static int qca_tlv_check_data(struct hci_dev *hdev,
 
 				/* HCI transport layer parameters
 				 * enabling software inband sleep
-				 * onto controller side.
+				 * onto controller side, unless the
+				 * board runs without it.
 				 */
-				tlv_nvm->data[0] |= 0x80;
+				if (!config->no_ibs)
+					tlv_nvm->data[0] |= 0x80;
 
 				/* UART Baud Rate */
 				if (soc_type >= QCA_WCN3991)
@@ -769,9 +771,10 @@ static void qca_get_nvm_name_by_board(char *fwname, size_t max_size,
 
 int qca_uart_setup(struct hci_dev *hdev, uint8_t baudrate,
 		   enum qca_btsoc_type soc_type, struct qca_btsoc_version ver,
-		   const char *firmware_name, const char *rampatch_name)
+		   const char *firmware_name, const char *rampatch_name,
+		   bool no_ibs)
 {
-	struct qca_fw_config config = {};
+	struct qca_fw_config config = { .no_ibs = no_ibs };
 	const char *variant = "";
 	int err;
 	u8 rom_ver = 0;

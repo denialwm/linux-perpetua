@@ -98,6 +98,7 @@ struct qca_fw_config {
 	enum qca_tlv_dnld_mode dnld_mode;
 	enum qca_tlv_dnld_mode dnld_type;
 	bdaddr_t bdaddr;
+	bool no_ibs;	/* keep in-band sleep as the vendor NVM has it */
 };
 
 struct edl_event_hdr {
@@ -166,7 +167,8 @@ enum qca_btsoc_type {
 int qca_set_bdaddr_rome(struct hci_dev *hdev, const bdaddr_t *bdaddr);
 int qca_uart_setup(struct hci_dev *hdev, uint8_t baudrate,
 		   enum qca_btsoc_type soc_type, struct qca_btsoc_version ver,
-		   const char *firmware_name, const char *rampatch_name);
+		   const char *firmware_name, const char *rampatch_name,
+		   bool no_ibs);
 int qca_read_soc_version(struct hci_dev *hdev, struct qca_btsoc_version *ver,
 			 enum qca_btsoc_type);
 int qca_set_bdaddr(struct hci_dev *hdev, const bdaddr_t *bdaddr);
@@ -182,7 +184,8 @@ static inline int qca_uart_setup(struct hci_dev *hdev, uint8_t baudrate,
 				 enum qca_btsoc_type soc_type,
 				 struct qca_btsoc_version ver,
 				 const char *firmware_name,
-				 const char *rampatch_name)
+				 const char *rampatch_name,
+				 bool no_ibs)
 {
 	return -EOPNOTSUPP;
 }
