@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/touchscreen/focaltech,ft8203-spi.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: FocalTech FT8203 touch controller on SPI
+
+maintainers:
+  - rafroad <rafan.second@gmail.com>
+
+description:
+  The touch part of the FocalTech FT8203 display driver (TDDI) of the
+  Galaxy Tab S7 FE. Its firmware lives in RAM and is downloaded after each
+  power-on of the panel.
+
+allOf:
+  - $ref: /schemas/spi/spi-peripheral-props.yaml#
+
+properties:
+  compatible:
+    const: focaltech,ft8203-spi
+
+  reg:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    spi {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        touch@0 {
+            compatible = "focaltech,ft8203-spi";
+            reg = <0>;
+            spi-max-frequency = <6000000>;
+        };
+    };
+...
