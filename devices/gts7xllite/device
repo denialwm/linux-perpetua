@@ -1,0 +1,5 @@
+# Samsung Galaxy Tab S7 FE 5G (SM-T736B)
+name='Samsung Galaxy Tab S7 FE 5G'
+vendor=qcom
+soc=sm7225
+boot=android-v2
