@@ -127,6 +127,7 @@ static const struct brcmf_firmware_mapping brcmf_pcie_fwnames[] = {
 
 /* backplane addres space accessed by BAR0 */
 #define	BRCMF_PCIE_BAR0_WINDOW			0x80
+#define	BRCMF_PCIE_BAR1_WINDOW			0x84
 #define BRCMF_PCIE_BAR0_REG_SIZE		0x1000
 #define	BRCMF_PCIE_BAR0_WRAPPERBASE		0x70
 
@@ -356,6 +357,10 @@ struct brcmf_pciedev_info {
 	const struct brcmf_pcie_reginfo *reginfo;
 	void __iomem *regs;
 	void __iomem *tcm;
+	u32 tcm_size;
+	u32 tcm_window;
+	bool tcm_windowed;
+	spinlock_t tcm_lock; /* tcm_window and the BAR1 window register */
 	u32 ram_base;
 	u32 ram_size;
 	struct brcmf_chip *ci;
@@ -550,21 +555,75 @@ brcmf_pcie_write_pcie32(struct brcmf_pciedev_info *devinfo, u32 reg_offset,
 }
 
 
+/* The TCM BAR shows one BAR-sized, BAR-aligned window of the backplane,
+ * selected by BRCMF_PCIE_BAR1_WINDOW. When the chip RAM does not fit in
+ * the window at its reset position (BCM4389: RAM 0x200000-0x49ffff behind
+ * a 4 MiB BAR), the window is moved for each access. The caller holds
+ * tcm_lock and must not cross the end of the window.
+ */
+static void __iomem *
+brcmf_pcie_tcm_map(struct brcmf_pciedev_info *devinfo, u32 mem_offset)
+{
+	u32 window;
+
+	lockdep_assert_held(&devinfo->tcm_lock);
+
+	if (!devinfo->tcm_windowed)
+		return devinfo->tcm + mem_offset;
+
+	window = mem_offset & ~(devinfo->tcm_size - 1);
+	if (window != devinfo->tcm_window) {
+		pci_write_config_dword(devinfo->pdev, BRCMF_PCIE_BAR1_WINDOW,
+				       window);
+		devinfo->tcm_window = window;
+	}
+
+	return devinfo->tcm + (mem_offset - window);
+}
+
+
+static void brcmf_pcie_init_tcm_window(struct brcmf_pciedev_info *devinfo)
+{
+	u32 ram_end = devinfo->ci->rambase + devinfo->ci->ramsize;
+	unsigned long flags;
+
+	spin_lock_irqsave(&devinfo->tcm_lock, flags);
+	devinfo->tcm_windowed = ram_end > devinfo->tcm_size;
+	/* Unknown position: the first access programs it. */
+	devinfo->tcm_window = U32_MAX;
+	spin_unlock_irqrestore(&devinfo->tcm_lock, flags);
+
+	if (devinfo->tcm_windowed)
+		brcmf_dbg(PCIE, "RAM end 0x%x beyond TCM BAR size 0x%x, moving the BAR1 window\n",
+			  ram_end, devinfo->tcm_size);
+}
+
+
 static u8
 brcmf_pcie_read_tcm8(struct brcmf_pciedev_info *devinfo, u32 mem_offset)
 {
-	void __iomem *address = devinfo->tcm + mem_offset;
+	unsigned long flags;
+	u8 value;
 
-	return (ioread8(address));
+	spin_lock_irqsave(&devinfo->tcm_lock, flags);
+	value = ioread8(brcmf_pcie_tcm_map(devinfo, mem_offset));
+	spin_unlock_irqrestore(&devinfo->tcm_lock, flags);
+
+	return value;
 }
 
 
 static u16
 brcmf_pcie_read_tcm16(struct brcmf_pciedev_info *devinfo, u32 mem_offset)
 {
-	void __iomem *address = devinfo->tcm + mem_offset;
+	unsigned long flags;
+	u16 value;
 
-	return (ioread16(address));
+	spin_lock_irqsave(&devinfo->tcm_lock, flags);
+	value = ioread16(brcmf_pcie_tcm_map(devinfo, mem_offset));
+	spin_unlock_irqrestore(&devinfo->tcm_lock, flags);
+
+	return value;
 }
 
 
@@ -572,9 +631,11 @@ static void
 brcmf_pcie_write_tcm16(struct brcmf_pciedev_info *devinfo, u32 mem_offset,
 		       u16 value)
 {
-	void __iomem *address = devinfo->tcm + mem_offset;
+	unsigned long flags;
 
-	iowrite16(value, address);
+	spin_lock_irqsave(&devinfo->tcm_lock, flags);
+	iowrite16(value, brcmf_pcie_tcm_map(devinfo, mem_offset));
+	spin_unlock_irqrestore(&devinfo->tcm_lock, flags);
 }
 
 
@@ -600,9 +661,14 @@ brcmf_pcie_write_idx(struct brcmf_pciedev_info *devinfo, u32 mem_offset,
 static u32
 brcmf_pcie_read_tcm32(struct brcmf_pciedev_info *devinfo, u32 mem_offset)
 {
-	void __iomem *address = devinfo->tcm + mem_offset;
+	unsigned long flags;
+	u32 value;
 
-	return (ioread32(address));
+	spin_lock_irqsave(&devinfo->tcm_lock, flags);
+	value = ioread32(brcmf_pcie_tcm_map(devinfo, mem_offset));
+	spin_unlock_irqrestore(&devinfo->tcm_lock, flags);
+
+	return value;
 }
 
 
@@ -610,18 +676,18 @@ static void
 brcmf_pcie_write_tcm32(struct brcmf_pciedev_info *devinfo, u32 mem_offset,
 		       u32 value)
 {
-	void __iomem *address = devinfo->tcm + mem_offset;
+	unsigned long flags;
 
-	iowrite32(value, address);
+	spin_lock_irqsave(&devinfo->tcm_lock, flags);
+	iowrite32(value, brcmf_pcie_tcm_map(devinfo, mem_offset));
+	spin_unlock_irqrestore(&devinfo->tcm_lock, flags);
 }
 
 
 static u32
 brcmf_pcie_read_ram32(struct brcmf_pciedev_info *devinfo, u32 mem_offset)
 {
-	void __iomem *addr = devinfo->tcm + devinfo->ci->rambase + mem_offset;
-
-	return (ioread32(addr));
+	return brcmf_pcie_read_tcm32(devinfo, devinfo->ci->rambase + mem_offset);
 }
 
 
@@ -629,17 +695,64 @@ static void
 brcmf_pcie_write_ram32(struct brcmf_pciedev_info *devinfo, u32 mem_offset,
 		       u32 value)
 {
-	void __iomem *addr = devinfo->tcm + devinfo->ci->rambase + mem_offset;
+	brcmf_pcie_write_tcm32(devinfo, devinfo->ci->rambase + mem_offset,
+			       value);
+}
 
-	iowrite32(value, addr);
+
+/* Bulk TCM access goes in chunks: each stays inside one BAR1 window and
+ * keeps tcm_lock (interrupts off) short.
+ */
+#define BRCMF_PCIE_TCM_CHUNK	SZ_4K
+
+static u32 brcmf_pcie_tcm_chunk(u32 mem_offset, u32 len)
+{
+	return min(len, BRCMF_PCIE_TCM_CHUNK -
+			(mem_offset & (BRCMF_PCIE_TCM_CHUNK - 1)));
 }
 
 
 static void
-brcmf_pcie_copy_dev_tomem(struct brcmf_pciedev_info *devinfo, u32 mem_offset,
-			  void *dstaddr, u32 len)
+brcmf_pcie_copy_mem_todev(struct brcmf_pciedev_info *devinfo, u32 mem_offset,
+			  const void *srcaddr, u32 len)
 {
-	void __iomem *address = devinfo->tcm + mem_offset;
+	unsigned long flags;
+	u32 chunk;
+
+	while (len) {
+		chunk = brcmf_pcie_tcm_chunk(mem_offset, len);
+		spin_lock_irqsave(&devinfo->tcm_lock, flags);
+		memcpy_toio(brcmf_pcie_tcm_map(devinfo, mem_offset), srcaddr,
+			    chunk);
+		spin_unlock_irqrestore(&devinfo->tcm_lock, flags);
+		mem_offset += chunk;
+		srcaddr += chunk;
+		len -= chunk;
+	}
+}
+
+
+static void
+brcmf_pcie_set_mem(struct brcmf_pciedev_info *devinfo, u32 mem_offset,
+		   u8 value, u32 len)
+{
+	unsigned long flags;
+	u32 chunk;
+
+	while (len) {
+		chunk = brcmf_pcie_tcm_chunk(mem_offset, len);
+		spin_lock_irqsave(&devinfo->tcm_lock, flags);
+		memset_io(brcmf_pcie_tcm_map(devinfo, mem_offset), value, chunk);
+		spin_unlock_irqrestore(&devinfo->tcm_lock, flags);
+		mem_offset += chunk;
+		len -= chunk;
+	}
+}
+
+
+static void
+brcmf_pcie_read_tcm_chunk(void __iomem *address, void *dstaddr, u32 len)
+{
 	__le32 *dst32;
 	__le16 *dst16;
 	u8 *dst8;
@@ -672,6 +785,26 @@ brcmf_pcie_copy_dev_tomem(struct brcmf_pciedev_info *devinfo, u32 mem_offset,
 			dst32++;
 			len--;
 		}
+	}
+}
+
+
+static void
+brcmf_pcie_copy_dev_tomem(struct brcmf_pciedev_info *devinfo, u32 mem_offset,
+			  void *dstaddr, u32 len)
+{
+	unsigned long flags;
+	u32 chunk;
+
+	while (len) {
+		chunk = brcmf_pcie_tcm_chunk(mem_offset, len);
+		spin_lock_irqsave(&devinfo->tcm_lock, flags);
+		brcmf_pcie_read_tcm_chunk(brcmf_pcie_tcm_map(devinfo, mem_offset),
+					  dstaddr, chunk);
+		spin_unlock_irqrestore(&devinfo->tcm_lock, flags);
+		mem_offset += chunk;
+		dstaddr += chunk;
+		len -= chunk;
 	}
 }
 
@@ -725,6 +858,7 @@ static void brcmf_pcie_reset_device(struct brcmf_pciedev_info *devinfo)
 		BRCMF_PCIE_CFGREG_REG_BAR2_CONFIG,
 		BRCMF_PCIE_CFGREG_REG_BAR3_CONFIG
 	};
+	unsigned long flags;
 	u32 i;
 	u32 val;
 	u32 lsc;
@@ -783,6 +917,11 @@ static void brcmf_pcie_reset_device(struct brcmf_pciedev_info *devinfo)
 						val);
 		}
 	}
+
+	/* The reset may have moved the BAR1 window back. */
+	spin_lock_irqsave(&devinfo->tcm_lock, flags);
+	devinfo->tcm_window = U32_MAX;
+	spin_unlock_irqrestore(&devinfo->tcm_lock, flags);
 }
 
 
@@ -1380,8 +1519,8 @@ static int brcmf_pcie_init_ringbuffers(struct brcmf_pciedev_info *devinfo)
 	u16 max_submissionrings;
 	u16 max_completionrings;
 
-	memcpy_fromio(&ringinfo, devinfo->tcm + devinfo->shared.ring_info_addr,
-		      sizeof(ringinfo));
+	brcmf_pcie_copy_dev_tomem(devinfo, devinfo->shared.ring_info_addr,
+				  &ringinfo, sizeof(ringinfo));
 	if (devinfo->shared.version >= 6) {
 		max_submissionrings = le16_to_cpu(ringinfo.max_submissionrings);
 		max_flowrings = le16_to_cpu(ringinfo.max_flowrings);
@@ -1454,8 +1593,9 @@ static int brcmf_pcie_init_ringbuffers(struct brcmf_pciedev_info *devinfo)
 		ringinfo.d2h_r_idx_hostaddr.high_addr =
 			cpu_to_le32(address >> 32);
 
-		memcpy_toio(devinfo->tcm + devinfo->shared.ring_info_addr,
-			    &ringinfo, sizeof(ringinfo));
+		brcmf_pcie_copy_mem_todev(devinfo,
+					  devinfo->shared.ring_info_addr,
+					  &ringinfo, sizeof(ringinfo));
 		brcmf_dbg(PCIE, "Using host memory indices\n");
 	}
 
@@ -1904,8 +2044,8 @@ static int brcmf_pcie_alloc_rtlv(struct brcmf_pciedev_info *devinfo,
 		length_field = length | ((length ^ 0xffff) << 16);
 
 	footer.length = cpu_to_le32(length_field);
-	memcpy_toio(devinfo->tcm + *address - sizeof(footer), &footer,
-		    sizeof(footer));
+	brcmf_pcie_copy_mem_todev(devinfo, *address - sizeof(footer), &footer,
+				  sizeof(footer));
 	*address = start_addr;
 
 	return 0;
@@ -1925,7 +2065,8 @@ brcmf_pcie_add_random_seed(struct brcmf_pciedev_info *devinfo, u32 *address)
 
 	brcmf_dbg(PCIE, "Download random seed\n");
 	get_random_bytes(randbuf, BRCMF_RANDOM_SEED_LENGTH);
-	memcpy_toio(devinfo->tcm + *address, randbuf, BRCMF_RANDOM_SEED_LENGTH);
+	brcmf_pcie_copy_mem_todev(devinfo, *address, randbuf,
+				  BRCMF_RANDOM_SEED_LENGTH);
 
 	return 0;
 }
@@ -1973,9 +2114,9 @@ static int brcmf_pcie_add_signature(struct brcmf_pciedev_info *devinfo,
 	memmap.heap.start = cpu_to_le32(heap_start);
 	memmap.heap.end = cpu_to_le32(heap_end);
 
-	memcpy_toio(devinfo->tcm + sig_start, fwsig->data, fwsig->size);
-	memset_io(devinfo->tcm + vstatus_start, 0, BRCMF_VSTATUS_SIZE);
-	memcpy_toio(devinfo->tcm + *address, &memmap, sizeof(memmap));
+	brcmf_pcie_copy_mem_todev(devinfo, sig_start, fwsig->data, fwsig->size);
+	brcmf_pcie_set_mem(devinfo, vstatus_start, 0, BRCMF_VSTATUS_SIZE);
+	brcmf_pcie_copy_mem_todev(devinfo, *address, &memmap, sizeof(memmap));
 
 	err = brcmf_pcie_alloc_rtlv(devinfo, address, BRCMF_END_MAGIC, 0);
 	if (err)
@@ -2031,8 +2172,8 @@ static int brcmf_pcie_download_fw_nvram(struct brcmf_pciedev_info *devinfo,
 		goto fail;
 
 	brcmf_dbg(PCIE, "Download FW %s\n", devinfo->fw_name);
-	memcpy_toio(devinfo->tcm + devinfo->ci->rambase,
-		    (void *)fw->data, fw->size);
+	brcmf_pcie_copy_mem_todev(devinfo, devinfo->ci->rambase, fw->data,
+				  fw->size);
 
 	resetintr = get_unaligned_le32(fw->data);
 	devinfo->fw_size = fw->size;
@@ -2048,7 +2189,7 @@ static int brcmf_pcie_download_fw_nvram(struct brcmf_pciedev_info *devinfo,
 		brcmf_dbg(PCIE, "Download NVRAM %s\n", devinfo->nvram_name);
 		address = devinfo->ci->rambase + devinfo->ci->ramsize -
 			  nvram_len;
-		memcpy_toio(devinfo->tcm + address, nvram, nvram_len);
+		brcmf_pcie_copy_mem_todev(devinfo, address, nvram, nvram_len);
 		brcmf_fw_nvram_free(nvram);
 		nvram = NULL;
 
@@ -2058,8 +2199,8 @@ static int brcmf_pcie_download_fw_nvram(struct brcmf_pciedev_info *devinfo,
 
 		free_start = devinfo->ci->rambase + devinfo->fw_size;
 		if ((devinfo->fwseed || fwsig) && address > free_start)
-			memset_io(devinfo->tcm + free_start, 0,
-				  address - free_start);
+			brcmf_pcie_set_mem(devinfo, free_start, 0,
+					   address - free_start);
 	} else {
 		brcmf_dbg(PCIE, "No matching NVRAM file found %s\n",
 			  devinfo->nvram_name);
@@ -2139,6 +2280,7 @@ static int brcmf_pcie_get_resource(struct brcmf_pciedev_info *devinfo)
 
 	devinfo->regs = ioremap(bar0_addr, BRCMF_PCIE_REG_MAP_SIZE);
 	devinfo->tcm = ioremap(bar1_addr, bar1_size);
+	devinfo->tcm_size = bar1_size;
 
 	if (!devinfo->regs || !devinfo->tcm) {
 		brcmf_err(bus, "ioremap() failed (%p,%p)\n", devinfo->regs,
@@ -2519,6 +2661,7 @@ static void brcmf_pcie_setup(struct device *dev, int ret,
 	 * the firmware and adjust the chip memory size now.
 	 */
 	brcmf_pcie_adjust_ramsize(devinfo, (u8 *)fw->data, fw->size);
+	brcmf_pcie_init_tcm_window(devinfo);
 
 	if (brcmf_pcie_request_fw_signature(devinfo)) {
 		brcmf_pcie_select_core(devinfo, BCMA_CORE_PCIE2);
@@ -2830,6 +2973,7 @@ brcmf_pcie_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		return ret;
 
 	devinfo->pdev = pdev;
+	spin_lock_init(&devinfo->tcm_lock);
 	pcie_bus_dev = NULL;
 	devinfo->ci = brcmf_chip_attach(devinfo, pdev->device,
 					&brcmf_pcie_buscore_ops);
