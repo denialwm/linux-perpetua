@@ -355,6 +355,9 @@ struct ufs_qcom_host {
 	struct reset_controller_dev rcdev;
 
 	struct gpio_desc *device_reset;
+	struct pinctrl *pinctrl;
+	struct pinctrl_state *pins_reset_assert;
+	struct pinctrl_state *pins_reset_deassert;
 
 	struct ufs_host_params host_params;
 	u32 phy_gear;
@@ -368,6 +371,7 @@ struct ufs_qcom_host {
 struct ufs_qcom_drvdata {
 	enum ufshcd_quirks quirks;
 	bool no_phy_retention;
+	bool dma_32bit;
 	const struct ufs_hba_variant_ops *vops;
 };
 

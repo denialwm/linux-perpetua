@@ -1,0 +1,7 @@
+# Google Pixel 5a
+name='Google Pixel 5a'
+vendor=qcom
+soc=sm7250
+# The bootloader uses a version 2 image with the kernel, ramdisk and DTB,
+# which devices/boot/android-v2 writes.
+boot=android-v2

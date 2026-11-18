@@ -275,7 +275,13 @@ static int q6tdm_hw_params(struct snd_pcm_substream *substream,
 	tdm->bit_width = params_width(params);
 	tdm->sample_rate = params_rate(params);
 	tdm->num_channels = params_channels(params);
+	dev_info(dai->dev, "tdm hw_params: id=%d rate=%u ch=%u width=%u\n",
+		 dai->id, params_rate(params), params_channels(params),
+		 params_width(params));
 	tdm->data_align_type = dai_data->priv[dai->id].data_align;
+	tdm->data_out_enable = dai_data->priv[dai->id].data_out_enable;
+	tdm->invert_sync = dai_data->priv[dai->id].invert_sync;
+	tdm->sync_data_delay = dai_data->priv[dai->id].data_delay;
 	tdm->sync_src = dai_data->priv[dai->id].sync_src;
 	tdm->sync_mode = dai_data->priv[dai->id].sync_mode;
 
@@ -511,7 +517,7 @@ static int q6afe_mi2s_set_sysclk(struct snd_soc_dai *dai,
 					     freq, dir);
 	case Q6AFE_LPASS_CLK_ID_PRI_TDM_IBIT ... Q6AFE_LPASS_CLK_ID_QUIN_TDM_EBIT:
 		return q6afe_port_set_sysclk(port, clk_id,
-					     Q6AFE_LPASS_CLK_ATTRIBUTE_INVERT_COUPLE_NO,
+					     Q6AFE_LPASS_CLK_ATTRIBUTE_COUPLE_NO,
 					     Q6AFE_LPASS_CLK_ROOT_DEFAULT,
 					     freq, dir);
 	}

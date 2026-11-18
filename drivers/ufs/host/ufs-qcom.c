@@ -5,6 +5,7 @@
 
 #include <linux/acpi.h>
 #include <linux/clk.h>
+#include <linux/dma-mapping.h>
 #include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/devfreq.h>
@@ -13,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/phy/phy.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/reset-controller.h>
@@ -792,11 +794,16 @@ static void ufs_qcom_device_reset_ctrl(struct ufs_hba *hba, bool asserted)
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 
-	/* reset gpio is optional */
-	if (!host->device_reset)
+	if (host->device_reset) {
+		gpiod_set_value_cansleep(host->device_reset, asserted);
 		return;
+	}
 
-	gpiod_set_value_cansleep(host->device_reset, asserted);
+	/* Some SoCs only expose the reset line as a dedicated TLMM pin */
+	if (host->pins_reset_assert && host->pins_reset_deassert)
+		pinctrl_select_state(host->pinctrl, asserted ?
+				     host->pins_reset_assert :
+				     host->pins_reset_deassert);
 }
 
 static int ufs_qcom_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op,
@@ -1653,6 +1660,22 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 		goto out_variant_clear;
 	}
 
+	if (!host->device_reset) {
+		/* optional "dev-reset-assert"/"dev-reset-deassert" pin states */
+		host->pinctrl = devm_pinctrl_get(dev);
+		if (!IS_ERR(host->pinctrl)) {
+			host->pins_reset_assert = pinctrl_lookup_state(host->pinctrl,
+								       "dev-reset-assert");
+			host->pins_reset_deassert = pinctrl_lookup_state(host->pinctrl,
+									 "dev-reset-deassert");
+			if (IS_ERR(host->pins_reset_assert) ||
+			    IS_ERR(host->pins_reset_deassert)) {
+				host->pins_reset_assert = NULL;
+				host->pins_reset_deassert = NULL;
+			}
+		}
+	}
+
 	ufs_qcom_get_controller_revision(hba, &host->hw_ver.major,
 		&host->hw_ver.minor, &host->hw_ver.step);
 
@@ -2267,8 +2290,9 @@ static int ufs_qcom_device_reset(struct ufs_hba *hba)
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 
-	/* reset gpio is optional */
-	if (!host->device_reset)
+	/* reset gpio (or pinctrl states) is optional */
+	if (!host->device_reset &&
+	    !(host->pins_reset_assert && host->pins_reset_deassert))
 		return -EOPNOTSUPP;
 
 	/*
@@ -2947,8 +2971,28 @@ static int ufs_qcom_tx_eqtr_notify(struct ufs_hba *hba,
  * The variant operations configure the necessary controller and PHY
  * handshake during initialization.
  */
+/*
+ * SM7250: the UFS node has no "iommus" (downstream has none either), so the
+ * descriptors are programmed with raw physical addresses, which can be above
+ * 4 GiB. On this port the host controller then never writes back the OCS or
+ * response UPIU and raises no transfer completion interrupt. Keep all DMA
+ * below 4 GiB, like the SMMU-translated siblings effectively do.
+ */
+static int ufs_qcom_set_dma_mask(struct ufs_hba *hba)
+{
+	const struct ufs_qcom_drvdata *drvdata = of_device_get_match_data(hba->dev);
+
+	if (!(drvdata && drvdata->dma_32bit) &&
+	    (hba->capabilities & MASK_64_ADDRESSING_SUPPORT) &&
+	    !dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(64)))
+		return 0;
+
+	return dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(32));
+}
+
 static const struct ufs_hba_variant_ops ufs_hba_qcom_vops = {
 	.name                   = "qcom",
+	.set_dma_mask		= ufs_qcom_set_dma_mask,
 	.init                   = ufs_qcom_init,
 	.exit                   = ufs_qcom_exit,
 	.get_ufs_hci_version	= ufs_qcom_get_ufs_hci_version,
@@ -3037,12 +3081,17 @@ static const struct ufs_qcom_drvdata ufs_qcom_sm8550_drvdata = {
 	.no_phy_retention = true,
 };
 
+static const struct ufs_qcom_drvdata ufs_qcom_sm7250_drvdata = {
+	.dma_32bit = true,
+};
+
 static const struct ufs_qcom_drvdata ufs_qcom_sa8255p_drvdata = {
 	.vops = &ufs_hba_qcom_sa8255p_vops
 };
 
 static const struct of_device_id ufs_qcom_of_match[] __maybe_unused = {
 	{ .compatible = "qcom,ufshc" },
+	{ .compatible = "qcom,sm7250-ufshc", .data = &ufs_qcom_sm7250_drvdata },
 	{ .compatible = "qcom,sm8550-ufshc", .data = &ufs_qcom_sm8550_drvdata },
 	{ .compatible = "qcom,sm8650-ufshc", .data = &ufs_qcom_sm8550_drvdata },
 	{ .compatible = "qcom,sa8255p-ufshc", .data = &ufs_qcom_sa8255p_drvdata },

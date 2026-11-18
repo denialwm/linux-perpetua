@@ -87,6 +87,15 @@ devices/boot holds one tool per boot chain that writes the images:
                   Usage: TEMPLATE IMAGE RAMDISK OUTPUT [EVIDENCE].
 
 
+  android-v2    Android header version 2: the kernel, ramdisk and one DTB,
+                page aligned, for devices that keep the ramdisk in the boot
+                partition. Keeps the template's header, addresses, command
+                line and unsigned AVB. The kernel is an LZ4 frame with the
+                template's settings and its arm64 text_offset adopts the
+                template's.
+                Usage: TEMPLATE IMAGE DTB RAMDISK OUTPUT [EVIDENCE].
+
+
   mediatek-lk   MediaTek's LK bootloader with Android 13 and later: a
                 version 4 boot image with only the kernel, as legacy LZ4.
                 It writes from the device's own working image, keeping its

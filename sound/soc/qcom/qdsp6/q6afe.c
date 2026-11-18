@@ -29,6 +29,7 @@
 #define AFE_PORT_CMD_DEVICE_STOP	0x000100E6
 #define AFE_PORT_CMD_SET_PARAM_V2	0x000100EF
 #define AFE_SVC_CMD_SET_PARAM		0x000100f3
+#define AFE_SVC_CMD_SET_PARAM_V2	0x000100fc
 #define AFE_PORT_CMDRSP_GET_PARAM_V2	0x00010106
 #define AFE_PARAM_ID_HDMI_CONFIG	0x00010210
 #define AFE_MODULE_AUDIO_DEV_INTERFACE	0x0001020C
@@ -44,6 +45,7 @@
 #define AFE_PARAM_ID_SLIMBUS_CONFIG    0x00010212
 #define AFE_PARAM_ID_I2S_CONFIG	0x0001020D
 #define AFE_PARAM_ID_TDM_CONFIG	0x0001029D
+
 #define AFE_PARAM_ID_PORT_SLOT_MAPPING_CONFIG	0x00010297
 #define AFE_PARAM_ID_CODEC_DMA_CONFIG	0x000102B8
 #define AFE_PARAM_ID_USB_AUDIO_CONFIG    0x000102A4
@@ -380,7 +382,10 @@
 #define Q6AFE_LPASS_CLK_ROOT_DEFAULT 0
 #define AFE_API_VERSION_TDM_CONFIG              1
 #define AFE_API_VERSION_SLOT_MAPPING_CONFIG	1
+#define AFE_API_VERSION_SLOT_MAPPING_CONFIG_V2	2
 #define AFE_API_VERSION_CODEC_DMA_CONFIG	1
+/* AFE service API version from which the 32-channel slot map is required. */
+#define AFE_API_VERSION_V3			3
 
 #define TIMEOUT_MS 3000
 #define AFE_CMD_RESP_AVAIL	0
@@ -646,10 +651,22 @@ struct afe_param_id_slot_mapping_cfg {
 	u16	ch_mapping[AFE_PORT_MAX_AUDIO_CHAN_CNT];
 } __packed;
 
+/* AFE API v3 widened the channel map to 32 entries; the DSP rejects the
+ * shorter v1 payload outright.
+ */
+struct afe_param_id_slot_mapping_cfg_v2 {
+	u32	minor_version;
+	u16	num_channels;
+	u16	bitwidth;
+	u32	data_align_type;
+	u16	ch_mapping[AFE_PORT_MAX_AUDIO_CHAN_CNT_V2];
+} __packed;
+
 struct q6afe_port {
 	wait_queue_head_t wait;
 	union afe_port_config port_cfg;
 	struct afe_param_id_slot_mapping_cfg *scfg;
+	struct afe_param_id_slot_mapping_cfg_v2 *scfg_v2;
 	struct aprv2_ibasic_rsp_result_t result;
 	int token;
 	int id;
@@ -985,6 +1002,7 @@ static void q6afe_port_free(struct kref *ref)
 	scoped_guard(spinlock_irqsave, &afe->port_list_lock)
 		list_del(&port->node);
 	kfree(port->scfg);
+	kfree(port->scfg_v2);
 	kfree(port);
 }
 
@@ -1026,6 +1044,7 @@ static int q6afe_callback(struct apr_device *adev, const struct apr_resp_pkt *da
 		case AFE_PORT_CMD_DEVICE_STOP:
 		case AFE_PORT_CMD_DEVICE_START:
 		case AFE_SVC_CMD_SET_PARAM:
+		case AFE_SVC_CMD_SET_PARAM_V2:
 			port = q6afe_find_port(afe, hdr->token);
 			if (port) {
 				port->result = *res;
@@ -1221,9 +1240,32 @@ static int q6afe_port_set_lpass_clock(struct q6afe_port *port,
 				       sizeof(*cfg));
 }
 
+/*
+ * AFE API v7 service params use the wide (instance-id) header, while the
+ * port SET_PARAM_V2 path still uses afe_port_param_data_v2. Sending the
+ * 12-byte v2 header on the service path shifts instance_id/param_id and the
+ * DSP answers ADSP_EBADPARAM.
+ */
+struct q6afe_param_hdr_v3 {
+	u32 module_id;
+	u16 instance_id;
+	u16 reserved;
+	u32 param_id;
+	u32 param_size;
+} __packed;
+
+/* AFE_SVC_CMD_SET_PARAM_V2: mem_hdr precedes payload_size. */
+struct q6afe_svc_set_param_v2 {
+	u32 payload_address_lsw;
+	u32 payload_address_msw;
+	u32 mem_map_handle;
+	u32 payload_size;
+} __packed;
+
 static int q6afe_set_lpass_clock_v2(struct q6afe_port *port,
 				 struct afe_clk_set *cfg)
 {
+	/* v130 path: per-port SET_PARAM, accepted by this DSP. */
 	return q6afe_port_set_param(port, cfg, AFE_PARAM_ID_CLOCK_SET,
 				    AFE_MODULE_CLOCK_SET, sizeof(*cfg));
 }
@@ -1391,10 +1433,22 @@ EXPORT_SYMBOL_GPL(q6afe_slim_port_prepare);
  * @cfg: TDM configuration for the afe port
  *
  */
+/**
+ * q6afe_slot_map_v2() - Use the wide (32-channel) slot-map payload.
+ *
+ * AFE service API v3 and later reject the legacy 8-channel payload, so pick
+ * the format from the version the DSP reported.
+ */
+static bool q6afe_slot_map_v2(struct q6afe *afe)
+{
+	return afe->ainfo.api_version >= AFE_API_VERSION_V3;
+}
+
 void q6afe_tdm_port_prepare(struct q6afe_port *port,
 			     struct q6afe_tdm_cfg *cfg)
 {
 	union afe_port_config *pcfg = &port->port_cfg;
+	int i;
 
 	pcfg->tdm_cfg.tdm_cfg_minor_version = AFE_API_VERSION_TDM_CONFIG;
 	pcfg->tdm_cfg.num_channels = cfg->num_channels;
@@ -1403,11 +1457,33 @@ void q6afe_tdm_port_prepare(struct q6afe_port *port,
 	pcfg->tdm_cfg.data_format = cfg->data_format;
 	pcfg->tdm_cfg.sync_mode = cfg->sync_mode;
 	pcfg->tdm_cfg.sync_src = cfg->sync_src;
+	pcfg->tdm_cfg.ctrl_data_out_enable = cfg->data_out_enable;
+	pcfg->tdm_cfg.ctrl_invert_sync_pulse = cfg->invert_sync;
+	pcfg->tdm_cfg.ctrl_sync_data_delay = cfg->sync_data_delay;
 	pcfg->tdm_cfg.nslots_per_frame = cfg->nslots_per_frame;
 
 	pcfg->tdm_cfg.slot_width = cfg->slot_width;
 	pcfg->tdm_cfg.slot_mask = cfg->slot_mask;
-	port->scfg = kzalloc_obj(*port->scfg);
+
+	if (q6afe_slot_map_v2(port->afe)) {
+		if (!port->scfg_v2)
+			port->scfg_v2 = kzalloc_obj(*port->scfg_v2);
+		if (!port->scfg_v2)
+			return;
+
+		port->scfg_v2->minor_version = AFE_API_VERSION_SLOT_MAPPING_CONFIG_V2;
+		port->scfg_v2->num_channels = cfg->num_channels;
+		port->scfg_v2->bitwidth = cfg->bit_width;
+		port->scfg_v2->data_align_type = cfg->data_align_type;
+		for (i = 0; i < AFE_PORT_MAX_AUDIO_CHAN_CNT_V2; i++)
+			port->scfg_v2->ch_mapping[i] = 0xFFFF;
+		memcpy(port->scfg_v2->ch_mapping, cfg->ch_mapping,
+				sizeof(u16) * AFE_PORT_MAX_AUDIO_CHAN_CNT);
+		return;
+	}
+
+	if (!port->scfg)
+		port->scfg = kzalloc_obj(*port->scfg);
 	if (!port->scfg)
 		return;
 
@@ -1724,13 +1800,56 @@ int q6afe_port_start(struct q6afe_port *port)
 		return ret;
 	}
 
-	if (port->scfg) {
+	if (param_id == AFE_PARAM_ID_TDM_CONFIG) {
+		struct afe_param_id_tdm_cfg *t = &port->port_cfg.tdm_cfg;
+
+		dev_info(afe->dev,
+			 "tdm start: dai=%d port=0x%x ch=%u rate=%u bw=%u fmt=%u sync_mode=%u sync_src=%u nslots=%u dout=%u inv=%u delay=%u slot_w=%u mask=0x%x\n",
+			 port->id, port_id, t->num_channels, t->sample_rate,
+			 t->bit_width, t->data_format, t->sync_mode,
+			 t->sync_src, t->nslots_per_frame,
+			 t->ctrl_data_out_enable, t->ctrl_invert_sync_pulse,
+			 t->ctrl_sync_data_delay, t->slot_width, t->slot_mask);
+		if (port->scfg_v2)
+			dev_info(afe->dev,
+				 "tdm map v2: ch=%u bw=%u align=%u slots=%u,%u,%u,%u\n",
+				 port->scfg_v2->num_channels,
+				 port->scfg_v2->bitwidth,
+				 port->scfg_v2->data_align_type,
+				 port->scfg_v2->ch_mapping[0],
+				 port->scfg_v2->ch_mapping[1],
+				 port->scfg_v2->ch_mapping[2],
+				 port->scfg_v2->ch_mapping[3]);
+		else if (port->scfg)
+			dev_info(afe->dev,
+				 "tdm map: ch=%u bw=%u align=%u slots=%u,%u,%u,%u\n",
+				 port->scfg->num_channels, port->scfg->bitwidth,
+				 port->scfg->data_align_type,
+				 port->scfg->ch_mapping[0],
+				 port->scfg->ch_mapping[1],
+				 port->scfg->ch_mapping[2],
+				 port->scfg->ch_mapping[3]);
+
+	}
+
+	if (port->scfg_v2) {
+		ret  = q6afe_port_set_param_v2(port, port->scfg_v2,
+					AFE_PARAM_ID_PORT_SLOT_MAPPING_CONFIG,
+					AFE_MODULE_TDM, sizeof(*port->scfg_v2));
+		if (ret) {
+			dev_err(afe->dev,
+				"tdm slot map v2 for port 0x%x failed %d\n",
+				port_id, ret);
+			return ret;
+		}
+	} else if (port->scfg) {
 		ret  = q6afe_port_set_param_v2(port, port->scfg,
 					AFE_PARAM_ID_PORT_SLOT_MAPPING_CONFIG,
 					AFE_MODULE_TDM, sizeof(*port->scfg));
 		if (ret) {
-			dev_err(afe->dev, "AFE enable for port 0x%x failed %d\n",
-			port_id, ret);
+			dev_err(afe->dev,
+				"tdm slot map v1 for port 0x%x failed %d\n",
+				port_id, ret);
 			return ret;
 		}
 	}
@@ -1758,6 +1877,9 @@ int q6afe_port_start(struct q6afe_port *port)
 	if (ret)
 		dev_err(afe->dev, "AFE enable for port 0x%x failed %d\n",
 			port_id, ret);
+	else
+		dev_info(afe->dev, "port started: id=0x%x param=0x%x\n",
+			 port_id, param_id);
 
 	return ret;
 }
@@ -1970,6 +2092,8 @@ static int q6afe_probe(struct apr_device *adev)
 		return -ENOMEM;
 
 	q6core_get_svc_api_info(adev->svc_id, &afe->ainfo);
+	dev_info(dev, "AFE service API version %u, slot map v%u\n",
+		 afe->ainfo.api_version, q6afe_slot_map_v2(afe) ? 2 : 1);
 	afe->apr = adev;
 	mutex_init(&afe->lock);
 	init_waitqueue_head(&afe->wait);

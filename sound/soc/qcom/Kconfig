@@ -190,6 +190,10 @@ config SND_SOC_SM8250
 	select SND_SOC_QDSP6
 	select SND_SOC_QCOM_COMMON
 	select SND_SOC_QCOM_SDW
+	select SND_SOC_RT5514
+	# The RT5514 capture path runs through the codec's internal DSP, whose
+	# firmware is loaded over SPI; without this the ADC/I2S path stays silent.
+	select SND_SOC_RT5514_SPI
 	help
 	  To add support for audio on Qualcomm Technologies Inc.
 	  SM8250 SoC-based systems.

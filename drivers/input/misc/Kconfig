@@ -1035,3 +1035,12 @@ config INPUT_STPMIC1_ONKEY
 	  module will be called stpmic1_onkey.
 
 endif
+
+config INPUT_DRV2624
+	tristate "TI DRV2624 haptic driver"
+	depends on I2C
+	select INPUT_FF_MEMLESS
+	select REGMAP_I2C
+	help
+	  Say Y here to enable the TI DRV2624 haptic driver (RTP mode).
+
