@@ -974,7 +974,7 @@ brcmf_msgbuf_process_ioctl_complete(struct brcmf_msgbuf *msgbuf, void *buf)
 	msgbuf->ioctl_resp_status =
 			(s16)le16_to_cpu(ioctl_resp->compl_hdr.status);
 	msgbuf->ioctl_resp_ret_len = le16_to_cpu(ioctl_resp->resp_len);
-	msgbuf->ioctl_resp_pktid = le32_to_cpu(ioctl_resp->msg.request_id);
+	msgbuf->ioctl_resp_pktid = le32_to_cpu(ioctl_resp->msg.request_id) - 1;
 
 	brcmf_msgbuf_ioctl_resp_wake(msgbuf);
 
@@ -1081,7 +1081,7 @@ static u32 brcmf_msgbuf_rxbuf_data_post(struct brcmf_msgbuf *msgbuf, u32 count)
 			physaddr += msgbuf->rx_metadata_offset;
 		}
 		rx_bufpost->msg.msgtype = MSGBUF_TYPE_RXBUF_POST;
-		rx_bufpost->msg.request_id = cpu_to_le32(pktid);
+		rx_bufpost->msg.request_id = cpu_to_le32(pktid + 1);
 
 		address = (u64)physaddr;
 		rx_bufpost->data_buf_len = cpu_to_le16((u16)pktlen);
@@ -1181,7 +1181,7 @@ brcmf_msgbuf_rxbuf_ctrl_post(struct brcmf_msgbuf *msgbuf, bool event_buf,
 		else
 			rx_bufpost->msg.msgtype =
 				MSGBUF_TYPE_IOCTLRESP_BUF_POST;
-		rx_bufpost->msg.request_id = cpu_to_le32(pktid);
+		rx_bufpost->msg.request_id = cpu_to_le32(pktid + 1);
 
 		address = (u64)physaddr;
 		rx_bufpost->host_buf_len = cpu_to_le16((u16)pktlen);
@@ -1232,7 +1232,7 @@ static void brcmf_msgbuf_process_event(struct brcmf_msgbuf *msgbuf, void *buf)
 	struct brcmf_if *ifp;
 
 	event = (struct msgbuf_rx_event *)buf;
-	idx = le32_to_cpu(event->msg.request_id);
+	idx = le32_to_cpu(event->msg.request_id) - 1;
 	buflen = le16_to_cpu(event->event_data_len);
 
 	if (msgbuf->cur_eventbuf)
@@ -1282,7 +1282,7 @@ brcmf_msgbuf_process_rx_complete(struct brcmf_msgbuf *msgbuf, void *buf)
 	rx_complete = (struct msgbuf_rx_complete *)buf;
 	data_offset = le16_to_cpu(rx_complete->data_offset);
 	buflen = le16_to_cpu(rx_complete->data_len);
-	idx = le32_to_cpu(rx_complete->msg.request_id);
+	idx = le32_to_cpu(rx_complete->msg.request_id) - 1;
 	flags = le16_to_cpu(rx_complete->flags);
 
 	skb = brcmf_msgbuf_get_pktid(msgbuf->drvr->bus_if->dev,
