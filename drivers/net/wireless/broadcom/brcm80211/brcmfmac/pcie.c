@@ -1605,6 +1605,9 @@ static int brcmf_pcie_init_ringbuffers(struct brcmf_pciedev_info *devinfo)
 		ring = brcmf_pcie_alloc_dma_and_ring(devinfo, i, ring_mem_ptr);
 		if (!ring)
 			goto fail;
+		/* Only tested on the BCM4389, whose firmware checks it. */
+		if (devinfo->ci->chip == BRCM_CC_4389_CHIP_ID)
+			brcmf_commonring_enable_h2d_epoch(&ring->commonring);
 		ring->w_idx_addr = h2d_w_idx_ptr;
 		ring->r_idx_addr = h2d_r_idx_ptr;
 		ring->id = i;

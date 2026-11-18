@@ -12,6 +12,10 @@
 #include "core.h"
 #include "commonring.h"
 
+#define BRCMF_H2D_EPOCH_MODULO		253
+#define BRCMF_H2D_EPOCH_INIT_VAL	(BRCMF_H2D_EPOCH_MODULO + 1)
+
+
 void brcmf_commonring_register_cb(struct brcmf_commonring *commonring,
 				  int (*cr_ring_bell)(void *ctx),
 				  int (*cr_update_rptr)(void *ctx),
@@ -45,6 +49,7 @@ void brcmf_commonring_config(struct brcmf_commonring *commonring, u16 depth,
 	if (commonring->cr_write_wptr)
 		commonring->cr_write_wptr(commonring->cr_ctx);
 	commonring->f_ptr = 0;
+	commonring->seqnum = BRCMF_H2D_EPOCH_INIT_VAL;
 }
 
 
@@ -178,11 +183,43 @@ again:
 }
 
 
+/* On the common host-to-dongle rings (control submit, RX buffer post),
+ * byte 3 of each work item's common message header is the epoch: the
+ * ring's sequence number modulo BRCMF_H2D_EPOCH_MODULO, counted from
+ * BRCMF_H2D_EPOCH_INIT_VAL. Firmware that checks it (BCM4389) traps with
+ * "h2d livelock error" on a mismatch. Rings of other chips, and flow
+ * rings, leave it 0.
+ */
+#define BRCMF_H2D_EPOCH_OFFSET		3
+
+static void brcmf_commonring_set_epochs(struct brcmf_commonring *commonring)
+{
+	u16 idx = commonring->f_ptr;
+	u8 *item;
+
+	if (!commonring->h2d_epoch)
+		return;
+
+	while (idx != commonring->w_ptr) {
+		item = commonring->buf_addr + idx * commonring->item_len;
+		item[BRCMF_H2D_EPOCH_OFFSET] =
+			commonring->seqnum % BRCMF_H2D_EPOCH_MODULO;
+		commonring->seqnum++;
+		if (++idx == commonring->depth)
+			idx = 0;
+	}
+}
+
+
+void brcmf_commonring_enable_h2d_epoch(struct brcmf_commonring *commonring)
+{
+	commonring->h2d_epoch = true;
+}
+
+
 int brcmf_commonring_write_complete(struct brcmf_commonring *commonring)
 {
-	if (commonring->f_ptr > commonring->w_ptr)
-		commonring->f_ptr = 0;
-
+	brcmf_commonring_set_epochs(commonring);
 	commonring->f_ptr = commonring->w_ptr;
 
 	if (commonring->cr_write_wptr)

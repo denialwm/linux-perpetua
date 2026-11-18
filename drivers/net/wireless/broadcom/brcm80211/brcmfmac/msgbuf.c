@@ -80,7 +80,7 @@ struct msgbuf_common_hdr {
 	u8				msgtype;
 	u8				ifidx;
 	u8				flags;
-	u8				rsvd0;
+	u8				epoch;
 	__le32				request_id;
 };
 

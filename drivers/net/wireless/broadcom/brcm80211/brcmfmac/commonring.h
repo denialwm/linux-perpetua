@@ -12,6 +12,8 @@ struct brcmf_commonring {
 	u16 f_ptr;
 	u16 depth;
 	u16 item_len;
+	u32 seqnum;
+	bool h2d_epoch;
 
 	void *buf_addr;
 
@@ -48,6 +50,7 @@ void *
 brcmf_commonring_reserve_for_write_multiple(struct brcmf_commonring *commonring,
 					    u16 n_items, u16 *alloced);
 int brcmf_commonring_write_complete(struct brcmf_commonring *commonring);
+void brcmf_commonring_enable_h2d_epoch(struct brcmf_commonring *commonring);
 void brcmf_commonring_write_cancel(struct brcmf_commonring *commonring,
 				   u16 n_items);
 void *brcmf_commonring_get_read_ptr(struct brcmf_commonring *commonring,
