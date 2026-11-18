@@ -278,6 +278,7 @@ static int acpm_tmu_update_thresholds(struct acpm_tmu_sensor *sensor,
 	const struct acpm_tmu_ops *ops = &handle->ops->tmu;
 	unsigned int mbox_chan_id = priv->mbox_chan_id;
 	u8 acpm_sensor_id = sensor->group->id;
+	u8 levels[8];
 	bool was_enabled;
 	int ret, restore_ret;
 
@@ -291,8 +292,16 @@ static int acpm_tmu_update_thresholds(struct acpm_tmu_sensor *sensor,
 			return ret;
 	}
 
+	/*
+	 * The firmware takes 8 rising levels and throttles the cluster at
+	 * once if an unused one is left at 0 C: park those above any
+	 * reachable temperature.
+	 */
+	memset(levels, U8_MAX, sizeof(levels));
+	memcpy(levels, thresholds, 2);
+
 	ret = ops->set_threshold(handle, mbox_chan_id, acpm_sensor_id,
-				 thresholds, 2);
+				 levels, sizeof(levels));
 	if (!ret) {
 		ret = ops->set_interrupt_enable(handle, mbox_chan_id,
 						acpm_sensor_id, inten);
