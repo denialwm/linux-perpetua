@@ -169,9 +169,20 @@
 			regulator-max-microvolt = <3304000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
+
+		/*
+		 * UFS vccq2: pm6350_l12, window 1.62-1.98 V (lagoon-regulators.dtsi L268);
+		 * Samsung's ufshc asks exactly 1.8 V (lagoon-mtp.dtsi L64-65), stock runs 1.8 V.
+		 */
+		vreg_l12a: ldo12 {
+			regulator-name = "vreg_l12a";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
 	};
 
-	/* PM6150L (pmic e; "pm6150a" on stock). Wi-Fi rails only. */
+	/* PM6150L (pmic e; "pm6150a" on stock). Wi-Fi, microSD and UFS rails. */
 	regulators-1 {
 		compatible = "qcom,pm6150l-rpmh-regulators";
 		qcom,pmic-id = "e";
@@ -220,6 +231,18 @@
 			regulator-name = "vreg_l9e";
 			regulator-min-microvolt = <2960000>;
 			regulator-max-microvolt = <2960000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * UFS vcc: pm6150l_l7, window 2.7-3.544 V (L653); Samsung's ufshc asks
+		 * 2.95-2.96 V (lagoon-mtp.dtsi L62-63), stock runs 2.95 V. As 2.952 V: the
+		 * pldo grid is 1.504 V + n x 8 mV.
+		 */
+		vreg_l7e: ldo7 {
+			regulator-name = "vreg_l7e";
+			regulator-min-microvolt = <2952000>;
+			regulator-max-microvolt = <2952000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 	};
@@ -456,6 +479,25 @@
 		drive-strength = <2>;
 		bias-pull-up;
 	};
+};
+
+/* Internal UFS; supplies from Samsung's lagoon-mtp.dtsi L48-73. */
+&ufs_mem_hc {
+	reset-gpios = <&tlmm 156 GPIO_ACTIVE_LOW>;
+
+	vcc-supply = <&vreg_l7e>;
+	vcc-max-microamp = <800000>;
+	vccq2-supply = <&vreg_l12a>;
+	vccq2-max-microamp = <800000>;
+
+	status = "okay";
+};
+
+&ufs_mem_phy {
+	vdda-phy-supply = <&vreg_l18a>;
+	vdda-pll-supply = <&vreg_l22a>;
+
+	status = "okay";
 };
 
 &sdhc_2 {
