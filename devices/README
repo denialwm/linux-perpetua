@@ -94,8 +94,10 @@ devices/boot holds one tool per boot chain that writes the images:
                 kernel is recompressed with the template's settings and its
                 arm64 text_offset adopts the template's; a raw arm64 Image
                 is used as it is. The template's DTB is kept unless --dtb
-                names a replacement.
-                Usage: TEMPLATE IMAGE RAMDISK OUTPUT [--dtb DTB]
+                names a replacement. --tail writes a filesystem image after
+                the DTB, for the modules and firmware the kernel mounts from
+                the boot partition.
+                Usage: TEMPLATE IMAGE RAMDISK OUTPUT [--dtb DTB] [--tail FILE]
                        [--append-cmdline WORDS] [--evidence DIR] [EVIDENCE].
 
 

@@ -19,8 +19,14 @@ bootloader keeps its own DTB (Galaxy Tab S7 FE) does not.
 Needs liblz4, mkbootimg, avbtool and unpack_bootimg for an LZ4 template;
 unpack_bootimg and avbtool for a raw template.
 
-Usage: android-v2 TEMPLATE IMAGE RAMDISK OUTPUT [--dtb DTB]
+Usage: android-v2 TEMPLATE IMAGE RAMDISK OUTPUT [--dtb DTB] [--tail FILE]
                    [--append-cmdline WORDS] [--evidence DIR] [EVIDENCE]
+
+--tail, for a device with modules or firmware to carry, writes a filesystem
+image right after the DTB, at the next page, and before any signer trailer.
+The bootloader loads only what the header lists and never reads it; Linux
+mounts it in place from the partition. A template whose signer trailer is
+non-empty cannot carry a tail, because the trailer's offset would move.
 
 --evidence, when given, is a directory that receives the avbtool
 verification, the unpacked header and a JSON record of the result.
@@ -261,7 +267,7 @@ def parse_raw_layout(data, path):
     }
 
 
-def pack_raw(template, image, ramdisk, dtb, output, append, evidence):
+def pack_raw(template, image, ramdisk, dtb, tail, output, append, evidence):
     """Keep the template's DTB, trailer and vbmeta, replacing kernel and ramdisk."""
     stock = template.read_bytes()
     layout = parse_raw_layout(stock, template)
@@ -307,6 +313,11 @@ def pack_raw(template, image, ramdisk, dtb, output, append, evidence):
     body = bytes(header)
     for data in (img, initrd, dtb_data):
         body += data + bytes(-len(data) % PAGE)
+    if tail:
+        if trailer:
+            fail(f'{template}: a tail would move the signer trailer after '
+                 f'the DTB; this layout cannot carry one')
+        body += tail
     body += trailer
     original_size = len(body)
     body += bytes(-original_size % PAGE)
@@ -338,6 +349,10 @@ def pack_raw(template, image, ramdisk, dtb, output, append, evidence):
             fail(f'{output}: the unpacked ramdisk differs')
         if (unpacked / 'dtb').read_bytes() != dtb_data:
             fail(f'{output}: the unpacked DTB differs')
+        start = (PAGE + align(len(img)) + align(len(initrd)) +
+                 align(len(dtb_data)))
+        if tail and packed[start:start + len(tail)] != tail:
+            fail(f'{output}: the tail is not after the DTB')
         info = subprocess.run(['avbtool', 'info_image', '--image', output],
                               check=True, capture_output=True).stdout
         record = {
@@ -347,6 +362,7 @@ def pack_raw(template, image, ramdisk, dtb, output, append, evidence):
             'image_sha256': sha(img),
             'ramdisk_sha256': sha(initrd),
             'dtb_sha256': sha(dtb_data),
+            'tail_sha256': sha(tail) if tail else None,
             'original_image_size': original_size,
             'vbmeta_offset': vbmeta_offset,
             'header_version': 2,
@@ -472,8 +488,8 @@ def add_footer(payload, avb, partition_size):
 
 def main():
     args = sys.argv[1:]
-    append = evidence = dtb = None
-    for flag in ('--append-cmdline', '--evidence', '--dtb'):
+    append = evidence = dtb = tail = None
+    for flag in ('--append-cmdline', '--evidence', '--dtb', '--tail'):
         while flag in args:
             at = args.index(flag)
             if at + 1 >= len(args):
@@ -484,6 +500,8 @@ def main():
                 append = value
             elif flag == '--evidence':
                 evidence = Path(value)
+            elif flag == '--tail':
+                tail = Path(value)
             else:
                 dtb = Path(value)
     # The older Samsung call passed the evidence directory positionally.
@@ -494,13 +512,18 @@ def main():
     template, image, ramdisk, output = map(Path, args)
     if output.exists():
         fail(f'{output}: exists; refusing to replace it')
-    for path in (template, image, ramdisk) + ((dtb,) if dtb else ()):
+    for path in (template, image, ramdisk) + ((dtb,) if dtb else ()) + \
+            ((tail,) if tail else ()):
         if not path.is_file():
             fail(f'{path}: missing')
+    tail_data = tail.read_bytes() if tail else b''
+    if len(tail_data) % PAGE:
+        fail(f'{tail}: the tail is not a whole number of pages')
 
     kind = template_kernel_kind(template)
     if kind == 'raw':
-        pack_raw(template, image, ramdisk, dtb, output, append, evidence)
+        pack_raw(template, image, ramdisk, dtb, tail_data, output, append,
+                 evidence)
         return
     if dtb is None:
         fail('the template kernel is an LZ4 frame; pass --dtb with the built tree')
@@ -518,9 +541,10 @@ def main():
     frame, image_text_offset = prepare_kernel(image, template_data)
 
     payload_size = (PAGE + align(len(frame)) +
-                    align(ramdisk.stat().st_size) + align(dtb.stat().st_size))
+                    align(ramdisk.stat().st_size) + align(dtb.stat().st_size) +
+                    len(tail_data))
     if payload_size + AVB_FOOTER_SIZE + 512 > partition_size:
-        fail(f'{image}: kernel does not fit with the ramdisk and DTB in '
+        fail(f'{image}: kernel does not fit with the ramdisk, DTB and tail in '
              f'{partition_size} bytes')
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -529,6 +553,9 @@ def main():
         kernel = work / 'kernel.lz4'
         kernel.write_bytes(frame)
         payload = make_payload(template_data, kernel, ramdisk, dtb, work)
+        if tail_data:
+            with payload.open('ab') as file:
+                file.write(tail_data)
         add_footer(payload, avb, partition_size)
         try:
             payload.rename(output)
@@ -570,6 +597,10 @@ def main():
             fail(f'{output}: the unpacked ramdisk differs')
         if (unpacked / 'dtb').read_bytes() != dtb.read_bytes():
             fail(f'{output}: the unpacked DTB differs')
+        start = (PAGE + align(len(frame)) + align(ramdisk.stat().st_size) +
+                 align(dtb.stat().st_size))
+        if tail_data and image_data[start:start + len(tail_data)] != tail_data:
+            fail(f'{output}: the tail is not after the DTB')
         if evidence:
             evidence.mkdir(parents=True, exist_ok=True)
             (evidence / 'boot-verification.txt').write_bytes(verification)
@@ -583,6 +614,7 @@ def main():
         'kernel_payload_sha256': sha(frame),
         'ramdisk_sha256': sha(ramdisk.read_bytes()),
         'dtb_sha256': sha(dtb.read_bytes()),
+        'tail_sha256': sha(tail_data) if tail_data else None,
         'text_offset': image_text_offset,
         'patched_text_offset': template_data['kernel_text_offset'],
         'cmdline': template_data['cmdline'],
