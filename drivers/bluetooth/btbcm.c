@@ -216,7 +216,8 @@ int btbcm_write_pcm_int_params(struct hci_dev *hdev,
 }
 EXPORT_SYMBOL_GPL(btbcm_write_pcm_int_params);
 
-int btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw)
+static int __btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw,
+			    bool stream_write_ram)
 {
 	const struct hci_command_hdr *cmd;
 	const u8 *fw_ptr;
@@ -259,6 +260,22 @@ int btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw)
 
 		opcode = le16_to_cpu(cmd->opcode);
 
+		/*
+		 * Some minidrivers answer no Write RAM record: send them
+		 * without waiting, and wait for the Launch RAM that ends
+		 * the file. The records are then still in flight when it
+		 * is sent, so this needs the UART at its operating speed.
+		 */
+		if (stream_write_ram && opcode == 0xfc4c) {
+			err = __hci_cmd_send(hdev, opcode, cmd->plen, cmd_param);
+			if (err) {
+				bt_dev_err(hdev, "BCM: Patch command %04x failed (%d)",
+					   opcode, err);
+				return err;
+			}
+			continue;
+		}
+
 		skb = __hci_cmd_sync(hdev, opcode, cmd->plen, cmd_param,
 				     HCI_INIT_TIMEOUT);
 		if (IS_ERR(skb)) {
@@ -274,6 +291,11 @@ int btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw)
 	msleep(250);
 
 	return 0;
+}
+
+int btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw)
+{
+	return __btbcm_patchram(hdev, fw, false);
 }
 EXPORT_SYMBOL(btbcm_patchram);
 
@@ -496,6 +518,7 @@ static int btbcm_print_local_name(struct hci_dev *hdev)
 struct bcm_subver_table {
 	u16 subver;
 	const char *name;
+	bool stream_write_ram;
 };
 
 static const struct bcm_subver_table bcm_uart_subver_table[] = {
@@ -525,6 +548,7 @@ static const struct bcm_subver_table bcm_uart_subver_table[] = {
 	{ 0x2119, "BCM4373A0"	},	/* 001.001.025 */
 	{ 0x2128, "BCM4384A0"	},	/* 001.001.040 */
 	{ 0x4119, "BCM4384B0"	},	/* 002.001.025 */
+	{ 0x6209, "BCM4389C1", true },	/* 003.002.009 */
 	{ }
 };
 
@@ -581,6 +605,7 @@ int btbcm_initialize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud
 	struct hci_rp_read_local_version *ver;
 	const struct bcm_subver_table *bcm_subver_table;
 	const char *hw_name = NULL;
+	bool stream_write_ram = false;
 	const char *board_name;
 	char postfix[16] = "";
 	int fw_name_count = 0;
@@ -628,6 +653,7 @@ int btbcm_initialize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud
 	for (i = 0; bcm_subver_table[i].name; i++) {
 		if (subver == bcm_subver_table[i].subver) {
 			hw_name = bcm_subver_table[i].name;
+			stream_write_ram = bcm_subver_table[i].stream_write_ram;
 			break;
 		}
 	}
@@ -689,7 +715,7 @@ int btbcm_initialize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud
 	}
 
 	if (*fw_load_done) {
-		err = btbcm_patchram(hdev, fw);
+		err = __btbcm_patchram(hdev, fw, stream_write_ram);
 		if (err)
 			bt_dev_info(hdev, "BCM: Patch failed (%d)", err);
 
