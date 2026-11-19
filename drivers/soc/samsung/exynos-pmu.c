@@ -539,10 +539,15 @@ static int exynos_pmu_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, pmu_context);
 
-	ret = devm_mfd_add_devices(dev, PLATFORM_DEVID_NONE, exynos_pmu_devs,
-				   ARRAY_SIZE(exynos_pmu_devs), NULL, 0, NULL);
-	if (ret)
-		return ret;
+	/* Only a PMU that provides clocks has CLKOUT for exynos-clkout. */
+	if (of_property_present(dev->of_node, "#clock-cells")) {
+		ret = devm_mfd_add_devices(dev, PLATFORM_DEVID_NONE,
+					   exynos_pmu_devs,
+					   ARRAY_SIZE(exynos_pmu_devs), NULL, 0,
+					   NULL);
+		if (ret)
+			return ret;
+	}
 
 	if (devm_of_platform_populate(dev))
 		dev_err(dev, "Error populating children, reboot and poweroff might not work properly\n");
