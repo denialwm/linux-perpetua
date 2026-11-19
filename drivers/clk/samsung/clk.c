@@ -501,6 +501,10 @@ void samsung_en_dyn_root_clk_gating(struct device_node *np,
 	if (!ctx->auto_clock_gate)
 		return;
 
+	/* A CMU without DRCG, such as gs101's CMU_TOP, has no sysreg. */
+	if (!ctx->drcg_offset)
+		return;
+
 	ctx->sysreg = syscon_regmap_lookup_by_phandle(np, "samsung,sysreg");
 	if (IS_ERR(ctx->sysreg)) {
 		pr_warn("%pOF: Unable to get CMU sysreg\n", np);
