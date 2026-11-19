@@ -212,8 +212,9 @@ static int get_vbus_regulator_handle(struct max_tcpci_chip *chip)
 		chip->vbus_reg = devm_regulator_get_exclusive(chip->dev,
 							      "vbus");
 		if (IS_ERR_OR_NULL(chip->vbus_reg)) {
-			dev_err(chip->dev,
-				"Failed to get vbus regulator handle\n");
+			/* Quiet while the regulator is not registered yet */
+			dev_err_probe(chip->dev, PTR_ERR(chip->vbus_reg),
+				      "Failed to get vbus regulator handle\n");
 			return -ENODEV;
 		}
 	}
