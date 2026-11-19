@@ -134,7 +134,7 @@ patternProperties:
       integral-cutoff:
         $ref: /schemas/types.yaml#/definitions/uint32
         description:
-          For the power_allocator governor, in millicelsius: the integral
+          For the power_allocator governor, in millicelsius, the integral
           term accumulates while the temperature is less than this far below
           the control trip, and always above it. Without it the integral only
           ever accumulates above the control trip, so it can lower the budget
