@@ -2,4 +2,4 @@
 name='Google Pixel 6'
 vendor=exynos
 soc=gs101
-boot=android12-gki
+boot=android-gki

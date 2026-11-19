@@ -78,7 +78,11 @@ devices/boot holds one tool per boot chain that writes the images:
   android-gki   The GKI layout of Android 13 and later: a boot image with
                 only the kernel and an init_boot image with only the
                 ramdisk. It writes either from the device's own stock
-                image, keeping its header and AVB properties.
+                image, keeping its header and AVB properties. A device
+                with no init_boot partition (launched with Android 12)
+                gets the ramdisk in boot, after the kernel (--ramdisk),
+                and --lz4 writes the kernel as legacy LZ4 for a
+                bootloader that wants it so.
 
 
   android-legacy  Android header version 1: a gzip kernel followed by the
@@ -93,15 +97,6 @@ devices/boot holds one tool per boot chain that writes the images:
                 header and AVB properties, and signs the footer again with
                 the key that signed it. Usage: TEMPLATE IMAGE KEY OUTPUT
                 [EVIDENCE].
-
-
-  android12-gki  The GKI layout of devices launched with Android 12, which
-                 have no init_boot: the boot image carries the kernel, as
-                 legacy LZ4, and the ramdisk of the boot userspace, which the
-                 bootloader loads after the vendor_boot ramdisks. It writes
-                 from the device's own stock boot image, keeping its header
-                 and AVB properties. Usage: TEMPLATE IMAGE RAMDISK OUTPUT
-                 [EVIDENCE].
 
 
 Checks
