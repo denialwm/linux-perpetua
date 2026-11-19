@@ -47,13 +47,13 @@ static const struct mfd_cell s2mpg10_devs[] = {
 	MFD_CELL_NAME("s2mpg10-regulator"),
 	MFD_CELL_RES("s2mpg10-rtc", s2mpg10_rtc_resources),
 	MFD_CELL_OF("s2mpg10-clk", NULL, NULL, 0, 0, "samsung,s2mpg10-clk"),
-	MFD_CELL_OF("s2mpg10-gpio", NULL, NULL, 0, 0, "samsung,s2mpg10-gpio"),
+	MFD_CELL_NAME("s2mpg10-gpio"),
 };
 
 static const struct mfd_cell s2mpg11_devs[] = {
 	MFD_CELL_NAME("s2mpg11-meter"),
 	MFD_CELL_NAME("s2mpg11-regulator"),
-	MFD_CELL_OF("s2mpg11-gpio", NULL, NULL, 0, 0, "samsung,s2mpg11-gpio"),
+	MFD_CELL_NAME("s2mpg11-gpio"),
 };
 
 static const struct resource s2mps11_rtc_resources[] = {
