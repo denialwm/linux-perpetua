@@ -198,6 +198,23 @@
 			regulator-max-microvolt = <1800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
+
+		/*
+		 * Sensors 3.3 V: pm6350_l10, stock min = max 3.3 V,
+		 * always-on, init LPM, no AP consumer (live fdt L1465). The ADSP's
+		 * sensor drivers time out without the AP holding it. 3.304 V: the LDO
+		 * has 8 mV steps and 3.3 V is not one; an exact 3.3 V fails the whole
+		 * regulators-0 probe.
+		 */
+		vreg_l10a: ldo10 {
+			regulator-name = "vreg_l10a";
+			regulator-min-microvolt = <3304000>;
+			regulator-max-microvolt = <3304000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_LPM>;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+		};
 	};
 
 	/* PM6150L (pmic e; "pm6150a" on stock). Wi-Fi, microSD and UFS rails. */
@@ -262,6 +279,20 @@
 			regulator-min-microvolt = <2952000>;
 			regulator-max-microvolt = <2952000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * Sensors 1.8 V: pm6150a_l8, stock min = max 1.8 V, always-on, init LPM,
+		 * no AP consumer (live fdt L1363).
+		 */
+		vreg_l8e: ldo8 {
+			regulator-name = "vreg_l8e";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_LPM>;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
 		};
 	};
 };
