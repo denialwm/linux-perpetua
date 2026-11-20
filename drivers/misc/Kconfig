@@ -594,12 +594,13 @@ config OPLUS_UFF_FP
 	  Biometric commands use QTEE; this is not a complete fingerprint HAL.
 
 config TEE_FP
-	tristate "Fingerprint platform control for QTEE-owned sensors"
+	tristate "Fingerprint platform control for secure-world sensors"
 	depends on OF && GPIOLIB && REGULATOR
 	help
 	  Power, reset and interrupt control, as /dev/tee_fp, for fingerprint
-	  sensors whose SPI bus belongs to QTEE: the Goodix GUM5228 and the
-	  JIIOV JV0307. Biometric commands use the signed trusted
-	  application; this is not a complete fingerprint HAL.
+	  sensors whose SPI bus belongs to the secure world: the Goodix
+	  GUM5228 and the JIIOV JV0307 under QTEE, and the Goodix G6 under
+	  Trusty. Biometric commands use the signed trusted application;
+	  this is not a complete fingerprint HAL.
 
 endmenu
