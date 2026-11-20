@@ -22,6 +22,8 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 
+#include <video/mipi_display.h>
+
 #include <drm/drm_atomic.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
@@ -48,12 +50,16 @@
 #define  INTSRC_SFR_PL_FIFO_EMPTY	BIT(29)
 #define  INTSRC_SFR_PH_FIFO_EMPTY	BIT(28)
 #define  INTSRC_SFR_PH_FIFO_OVERFLOW	BIT(27)
+#define  INTSRC_RX_DATA_DONE		BIT(18)
 #define DSIM_PKTHDR			0x0058
 #define  PKTHDR_DATA1(x)		((x) << 16)
 #define  PKTHDR_DATA0(x)		((x) << 8)
 #define  PKTHDR_ID(x)			((x) << 0)
+#define  PKTHDR_BTA			BIT(24)
 #define DSIM_PAYLOAD			0x005c
+#define DSIM_RXFIFO			0x0060
 #define DSIM_FIFOCTRL			0x0068
+#define  FIFOCTRL_EMPTY_RX		BIT(12)
 #define  FIFOCTRL_FULL_PH_SFR		BIT(11)
 #define  FIFOCTRL_FULL_PL_SFR		BIT(9)
 
@@ -62,6 +68,8 @@
 #define  TE_CTRL1_TIMEOUT		GENMASK(15, 0)
 
 #define DSIM_FIFO_TIMEOUT_US		20000
+/* The read FIFO: 64 words, as Google's MAX_RX_FIFO has it. */
+#define DSIM_RX_FIFO_WORDS		64
 
 /* The rate the bootloader set the TE window up for. */
 #define DSIM_BOOT_VREFRESH		60
@@ -131,6 +139,59 @@ static int gs101_dsi_wait_fifo(struct gs101_dsi *dsi, u32 full)
 				  !(val & full), 10, DSIM_FIFO_TIMEOUT_US);
 }
 
+/* Called with dsi->lock held: the panel's answer, after bus turnaround. */
+static int gs101_dsi_read_response(struct gs101_dsi *dsi,
+				   const struct mipi_dsi_msg *msg)
+{
+	u8 *rx = msg->rx_buf;
+	size_t len, i;
+	u32 val;
+	int ret;
+
+	ret = readl_poll_timeout(dsi->regs + DSIM_INTSRC, val,
+				 val & INTSRC_RX_DATA_DONE, 10,
+				 DSIM_FIFO_TIMEOUT_US);
+	if (ret)
+		return ret;
+
+	val = readl(dsi->regs + DSIM_RXFIFO);
+	switch (val & 0x3f) {
+	case MIPI_DSI_RX_GENERIC_SHORT_READ_RESPONSE_1BYTE:
+	case MIPI_DSI_RX_DCS_SHORT_READ_RESPONSE_1BYTE:
+		rx[0] = val >> 8;
+		return 1;
+	case MIPI_DSI_RX_GENERIC_SHORT_READ_RESPONSE_2BYTE:
+	case MIPI_DSI_RX_DCS_SHORT_READ_RESPONSE_2BYTE:
+		rx[0] = val >> 8;
+		if (msg->rx_len > 1)
+			rx[1] = val >> 16;
+		return min_t(size_t, msg->rx_len, 2);
+	case MIPI_DSI_RX_GENERIC_LONG_READ_RESPONSE:
+	case MIPI_DSI_RX_DCS_LONG_READ_RESPONSE:
+		len = (val >> 8) & 0xffff;
+		/* Longer than the maximum return packet size the panel was given. */
+		if (len > msg->rx_len) {
+			dev_err(dsi->dev, "read response of %zu bytes, %zu asked\n",
+				len, msg->rx_len);
+			return -EIO;
+		}
+		for (i = 0; i < len; i += 4) {
+			size_t j;
+
+			val = readl(dsi->regs + DSIM_RXFIFO);
+			for (j = 0; j < 4 && i + j < len; j++)
+				rx[i + j] = val >> (8 * j);
+		}
+		return len;
+	case MIPI_DSI_RX_ACKNOWLEDGE_AND_ERROR_REPORT:
+		dev_err(dsi->dev, "read error report %#06x\n", (val >> 8) & 0xffff);
+		return -EIO;
+	default:
+		dev_err(dsi->dev, "unexpected read response %#010x\n", val);
+		return -EIO;
+	}
+}
+
 static ssize_t gs101_dsi_host_transfer(struct mipi_dsi_host *host,
 				       const struct mipi_dsi_msg *msg)
 {
@@ -140,10 +201,6 @@ static ssize_t gs101_dsi_host_transfer(struct mipi_dsi_host *host,
 	size_t i, j;
 	u32 val;
 	int ret;
-
-	/* Reads need bus turnaround handling, which nothing uses yet. */
-	if (msg->rx_len)
-		return -EOPNOTSUPP;
 
 	ret = mipi_dsi_create_packet(&packet, msg);
 	if (ret)
@@ -155,7 +212,12 @@ static ssize_t gs101_dsi_host_transfer(struct mipi_dsi_host *host,
 	writel(val | ESCMODE_CMD_LPDT, dsi->regs + DSIM_ESCMODE);
 
 	writel(INTSRC_SFR_PH_FIFO_EMPTY | INTSRC_SFR_PL_FIFO_EMPTY |
-	       INTSRC_SFR_PH_FIFO_OVERFLOW, dsi->regs + DSIM_INTSRC);
+	       INTSRC_SFR_PH_FIFO_OVERFLOW | INTSRC_RX_DATA_DONE,
+	       dsi->regs + DSIM_INTSRC);
+	/* Drop anything a previous read left behind: at most a full FIFO. */
+	for (i = 0; i < DSIM_RX_FIFO_WORDS &&
+	     !(readl(dsi->regs + DSIM_FIFOCTRL) & FIFOCTRL_EMPTY_RX); i++)
+		readl(dsi->regs + DSIM_RXFIFO);
 
 	tx = packet.payload;
 	for (i = 0; i < packet.payload_length; i += 4) {
@@ -175,11 +237,14 @@ static ssize_t gs101_dsi_host_transfer(struct mipi_dsi_host *host,
 		goto out;
 
 	writel(PKTHDR_ID(packet.header[0]) | PKTHDR_DATA0(packet.header[1]) |
-	       PKTHDR_DATA1(packet.header[2]), dsi->regs + DSIM_PKTHDR);
+	       PKTHDR_DATA1(packet.header[2]) | (msg->rx_len ? PKTHDR_BTA : 0),
+	       dsi->regs + DSIM_PKTHDR);
 
 	ret = readl_poll_timeout(dsi->regs + DSIM_INTSRC, val,
 				 val & INTSRC_SFR_PH_FIFO_EMPTY, 10,
 				 DSIM_FIFO_TIMEOUT_US);
+	if (!ret && msg->rx_len)
+		ret = gs101_dsi_read_response(dsi, msg);
 
 out:
 	val = readl(dsi->regs + DSIM_ESCMODE);
@@ -187,13 +252,13 @@ out:
 
 	mutex_unlock(&dsi->lock);
 
-	if (ret) {
-		dev_err(dsi->dev, "transfer of type %#04x timed out, INTSRC %#010x\n",
-			msg->type, readl(dsi->regs + DSIM_INTSRC));
+	if (ret < 0) {
+		dev_err(dsi->dev, "transfer of type %#04x failed (%d), INTSRC %#010x\n",
+			msg->type, ret, readl(dsi->regs + DSIM_INTSRC));
 		return ret;
 	}
 
-	return msg->tx_len;
+	return msg->rx_len ? ret : msg->tx_len;
 }
 
 static const struct mipi_dsi_host_ops gs101_dsi_host_ops = {
