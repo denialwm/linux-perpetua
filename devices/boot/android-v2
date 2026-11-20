@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 """Pack an Android v2 boot image: raw arm64 kernel and ramdisk, with the template's DTB.
 
-Usage: android-v2 TEMPLATE IMAGE RAMDISK OUTPUT [EVIDENCE]
+Usage: android-v2 TEMPLATE IMAGE RAMDISK OUTPUT [EVIDENCE] [--tail TAIL]
 Samsung layout, as on the Galaxy Tab S7 FE: header v2, 4096-byte pages, no vendor_boot,
 no second payload, no recovery DTBO, one DTB in the boot image, a short signer trailer after
 the DTB, then an AVB vbmeta blob and footer at the end of the partition.
@@ -11,6 +11,8 @@ the ramdisk; moves the vbmeta blob and rewrites the footer. The kept vbmeta hash
 the image: a bootloader that enforces it (locked) refuses the image. An unlocked one boots it, as it
 boots a Magisk-patched image of the same layout.
 IMAGE must carry the Perpetua built-in DTB. No device access. OUTPUT must not exist.
+TAIL, a whole number of pages, goes at the page after the DTB, before the signer trailer: the
+early userspace finds it from the header sizes and mounts it at /usr/lib/modules.
 """
 import hashlib
 import json
@@ -55,10 +57,17 @@ def parse(img):
 
 
 def main():
-    if len(sys.argv) not in (5, 6):
+    args = sys.argv[1:]
+    tail = b""
+    if "--tail" in args:
+        at = args.index("--tail")
+        tail = Path(args[at + 1]).read_bytes()
+        del args[at:at + 2]
+        assert tail and len(tail) % PAGE == 0, "tail is not a whole number of pages"
+    if len(args) not in (4, 5):
         sys.exit(__doc__)
-    template, source, ramdisk, output = map(Path, sys.argv[1:5])
-    evidence = Path(sys.argv[5]) if len(sys.argv) == 6 else None
+    template, source, ramdisk, output = map(Path, args[:4])
+    evidence = Path(args[4]) if len(args) == 5 else None
     assert not output.exists(), "refusing to replace an existing image"
     stock = template.read_bytes()
     t = parse(stock)
@@ -82,7 +91,8 @@ def main():
     body = bytes(header)
     for data in (image, initrd, dtb):
         body += data + bytes(-len(data) % PAGE)
-    body += trailer
+    tail_offset = len(body)
+    body += tail + trailer
     orig = len(body)
     body += bytes(-orig % PAGE)
     voff = len(body)
@@ -102,6 +112,7 @@ def main():
         info = run("avbtool", "info_image", "--image", output).decode()
     got = output.read_bytes()
     assert got[-64:-52] == stock[-64:-52] and got[voff:voff + len(vbmeta)] == vbmeta
+    assert got[tail_offset:tail_offset + len(tail)] == tail, "tail is not after the DTB"
     # Apart from the two sizes and the ID, every header byte is the template's.
     restored = bytearray(header)
     for start, end in ((8, 12), (16, 20), (576, 608)):
@@ -109,7 +120,7 @@ def main():
     assert restored == stock[:PAGE]
     record = dict(bytes=len(got), sha256=sha(got), template_sha256=sha(stock),
                   image_sha256=sha(image), ramdisk_sha256=sha(initrd), dtb_sha256=sha(dtb),
-                  original_image_size=orig, vbmeta_offset=voff, header_version=2, page_size=PAGE)
+                  original_image_size=orig, vbmeta_offset=voff, header_version=2, page_size=PAGE, tail_offset=tail_offset if tail else None)
     if evidence:
         evidence.mkdir(parents=True, exist_ok=True)
         (evidence / "boot-header.txt").write_bytes(described)
