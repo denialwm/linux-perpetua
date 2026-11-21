@@ -82,6 +82,12 @@ int trusty_transfer_memory(struct device *dev, u64 *id,
 int trusty_reclaim_memory(struct device *dev, trusty_shared_mem_id_t id,
 			  struct scatterlist *sglist, unsigned int nents);
 
+struct dma_buf;
+void trusty_register_func_for_dma_buf(
+	u64 (*get_ffa_tag)(struct dma_buf *dma_buf),
+	int (*get_shared_mem_id)(struct dma_buf *dma_buf,
+		trusty_shared_mem_id_t *id));
+
 struct trusty_nop {
 	struct list_head node;
 	u32 args[3];
