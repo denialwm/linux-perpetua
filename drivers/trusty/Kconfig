@@ -54,6 +54,18 @@ config TRUSTY_VIRTIO
 
 	  If you build this as a module, it will be called trusty-virtio.
 
+config TRUSTY_VIRTIO_IPC
+	tristate "Trusty Virtio IPC driver"
+	depends on TRUSTY_VIRTIO
+	help
+	  Enable support for communicating with Trusty services.  This driver
+	  serves the IPC virtio device that Trusty offers: it opens channels to
+	  the ports of Trusty's services and passes messages and shared memory
+	  over them, for user space through /dev/trusty-ipc-dev0 and for other
+	  kernel drivers through an in-kernel API.
+
+	  If you build this as a module, it will be called trusty-ipc.
+
 config TRUSTY_CRASH_IS_PANIC
 	bool "When trusty panics, then panic the kernel"
 	help
