@@ -9,16 +9,29 @@
 
 #include <dt-bindings/thermal/thermal.h>
 
+/*
+ * The zones follow stock's: from 70 °C the CPU clusters are held at their
+ * control temperature by the power allocator, polled every 50 ms, with
+ * stock's sustainable power for each. The X1 cores heat by tens of degrees
+ * in a tenth of a second at their top clock, so a slower loop lets them
+ * overshoot. Stock also limits the clusters in the TMU and ACPM (hardware
+ * throttling and hard limits from 98-103 °C, the X1 and A76 cores paused
+ * at 108 °C) and powers off only past 115 °C; without those limits, the
+ * critical trips sit at that 115 °C. The GPU has no power model, so its
+ * zone steps its clock instead, down to the lowest at stock's hard limit.
+ */
 / {
 	thermal-zones {
 		cpucl0-thermal {
-			polling-delay-passive = <250>;
+			polling-delay-passive = <50>;
 			polling-delay = <0>;
+			thermal-governor = "power_allocator";
+			sustainable-power = <200>;
 			thermal-sensors = <&tmu_top 2>;
 
 			cooling-maps {
 				map0 {
-					trip = <&little_mitigate>;
+					trip = <&little_control>;
 					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
@@ -27,140 +40,131 @@
 			};
 
 			trips {
-				little_switch_on: little-switch-on {
-					temperature = <80000>;
+				little-switch-on {
+					temperature = <70000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 
-				little_mitigate: little-mitigate {
-					temperature = <90000>;
+				little_control: little-control {
+					temperature = <95000>;
 					hysteresis = <5000>;
 					type = "passive";
 				};
 
-				little_hot: little-hot {
-					temperature = <100000>;
-					hysteresis = <5000>;
-					type = "hot";
-				};
-
-				little_critical: little-critical {
-					temperature = <105000>;
-					hysteresis = <2000>;
+				little-critical {
+					temperature = <115000>;
+					hysteresis = <3000>;
 					type = "critical";
 				};
 			};
 		};
 
 		cpucl1-thermal {
-			polling-delay-passive = <250>;
+			polling-delay-passive = <50>;
 			polling-delay = <0>;
+			thermal-governor = "power_allocator";
+			sustainable-power = <1000>;
 			thermal-sensors = <&tmu_top 1>;
 
 			cooling-maps {
 				map0 {
-					trip = <&mid_mitigate>;
+					trip = <&mid_control>;
 					cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 				};
 			};
 
 			trips {
-				mid_switch_on: mid-switch-on {
-					temperature = <80000>;
+				mid-switch-on {
+					temperature = <70000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 
-				mid_mitigate: mid-mitigate {
+				mid_control: mid-control {
 					temperature = <90000>;
 					hysteresis = <5000>;
 					type = "passive";
 				};
 
-				mid_hot: mid-hot {
-					temperature = <100000>;
-					hysteresis = <5000>;
-					type = "hot";
-				};
-
-				mid_critical: mid-critical {
-					temperature = <105000>;
-					hysteresis = <2000>;
+				mid-critical {
+					temperature = <115000>;
+					hysteresis = <3000>;
 					type = "critical";
 				};
 			};
 		};
 
 		cpucl2-thermal {
-			polling-delay-passive = <250>;
+			polling-delay-passive = <50>;
 			polling-delay = <0>;
+			thermal-governor = "power_allocator";
+			sustainable-power = <2000>;
 			thermal-sensors = <&tmu_top 0>;
 
 			cooling-maps {
 				map0 {
-					trip = <&big_mitigate>;
+					trip = <&big_control>;
 					cooling-device = <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
 							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
 				};
 			};
 
 			trips {
-				big_switch_on: big-switch-on {
-					temperature = <80000>;
+				big-switch-on {
+					temperature = <70000>;
 					hysteresis = <2000>;
 					type = "passive";
 				};
 
-				big_mitigate: big-mitigate {
+				big_control: big-control {
 					temperature = <90000>;
 					hysteresis = <5000>;
 					type = "passive";
 				};
 
-				big_hot: big-hot {
-					temperature = <100000>;
-					hysteresis = <5000>;
-					type = "hot";
-				};
-
-				big_critical: big-critical {
-					temperature = <105000>;
-					hysteresis = <2000>;
+				big-critical {
+					temperature = <115000>;
+					hysteresis = <3000>;
 					type = "critical";
 				};
 			};
 		};
 
 		gpu-thermal {
-			polling-delay-passive = <250>;
+			polling-delay-passive = <50>;
 			polling-delay = <0>;
 			thermal-sensors = <&tmu_sub 0>;
 
 			cooling-maps {
 				map0 {
-					trip = <&gpu_mitigate>;
+					trip = <&gpu_control>;
 					cooling-device = <&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+
+				map1 {
+					trip = <&gpu_hardlimit>;
+					cooling-device = <&gpu 3 3>;
 				};
 			};
 
 			trips {
-				gpu_mitigate: gpu-mitigate {
+				gpu_control: gpu-control {
 					temperature = <90000>;
 					hysteresis = <5000>;
 					type = "passive";
 				};
 
-				gpu_hot: gpu-hot {
-					temperature = <100000>;
+				gpu_hardlimit: gpu-hardlimit {
+					temperature = <98000>;
 					hysteresis = <5000>;
-					type = "hot";
+					type = "passive";
 				};
 
-				gpu_critical: gpu-critical {
-					temperature = <105000>;
-					hysteresis = <2000>;
+				gpu-critical {
+					temperature = <115000>;
+					hysteresis = <3000>;
 					type = "critical";
 				};
 			};

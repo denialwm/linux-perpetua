@@ -1207,6 +1207,17 @@ static int _set_required_opps(struct device *dev, struct opp_table *opp_table,
 	if (!devs)
 		return 0;
 
+	/*
+	 * Only the required OPPs of attached devices are set here. A table
+	 * whose required OPP tables have no device attached, such as those a
+	 * devfreq driver scales on its own, has nothing to wait for.
+	 */
+	for (index = 0; index < opp_table->required_opp_count; index++)
+		if (devs[index])
+			break;
+	if (index == opp_table->required_opp_count)
+		return 0;
+
 	/* required-opps not fully initialized yet */
 	if (lazy_linking_pending(opp_table))
 		return -EBUSY;

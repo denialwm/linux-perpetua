@@ -375,6 +375,16 @@ enum {
 	 */
 	HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE,
 
+	/* When this quirk is set, the HCI_OP_READ_LOCAL_CODEC_CAPS command is
+	 * skipped and the local codecs are listed without capabilities. This
+	 * is required for some Broadcom controllers which erroneously claim
+	 * to support it.
+	 *
+	 * This quirk can be set before hci_register_dev is called or
+	 * during the hdev->setup vendor callback.
+	 */
+	HCI_QUIRK_BROKEN_READ_CODEC_CAPS,
+
 	__HCI_NUM_QUIRKS,
 };
 

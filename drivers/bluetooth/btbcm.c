@@ -31,6 +31,8 @@
 #define BDADDR_BCM4334B0 (&(bdaddr_t) {{0x00, 0x00, 0x00, 0xb0, 0x34, 0x43}})
 #define BDADDR_BCM4345C5 (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0xc5, 0x45, 0x43}})
 #define BDADDR_BCM43341B (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0x1b, 0x34, 0x43}})
+#define BDADDR_BCM4384B0 (&(bdaddr_t) {{0x93, 0x76, 0x00, 0xb0, 0x84, 0x43}})
+#define BDADDR_BCM4389C1 (&(bdaddr_t) {{0x93, 0x76, 0x00, 0x00, 0x89, 0x43}})
 
 #define BCM_FW_NAME_LEN			64
 #define BCM_FW_NAME_COUNT_MAX		4
@@ -120,6 +122,10 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
 	 *
 	 * The address AA:AA:AA:AA:AA:AA indicates a BCM43430A1 controller
 	 * with no configured address.
+	 *
+	 * The address 43:89:00:00:76:93 indicates a BCM4389C1 controller
+	 * with no configured address. Its patch RAM file sets it, so every
+	 * controller loaded with that file reports it.
 	 */
 	if (!bacmp(&bda->bdaddr, BDADDR_BCM20702A0) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM20702A1) ||
@@ -130,7 +136,9 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
 	    !bacmp(&bda->bdaddr, BDADDR_BCM4345C5) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM43430A0) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM43430A1) ||
-	    !bacmp(&bda->bdaddr, BDADDR_BCM43341B)) {
+	    !bacmp(&bda->bdaddr, BDADDR_BCM43341B) ||
+	    !bacmp(&bda->bdaddr, BDADDR_BCM4384B0) ||
+	    !bacmp(&bda->bdaddr, BDADDR_BCM4389C1)) {
 		/* Try falling back to BDADDR EFI variable */
 		if (btbcm_set_bdaddr_from_efi(hdev) != 0) {
 			bt_dev_info(hdev, "BCM: Using default device address (%pMR)",
@@ -208,7 +216,8 @@ int btbcm_write_pcm_int_params(struct hci_dev *hdev,
 }
 EXPORT_SYMBOL_GPL(btbcm_write_pcm_int_params);
 
-int btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw)
+static int __btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw,
+			    bool stream_write_ram)
 {
 	const struct hci_command_hdr *cmd;
 	const u8 *fw_ptr;
@@ -251,6 +260,22 @@ int btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw)
 
 		opcode = le16_to_cpu(cmd->opcode);
 
+		/*
+		 * Some minidrivers answer no Write RAM record: send them
+		 * without waiting, and wait for the Launch RAM that ends
+		 * the file. The records are then still in flight when it
+		 * is sent, so this needs the UART at its operating speed.
+		 */
+		if (stream_write_ram && opcode == 0xfc4c) {
+			err = __hci_cmd_send(hdev, opcode, cmd->plen, cmd_param);
+			if (err) {
+				bt_dev_err(hdev, "BCM: Patch command %04x failed (%d)",
+					   opcode, err);
+				return err;
+			}
+			continue;
+		}
+
 		skb = __hci_cmd_sync(hdev, opcode, cmd->plen, cmd_param,
 				     HCI_INIT_TIMEOUT);
 		if (IS_ERR(skb)) {
@@ -266,6 +291,11 @@ int btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw)
 	msleep(250);
 
 	return 0;
+}
+
+int btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw)
+{
+	return __btbcm_patchram(hdev, fw, false);
 }
 EXPORT_SYMBOL(btbcm_patchram);
 
@@ -488,6 +518,8 @@ static int btbcm_print_local_name(struct hci_dev *hdev)
 struct bcm_subver_table {
 	u16 subver;
 	const char *name;
+	bool stream_write_ram;
+	bool broken_read_codec_caps;
 };
 
 static const struct bcm_subver_table bcm_uart_subver_table[] = {
@@ -506,6 +538,7 @@ static const struct bcm_subver_table bcm_uart_subver_table[] = {
 	{ 0x6606, "BCM4345C5"	},	/* 003.006.006 */
 	{ 0x230f, "BCM4356A2"	},	/* 001.003.015 */
 	{ 0x2310, "BCM4343A2"	},	/* 001.003.016 */
+	{ 0x2409, "BCM4356A3"	},	/* 001.004.009 */
 	{ 0x220e, "BCM20702A1"  },	/* 001.002.014 */
 	{ 0x420d, "BCM4349B1"	},	/* 002.002.013 */
 	{ 0x420e, "BCM4349B1"	},	/* 002.002.014 */
@@ -514,6 +547,9 @@ static const struct bcm_subver_table bcm_uart_subver_table[] = {
 	{ 0x4106, "BCM4335A0"	},	/* 002.001.006 */
 	{ 0x410c, "BCM43430B0"	},	/* 002.001.012 */
 	{ 0x2119, "BCM4373A0"	},	/* 001.001.025 */
+	{ 0x2128, "BCM4384A0"	},	/* 001.001.040 */
+	{ 0x4119, "BCM4384B0"	},	/* 002.001.025 */
+	{ 0x6209, "BCM4389C1", true, true },	/* 003.002.009 */
 	{ }
 };
 
@@ -570,6 +606,7 @@ int btbcm_initialize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud
 	struct hci_rp_read_local_version *ver;
 	const struct bcm_subver_table *bcm_subver_table;
 	const char *hw_name = NULL;
+	bool stream_write_ram = false;
 	const char *board_name;
 	char postfix[16] = "";
 	int fw_name_count = 0;
@@ -617,6 +654,9 @@ int btbcm_initialize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud
 	for (i = 0; bcm_subver_table[i].name; i++) {
 		if (subver == bcm_subver_table[i].subver) {
 			hw_name = bcm_subver_table[i].name;
+			stream_write_ram = bcm_subver_table[i].stream_write_ram;
+			if (bcm_subver_table[i].broken_read_codec_caps)
+				hci_set_quirk(hdev, HCI_QUIRK_BROKEN_READ_CODEC_CAPS);
 			break;
 		}
 	}
@@ -678,7 +718,7 @@ int btbcm_initialize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud
 	}
 
 	if (*fw_load_done) {
-		err = btbcm_patchram(hdev, fw);
+		err = __btbcm_patchram(hdev, fw, stream_write_ram);
 		if (err)
 			bt_dev_info(hdev, "BCM: Patch failed (%d)", err);
 

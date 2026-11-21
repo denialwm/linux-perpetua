@@ -508,6 +508,10 @@ struct exynos5_usbdrd_phy_drvdata {
  * @regulators: regulators for phy
  * @sw: TypeC orientation switch handle
  * @orientation: TypeC connector orientation - normal or flipped
+ * @pipe3_ready: the PIPE3 phy is initialized, its lanes muxed for
+ *		 @pipe3_orientation
+ * @pipe3_orientation: TypeC connector orientation the PIPE3 lanes are muxed
+ *		       for
  */
 struct exynos5_usbdrd_phy {
 	struct device *dev;
@@ -531,6 +535,8 @@ struct exynos5_usbdrd_phy {
 
 	struct typec_switch_dev *sw;
 	enum typec_orientation orientation;
+	bool pipe3_ready;
+	enum typec_orientation pipe3_orientation;
 };
 
 static inline
@@ -1717,6 +1723,9 @@ static void exynos5_usbdrd_gs101_pipe3_init(struct exynos5_usbdrd_phy *phy_drd)
 
 	if (!exynos5_usbdrd_usbdp_g2_v4_pma_check_pll_lock(phy_drd))
 		exynos5_usbdrd_usbdp_g2_v4_pma_check_cdr_lock(phy_drd);
+
+	phy_drd->pipe3_ready = true;
+	phy_drd->pipe3_orientation = phy_drd->orientation;
 }
 
 static int exynos5_usbdrd_gs101_phy_init(struct phy *phy)
@@ -1754,6 +1763,9 @@ static int exynos5_usbdrd_gs101_phy_exit(struct phy *phy)
 		ret = exynos850_usbdrd_phy_exit(phy);
 		if (ret)
 			return ret;
+	} else {
+		scoped_guard(mutex, &phy_drd->phy_mutex)
+			phy_drd->pipe3_ready = false;
 	}
 
 	exynos5_usbdrd_phy_isol(inst, true);
@@ -1874,6 +1886,17 @@ static int exynos5_usbdrd_orien_sw_set(struct typec_switch_dev *sw,
 		}
 
 		phy_drd->orientation = orientation;
+
+		/*
+		 * The PIPE3 phy muxes the SuperSpeed lanes at init. When it was
+		 * initialized before the orientation was known, e.g. at boot
+		 * with a cable attached, or for the other orientation, mux them
+		 * again: SuperSpeed only works in one orientation otherwise.
+		 */
+		if (phy_drd->pipe3_ready &&
+		    orientation != TYPEC_ORIENTATION_NONE &&
+		    orientation != phy_drd->pipe3_orientation)
+			phy_drd->phys[EXYNOS5_DRDPHY_PIPE3].phy_cfg->phy_init(phy_drd);
 	}
 
 	clk_bulk_disable_unprepare(phy_drd->drv_data->n_clks, phy_drd->clks);

@@ -31,6 +31,8 @@ properties:
           - brcm,bcm43540-bt
           - brcm,bcm4335a0
           - brcm,bcm4349-bt
+          - brcm,bcm4384-bt
+          - brcm,bcm4389-bt
           - cypress,cyw4373a0-bt
           - infineon,cyw55572-bt
 
@@ -126,6 +128,7 @@ dependencies:
   brcm,requires-autobaud-mode: [ shutdown-gpios ]
 
 allOf:
+  - $ref: bluetooth-controller.yaml#
   - $ref: /schemas/serial/serial-peripheral-props.yaml#
   - if:
       not:
@@ -152,6 +155,7 @@ examples:
 
         bluetooth {
             compatible = "brcm,bcm4330-bt";
+            local-bd-address = [55 44 33 22 11 00];
             max-speed = <921600>;
             brcm,bt-pcm-int-params = [01 02 00 01 01];
             shutdown-gpios = <&gpio 30 GPIO_ACTIVE_HIGH>;
