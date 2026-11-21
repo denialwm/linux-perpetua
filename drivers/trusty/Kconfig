@@ -21,6 +21,18 @@ config TRUSTY
 
 if TRUSTY
 
+config TRUSTY_IRQ
+	bool "Trusty IRQ support"
+	help
+	  Enable forwarding of IRQs from Linux to Trusty.  This driver retrieves
+	  from Trusty a list of IRQs that Trusty uses, and it registers handlers
+	  for them which notify Trusty that the IRQ has been received.
+
+	  If you build the trusty core driver as a module, this will be part of the
+	  trusty-core module.
+
+	  Trusty needs it to receive the interrupts it uses.
+
 config TRUSTY_CRASH_IS_PANIC
 	bool "When trusty panics, then panic the kernel"
 	help
