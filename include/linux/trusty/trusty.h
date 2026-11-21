@@ -9,6 +9,7 @@
 #include <linux/trusty/sm_err.h>
 #include <linux/types.h>
 #include <linux/device.h>
+#include <linux/pagemap.h>
 
 
 /*
@@ -56,6 +57,30 @@ int trusty_call_notifier_unregister(struct device *dev,
 const char *trusty_version_str_get(struct device *dev);
 u32 trusty_get_api_version(struct device *dev);
 bool trusty_get_panic_status(struct device *dev);
+
+struct ns_mem_page_info {
+	u64 paddr;
+	u8 ffa_mem_attr;
+	u8 ffa_mem_perm;
+	u64 compat_attr;
+};
+
+int trusty_encode_page_info(struct ns_mem_page_info *inf,
+			    struct page *page, pgprot_t pgprot);
+
+struct scatterlist;
+typedef u64 trusty_shared_mem_id_t;
+int trusty_share_memory(struct device *dev, trusty_shared_mem_id_t *id,
+			struct scatterlist *sglist, unsigned int nents,
+			pgprot_t pgprot);
+int trusty_share_memory_compat(struct device *dev, trusty_shared_mem_id_t *id,
+			       struct scatterlist *sglist, unsigned int nents,
+			       pgprot_t pgprot);
+int trusty_transfer_memory(struct device *dev, u64 *id,
+			   struct scatterlist *sglist, unsigned int nents,
+			   pgprot_t pgprot, u64 tag, bool lend);
+int trusty_reclaim_memory(struct device *dev, trusty_shared_mem_id_t id,
+			  struct scatterlist *sglist, unsigned int nents);
 
 struct trusty_nop {
 	struct list_head node;

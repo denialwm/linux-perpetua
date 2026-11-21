@@ -117,6 +117,43 @@ DEFINE_EVENT(trusty_smc_return_class, name,	\
 DEFINE_TRUSTY_SMC_RETURN_EVENT(trusty_std_call32_done);
 DEFINE_TRUSTY_SMC_RETURN_EVENT(trusty_smc_done);
 
+TRACE_EVENT(trusty_share_memory,
+	TP_PROTO(size_t len, unsigned int nents, bool lend),
+	TP_ARGS(len, nents, lend),
+	TP_STRUCT__entry(
+		__field(size_t, len)
+		__field(unsigned int, nents)
+		__field(bool, lend)
+	),
+	TP_fast_assign(
+		__entry->len = len;
+		__entry->nents = nents;
+		__entry->lend = lend;
+	),
+	TP_printk("len=%zu, nents=%u, lend=%u", __entry->len, __entry->nents, __entry->lend)
+);
+
+TRACE_EVENT(trusty_share_memory_done,
+	TP_PROTO(size_t len, unsigned int nents, bool lend, u64 handle, int ret),
+	TP_ARGS(len, nents, lend, handle, ret),
+	TP_STRUCT__entry(
+		__field(size_t, len)
+		__field(unsigned int, nents)
+		__field(bool, lend)
+		__field(u64, handle)
+		__field(int, ret)
+	),
+	TP_fast_assign(
+		__entry->len = len;
+		__entry->nents = nents;
+		__entry->lend = lend;
+		__entry->handle = handle;
+		__entry->ret = ret;
+	),
+	TP_printk("len=%zu, nents=%u, lend=%u, ffa_handle=0x%llx, ret=%d", __entry->len,
+		__entry->nents, __entry->lend, __entry->handle, __entry->ret)
+);
+
 TRACE_EVENT(trusty_enqueue_nop,
 	TP_PROTO(struct trusty_nop *nop),
 	TP_ARGS(nop),
@@ -194,6 +231,32 @@ TRACE_EVENT(trusty_change_cpu_nice,
 	),
 	TP_printk("%d->%d (%s)", __entry->cur_nice, __entry->req_nice,
 			cpunice_show_cause(__entry->cause_id))
+);
+
+TRACE_EVENT(trusty_reclaim_memory,
+	TP_PROTO(u64 id),
+	TP_ARGS(id),
+	TP_STRUCT__entry(
+		__field(u64, id)
+	),
+	TP_fast_assign(
+		__entry->id = id;
+	),
+	TP_printk("id=%llu", __entry->id)
+);
+
+TRACE_EVENT(trusty_reclaim_memory_done,
+	TP_PROTO(u64 id, int ret),
+	TP_ARGS(id, ret),
+	TP_STRUCT__entry(
+		__field(u64, id)
+		__field(int, ret)
+	),
+	TP_fast_assign(
+		__entry->id = id;
+		__entry->ret = ret;
+	),
+	TP_printk("id=%llu ret=%d (0x%x)", __entry->id, __entry->ret, __entry->ret)
 );
 
 #endif /* _TRUSTY_TRACE_H */
