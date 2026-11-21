@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/interconnect/google,gs101-mif.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Google gs101 memory interface (MIF) frequency scaling
+
+maintainers:
+  - Noswad <64293615+TheNoswad@users.noreply.github.com>
+
+description:
+  The memory interface (MIF) of the Google gs101 SoC clocks the DRAM
+  controllers and the memory bus. Its rate is one of the ACPM firmware's
+  DVFS domains; the firmware sets the voltage that goes with each rate.
+
+properties:
+  compatible:
+    const: google,gs101-mif
+
+  clocks:
+    items:
+      - description: The ACPM DVFS clock of the MIF domain.
+
+  operating-points-v2: true
+  opp-table:
+    type: object
+
+required:
+  - compatible
+  - clocks
+  - operating-points-v2
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/google,gs101-acpm.h>
+
+    mif {
+        compatible = "google,gs101-mif";
+        clocks = <&acpm_ipc GS101_CLK_ACPM_DVFS_MIF>;
+        operating-points-v2 = <&mif_opp_table>;
+    };
+
+    mif_opp_table: opp-table-mif {
+        compatible = "operating-points-v2";
+
+        opp-421000000 {
+            opp-hz = /bits/ 64 <421000000>;
+        };
+
+        opp-3172000000 {
+            opp-hz = /bits/ 64 <3172000000>;
+        };
+    };
