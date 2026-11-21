@@ -1,0 +1,833 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (C) 2013 Google, Inc.
+ */
+
+#include <linux/delay.h>
+#include <linux/kthread.h>
+#include <linux/module.h>
+#include <linux/of.h>
+#include <linux/of_platform.h>
+#include <linux/platform_device.h>
+#include <linux/slab.h>
+#include <linux/stat.h>
+#include <linux/string.h>
+#include <linux/trusty/smcall.h>
+#include <linux/trusty/sm_err.h>
+#include <linux/trusty/trusty.h>
+
+#if CONFIG_ARM64
+#include <asm/daifflags.h>
+#endif
+
+#include "trusty-smc.h"
+#include "trusty-trace.h"
+
+
+struct trusty_state;
+static struct platform_driver trusty_driver;
+static int trusty_cpuhp_slot = -1;
+
+static const int nop_nice_value = -20; /* default to highest */
+
+struct trusty_work {
+	struct trusty_state *s;
+	unsigned int cpu;
+	struct task_struct *nop_thread;
+	wait_queue_head_t nop_event_wait;
+	int signaled;
+};
+
+struct trusty_state {
+	struct mutex smc_lock;
+	struct atomic_notifier_head notifier;
+	struct completion cpu_idle_completion;
+	char *version_str;
+	u32 api_version;
+	bool trusty_panicked;
+	struct device *dev;
+	struct hlist_node cpuhp_node;
+	struct trusty_work __percpu *nop_works;
+	struct list_head nop_queue;
+	spinlock_t nop_lock; /* protects nop_queue */
+};
+
+static inline unsigned long smc(unsigned long r0, unsigned long r1,
+				unsigned long r2, unsigned long r3)
+{
+	unsigned long ret;
+
+	trace_trusty_smc(r0, r1, r2, r3);
+	ret = trusty_smc8(r0, r1, r2, r3, 0, 0, 0, 0).r0;
+	trace_trusty_smc_done(ret);
+	return ret;
+}
+
+s32 trusty_fast_call32(struct device *dev, u32 smcnr, u32 a0, u32 a1, u32 a2)
+{
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+
+	if (WARN_ON(!s))
+		return SM_ERR_INVALID_PARAMETERS;
+	if (WARN_ON(!SMC_IS_FASTCALL(smcnr)))
+		return SM_ERR_INVALID_PARAMETERS;
+	if (WARN_ON(SMC_IS_SMC64(smcnr)))
+		return SM_ERR_INVALID_PARAMETERS;
+
+	return smc(smcnr, a0, a1, a2);
+}
+EXPORT_SYMBOL(trusty_fast_call32);
+
+#ifdef CONFIG_64BIT
+s64 trusty_fast_call64(struct device *dev, u64 smcnr, u64 a0, u64 a1, u64 a2)
+{
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+
+	if (WARN_ON(!s))
+		return SM_ERR_INVALID_PARAMETERS;
+	if (WARN_ON(!SMC_IS_FASTCALL(smcnr)))
+		return SM_ERR_INVALID_PARAMETERS;
+	if (WARN_ON(!SMC_IS_SMC64(smcnr)))
+		return SM_ERR_INVALID_PARAMETERS;
+
+	return smc(smcnr, a0, a1, a2);
+}
+EXPORT_SYMBOL(trusty_fast_call64);
+#endif
+
+static unsigned long trusty_std_call_inner(struct device *dev,
+					   unsigned long smcnr,
+					   unsigned long a0, unsigned long a1,
+					   unsigned long a2)
+{
+	unsigned long ret;
+	int retry = 5;
+
+	dev_dbg(dev, "%s(0x%lx 0x%lx 0x%lx 0x%lx)\n",
+		__func__, smcnr, a0, a1, a2);
+	while (true) {
+		ret = smc(smcnr, a0, a1, a2);
+		while ((s32)ret == SM_ERR_FIQ_INTERRUPTED)
+			ret = smc(SMC_SC_RESTART_FIQ, 0, 0, 0);
+		if ((int)ret != SM_ERR_BUSY || !retry)
+			break;
+
+		dev_dbg(dev, "%s(0x%lx 0x%lx 0x%lx 0x%lx) returned busy, retry\n",
+			__func__, smcnr, a0, a1, a2);
+		retry--;
+	}
+
+	return ret;
+}
+
+#if CONFIG_ARM64
+
+static void trusty_local_irq_disable_before_smc(void)
+{
+	local_daif_mask();
+}
+
+static void trusty_local_irq_enable_after_smc(void)
+{
+	local_daif_restore(DAIF_PROCCTX);
+}
+
+#else
+
+static void trusty_local_irq_disable_before_smc(void)
+{
+	local_irq_disable();
+}
+
+static void trusty_local_irq_enable_after_smc(void)
+{
+	local_irq_enable();
+}
+
+#endif
+
+static unsigned long trusty_std_call_helper(struct device *dev,
+					    unsigned long smcnr,
+					    unsigned long a0, unsigned long a1,
+					    unsigned long a2)
+{
+	unsigned long ret;
+	int sleep_time = 1;
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+
+	while (true) {
+		trusty_local_irq_disable_before_smc();
+
+		atomic_notifier_call_chain(&s->notifier, TRUSTY_CALL_PREPARE,
+					   NULL);
+
+		ret = trusty_std_call_inner(dev, smcnr, a0, a1, a2);
+		if (ret == SM_ERR_PANIC) {
+			s->trusty_panicked = true;
+			if (IS_ENABLED(CONFIG_TRUSTY_CRASH_IS_PANIC))
+				panic("trusty crashed");
+			else
+				WARN_ONCE(1, "trusty crashed");
+		}
+
+		atomic_notifier_call_chain(&s->notifier, TRUSTY_CALL_RETURNED,
+					   NULL);
+		if (ret == SM_ERR_INTERRUPTED) {
+			/*
+			 * Make sure this cpu will eventually re-enter trusty
+			 * even if the std_call resumes on another cpu.
+			 */
+			trusty_enqueue_nop(dev, NULL);
+		}
+		trusty_local_irq_enable_after_smc();
+
+		if ((int)ret != SM_ERR_BUSY)
+			break;
+
+		if (sleep_time == 256)
+			dev_warn(dev, "%s(0x%lx 0x%lx 0x%lx 0x%lx) returned busy\n",
+				 __func__, smcnr, a0, a1, a2);
+		dev_dbg(dev, "%s(0x%lx 0x%lx 0x%lx 0x%lx) returned busy, wait %d ms\n",
+			__func__, smcnr, a0, a1, a2, sleep_time);
+
+		msleep(sleep_time);
+		if (sleep_time < 1000)
+			sleep_time <<= 1;
+
+		dev_dbg(dev, "%s(0x%lx 0x%lx 0x%lx 0x%lx) retry\n",
+			__func__, smcnr, a0, a1, a2);
+	}
+
+	if (sleep_time > 256)
+		dev_warn(dev, "%s(0x%lx 0x%lx 0x%lx 0x%lx) busy cleared\n",
+			 __func__, smcnr, a0, a1, a2);
+
+	return ret;
+}
+
+static void trusty_std_call_cpu_idle(struct trusty_state *s)
+{
+	int ret;
+
+	ret = wait_for_completion_timeout(&s->cpu_idle_completion, HZ * 10);
+	if (!ret) {
+		dev_warn(s->dev,
+			 "%s: timed out waiting for cpu idle to clear, retry anyway\n",
+			 __func__);
+	}
+}
+
+s32 trusty_std_call32(struct device *dev, u32 smcnr, u32 a0, u32 a1, u32 a2)
+{
+	int ret;
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+
+	if (WARN_ON(SMC_IS_FASTCALL(smcnr)))
+		return SM_ERR_INVALID_PARAMETERS;
+
+	if (WARN_ON(SMC_IS_SMC64(smcnr)))
+		return SM_ERR_INVALID_PARAMETERS;
+
+	if (s->trusty_panicked) {
+		/*
+		 * Avoid calling the notifiers if trusty has panicked as they
+		 * can trigger more calls.
+		 */
+		return SM_ERR_PANIC;
+	}
+
+	trace_trusty_std_call32(smcnr, a0, a1, a2);
+
+	if (smcnr != SMC_SC_NOP) {
+		mutex_lock(&s->smc_lock);
+		reinit_completion(&s->cpu_idle_completion);
+	}
+
+	dev_dbg(dev, "%s(0x%x 0x%x 0x%x 0x%x) started\n",
+		__func__, smcnr, a0, a1, a2);
+
+	ret = trusty_std_call_helper(dev, smcnr, a0, a1, a2);
+	while (ret == SM_ERR_INTERRUPTED || ret == SM_ERR_CPU_IDLE) {
+		dev_dbg(dev, "%s(0x%x 0x%x 0x%x 0x%x) interrupted\n",
+			__func__, smcnr, a0, a1, a2);
+		if (ret == SM_ERR_CPU_IDLE)
+			trusty_std_call_cpu_idle(s);
+		ret = trusty_std_call_helper(dev, SMC_SC_RESTART_LAST, 0, 0, 0);
+	}
+	dev_dbg(dev, "%s(0x%x 0x%x 0x%x 0x%x) returned 0x%x\n",
+		__func__, smcnr, a0, a1, a2, ret);
+
+	if (smcnr == SMC_SC_NOP)
+		complete(&s->cpu_idle_completion);
+	else
+		mutex_unlock(&s->smc_lock);
+
+	trace_trusty_std_call32_done(ret);
+
+	return ret;
+}
+EXPORT_SYMBOL(trusty_std_call32);
+
+int trusty_call_notifier_register(struct device *dev, struct notifier_block *n)
+{
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+
+	return atomic_notifier_chain_register(&s->notifier, n);
+}
+EXPORT_SYMBOL(trusty_call_notifier_register);
+
+int trusty_call_notifier_unregister(struct device *dev,
+				    struct notifier_block *n)
+{
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+
+	return atomic_notifier_chain_unregister(&s->notifier, n);
+}
+EXPORT_SYMBOL(trusty_call_notifier_unregister);
+
+static ssize_t trusty_version_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+
+	return scnprintf(buf, PAGE_SIZE, "%s\n", s->version_str ?: "unknown");
+}
+
+static DEVICE_ATTR_ADMIN_RO(trusty_version);
+
+static struct attribute *trusty_attrs[] = {
+	&dev_attr_trusty_version.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(trusty);
+
+const char *trusty_version_str_get(struct device *dev)
+{
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+
+	return s->version_str;
+}
+EXPORT_SYMBOL(trusty_version_str_get);
+
+static void trusty_init_version(struct trusty_state *s, struct device *dev)
+{
+	int ret;
+	int i;
+	int version_str_len;
+
+	ret = trusty_fast_call32(dev, SMC_FC_GET_VERSION_STR, -1, 0, 0);
+	if (ret <= 0)
+		goto err_get_size;
+
+	version_str_len = ret;
+
+	s->version_str = kmalloc(version_str_len + 1, GFP_KERNEL);
+	for (i = 0; i < version_str_len; i++) {
+		ret = trusty_fast_call32(dev, SMC_FC_GET_VERSION_STR, i, 0, 0);
+		if (ret < 0)
+			goto err_get_char;
+		s->version_str[i] = ret;
+	}
+	s->version_str[i] = '\0';
+
+	dev_info(dev, "trusty version: %s\n", s->version_str);
+	return;
+
+err_get_char:
+	kfree(s->version_str);
+	s->version_str = NULL;
+err_get_size:
+	dev_err(dev, "failed to get version: %d\n", ret);
+}
+
+u32 trusty_get_api_version(struct device *dev)
+{
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+
+	return s->api_version;
+}
+EXPORT_SYMBOL(trusty_get_api_version);
+
+bool trusty_get_panic_status(struct device *dev)
+{
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+
+	if (WARN_ON(dev->driver != &trusty_driver.driver))
+		return false;
+	return s->trusty_panicked;
+}
+EXPORT_SYMBOL(trusty_get_panic_status);
+
+static int trusty_init_api_version(struct trusty_state *s, struct device *dev)
+{
+	u32 api_version;
+
+	api_version = trusty_fast_call32(dev, SMC_FC_API_VERSION,
+					 TRUSTY_API_VERSION_CURRENT, 0, 0);
+	if (api_version == SM_ERR_UNDEFINED_SMC)
+		api_version = 0;
+
+	if (api_version > TRUSTY_API_VERSION_CURRENT) {
+		dev_err(dev, "unsupported api version %u > %u\n",
+			api_version, TRUSTY_API_VERSION_CURRENT);
+		return -EINVAL;
+	}
+
+	dev_info(dev, "selected api version: %u (requested %u)\n",
+		 api_version, TRUSTY_API_VERSION_CURRENT);
+	s->api_version = api_version;
+
+	return 0;
+}
+
+static bool dequeue_nop(struct trusty_state *s, u32 *args)
+{
+	unsigned long flags;
+	struct trusty_nop *nop = NULL;
+	struct trusty_work *tw;
+	bool ret = false;
+	bool signaled;
+	bool nop_dequeued = false;
+	bool queue_emptied = false;
+
+	spin_lock_irqsave(&s->nop_lock, flags);
+	tw = this_cpu_ptr(s->nop_works);
+	signaled = tw->signaled;
+	if (!list_empty(&s->nop_queue)) {
+		nop = list_first_entry(&s->nop_queue,
+				       struct trusty_nop, node);
+		list_del_init(&nop->node);
+		args[0] = nop->args[0];
+		args[1] = nop->args[1];
+		args[2] = nop->args[2];
+
+		nop_dequeued = true;
+		if (list_empty(&s->nop_queue))
+			queue_emptied = true;
+
+		ret = true;
+	} else {
+		args[0] = 0;
+		args[1] = 0;
+		args[2] = 0;
+
+		ret = tw->signaled;
+	}
+	tw->signaled = false;
+	spin_unlock_irqrestore(&s->nop_lock, flags);
+
+	/* don't log when false as it is preempt case which can be very noisy */
+	if (ret)
+		trace_trusty_dequeue_nop(signaled, nop_dequeued, queue_emptied);
+
+	return ret;
+}
+
+static void locked_nop_work_func(struct trusty_work *tw)
+{
+	int ret;
+	struct trusty_state *s = tw->s;
+
+	ret = trusty_std_call32(s->dev, SMC_SC_LOCKED_NOP, 0, 0, 0);
+	if (ret != 0)
+		dev_err(s->dev, "%s: SMC_SC_LOCKED_NOP failed %d",
+			__func__, ret);
+
+}
+
+enum cpunice_cause {
+	CPUNICE_CAUSE_DEFAULT,
+	CPUNICE_CAUSE_USE_HIGH_WQ,
+	CPUNICE_CAUSE_TRUSTY_REQ,
+	CPUNICE_CAUSE_NOP_ESCALATE,
+	CPUNICE_CAUSE_ENQUEUE_BOOST,
+};
+
+static void trusty_adjust_nice_nopreempt(struct trusty_state *s, bool do_nop)
+{
+	int req_nice, cur_nice;
+	int cause_id = CPUNICE_CAUSE_DEFAULT;
+	unsigned long flags;
+	struct trusty_work *tw;
+
+	local_irq_save(flags);
+
+	cur_nice = task_nice(current);
+
+	/* check to see if another signal has come in since dequeue_nop */
+	tw = this_cpu_ptr(s->nop_works);
+	do_nop |= tw->signaled;
+
+	req_nice = LINUX_NICE_FOR_TRUSTY_PRIORITY_NORMAL;
+
+	/* ensure priority will not be lower than system request
+	 * when there is more work to do
+	 */
+	if (do_nop && nop_nice_value < req_nice) {
+		req_nice = nop_nice_value;
+		cause_id = CPUNICE_CAUSE_NOP_ESCALATE;
+	}
+
+	/* trace entry only if changing */
+	if (req_nice != cur_nice)
+		trace_trusty_change_cpu_nice(cur_nice, req_nice, cause_id);
+
+	/* tell Linux the desired priority */
+	set_user_nice(current, req_nice);
+
+	local_irq_restore(flags);
+}
+
+static void nop_work_func(struct trusty_work *tw)
+{
+	int ret;
+	bool do_nop;
+	u32 args[3];
+	u32 last_arg0;
+	struct trusty_state *s = tw->s;
+
+	do_nop = dequeue_nop(s, args);
+
+	if (do_nop) {
+		/* we have been signaled or there's a nop so
+		 * adjust priority before making SMC call below
+		 */
+		trusty_adjust_nice_nopreempt(s, do_nop);
+	}
+
+	while (do_nop) {
+		dev_dbg(s->dev, "%s: %x %x %x\n",
+			__func__, args[0], args[1], args[2]);
+
+		if (kthread_should_park())
+			kthread_parkme();
+
+		preempt_disable();
+
+		if (tw != this_cpu_ptr(s->nop_works)) {
+			dev_warn_ratelimited(s->dev,
+					     "trusty-nop-%d ran on wrong cpu, %u\n",
+					     tw->cpu, smp_processor_id());
+		}
+
+		last_arg0 = args[0];
+		ret = trusty_std_call32(s->dev, SMC_SC_NOP,
+					args[0], args[1], args[2]);
+
+		do_nop = dequeue_nop(s, args);
+
+		/* adjust priority in case Trusty has requested a change */
+		trusty_adjust_nice_nopreempt(s, do_nop);
+
+		if (ret == SM_ERR_NOP_INTERRUPTED) {
+			do_nop = true;
+		} else if (ret != SM_ERR_NOP_DONE) {
+			dev_err(s->dev, "%s: SMC_SC_NOP %x failed %d",
+				__func__, last_arg0, ret);
+			if (last_arg0) {
+				/*
+				 * Don't break out of the loop if a non-default
+				 * nop-handler returns an error.
+				 */
+				do_nop = true;
+			}
+		}
+
+		preempt_enable();
+	}
+}
+
+void trusty_enqueue_nop(struct device *dev, struct trusty_nop *nop)
+{
+	unsigned long flags;
+	struct trusty_work *tw;
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+	int cur_nice;
+
+	trace_trusty_enqueue_nop(nop);
+	preempt_disable();
+	tw = this_cpu_ptr(s->nop_works);
+	if (nop) {
+		WARN_ON(s->api_version < TRUSTY_API_VERSION_SMP_NOP);
+
+		spin_lock_irqsave(&s->nop_lock, flags);
+		if (list_empty(&nop->node))
+			list_add_tail(&nop->node, &s->nop_queue);
+		spin_unlock_irqrestore(&s->nop_lock, flags);
+	}
+
+	/* boost the priority here so the thread can get to it fast */
+	cur_nice = task_nice(tw->nop_thread);
+	if (nop_nice_value < cur_nice) {
+		trace_trusty_change_cpu_nice(cur_nice, nop_nice_value,
+				CPUNICE_CAUSE_ENQUEUE_BOOST);
+		set_user_nice(tw->nop_thread, nop_nice_value);
+	}
+
+	/* indicate that this cpu was signaled */
+	tw->signaled = true;
+
+	wake_up_interruptible(&tw->nop_event_wait);
+	preempt_enable();
+}
+EXPORT_SYMBOL(trusty_enqueue_nop);
+
+void trusty_dequeue_nop(struct device *dev, struct trusty_nop *nop)
+{
+	unsigned long flags;
+	struct trusty_state *s = platform_get_drvdata(to_platform_device(dev));
+
+	if (WARN_ON(!nop))
+		return;
+
+	spin_lock_irqsave(&s->nop_lock, flags);
+	if (!list_empty(&nop->node))
+		list_del_init(&nop->node);
+	spin_unlock_irqrestore(&s->nop_lock, flags);
+}
+EXPORT_SYMBOL(trusty_dequeue_nop);
+
+static int trusty_nop_thread(void *context)
+{
+	struct trusty_work *tw = context;
+	struct trusty_state *s = tw->s;
+	void (*work_func)(struct trusty_work *tw);
+	int ret = 0;
+
+	DEFINE_WAIT_FUNC(wait, woken_wake_function);
+
+	if (s->api_version < TRUSTY_API_VERSION_SMP)
+		work_func = locked_nop_work_func;
+	else
+		work_func = nop_work_func;
+
+	add_wait_queue(&tw->nop_event_wait, &wait);
+	for (;;) {
+		if (kthread_should_stop())
+			break;
+
+		wait_woken(&wait, TASK_INTERRUPTIBLE, MAX_SCHEDULE_TIMEOUT);
+
+		if (kthread_should_park())
+			kthread_parkme();
+
+		/* process work */
+		work_func(tw);
+	};
+	remove_wait_queue(&tw->nop_event_wait, &wait);
+
+	return ret;
+}
+
+static int trusty_cpu_up(unsigned int cpu, struct hlist_node *node)
+{
+	struct trusty_state *s;
+	struct trusty_work *tw;
+
+	s = container_of(node, struct trusty_state, cpuhp_node);
+	tw = this_cpu_ptr(s->nop_works);
+	kthread_unpark(tw->nop_thread);
+
+	dev_dbg(s->dev, "cpu %d up\n", cpu);
+
+	return 0;
+}
+
+static int trusty_cpu_down(unsigned int cpu, struct hlist_node *node)
+{
+	struct trusty_state *s;
+	struct trusty_work *tw;
+
+	s = container_of(node, struct trusty_state, cpuhp_node);
+	tw = this_cpu_ptr(s->nop_works);
+
+	dev_dbg(s->dev, "cpu %d down\n", cpu);
+	kthread_park(tw->nop_thread);
+
+	return 0;
+}
+
+static int trusty_probe(struct platform_device *pdev)
+{
+	int ret;
+	unsigned int cpu;
+	struct trusty_state *s;
+	struct device_node *node = pdev->dev.of_node;
+
+	if (!node) {
+		dev_err(&pdev->dev, "of_node required\n");
+		return -EINVAL;
+	}
+
+	s = kzalloc_obj(*s);
+	if (!s) {
+		ret = -ENOMEM;
+		goto err_allocate_state;
+	}
+
+	s->dev = &pdev->dev;
+	spin_lock_init(&s->nop_lock);
+	INIT_LIST_HEAD(&s->nop_queue);
+	mutex_init(&s->smc_lock);
+	ATOMIC_INIT_NOTIFIER_HEAD(&s->notifier);
+	init_completion(&s->cpu_idle_completion);
+
+	platform_set_drvdata(pdev, s);
+
+	trusty_init_version(s, &pdev->dev);
+
+	ret = trusty_init_api_version(s, &pdev->dev);
+	if (ret < 0)
+		goto err_api_version;
+
+	s->nop_works = alloc_percpu(struct trusty_work);
+	if (!s->nop_works) {
+		ret = -ENOMEM;
+		dev_err(&pdev->dev, "Failed to allocate works\n");
+		goto err_alloc_works;
+	}
+
+	for_each_possible_cpu(cpu) {
+		struct trusty_work *tw = per_cpu_ptr(s->nop_works, cpu);
+
+		tw->s = s;
+		tw->cpu = cpu;
+		tw->nop_thread = ERR_PTR(-EINVAL);
+		init_waitqueue_head(&tw->nop_event_wait);
+		tw->signaled = false;
+	}
+
+	for_each_possible_cpu(cpu) {
+		struct trusty_work *tw = per_cpu_ptr(s->nop_works, cpu);
+
+		tw->nop_thread = kthread_create_on_cpu(trusty_nop_thread, tw,
+						       cpu, "trusty-nop-%d");
+		if (IS_ERR(tw->nop_thread)) {
+			ret = PTR_ERR(tw->nop_thread);
+			dev_err(s->dev, "%s: failed to create thread for cpu= %d (%p)\n",
+					__func__, cpu, tw->nop_thread);
+			goto err_thread_create;
+		}
+		/*
+		 * kthread_set_per_cpu() is not exported upstream;
+		 * kthread_create_on_cpu() binds the thread.
+		 */
+		kthread_park(tw->nop_thread);
+	}
+
+	ret = cpuhp_state_add_instance(trusty_cpuhp_slot, &s->cpuhp_node);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "cpuhp_state_add_instance failed %d\n",
+			ret);
+		goto err_add_cpuhp_instance;
+	}
+
+	ret = of_platform_populate(pdev->dev.of_node, NULL, NULL, &pdev->dev);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "Failed to add children: %d\n", ret);
+		goto err_add_children;
+	}
+
+	return 0;
+
+err_add_children:
+	cpuhp_state_remove_instance(trusty_cpuhp_slot, &s->cpuhp_node);
+err_add_cpuhp_instance:
+err_thread_create:
+	for_each_possible_cpu(cpu) {
+		struct trusty_work *tw = per_cpu_ptr(s->nop_works, cpu);
+
+		if (!IS_ERR(tw->nop_thread))
+			kthread_stop(tw->nop_thread);
+	}
+	free_percpu(s->nop_works);
+err_alloc_works:
+err_api_version:
+	kfree(s->version_str);
+	of_platform_depopulate(&pdev->dev);
+	mutex_destroy(&s->smc_lock);
+	kfree(s);
+err_allocate_state:
+	return ret;
+}
+
+static void trusty_remove(struct platform_device *pdev)
+{
+	unsigned int cpu;
+	struct trusty_state *s = platform_get_drvdata(pdev);
+
+	of_platform_depopulate(&pdev->dev);
+
+	cpuhp_state_remove_instance(trusty_cpuhp_slot, &s->cpuhp_node);
+
+	for_each_possible_cpu(cpu) {
+		struct trusty_work *tw = per_cpu_ptr(s->nop_works, cpu);
+
+		kthread_stop(tw->nop_thread);
+	}
+	free_percpu(s->nop_works);
+
+	mutex_destroy(&s->smc_lock);
+	kfree(s->version_str);
+	kfree(s);
+}
+
+static const struct of_device_id trusty_of_match[] = {
+	{ .compatible = "android,trusty-smc-v1", },
+	{},
+};
+
+MODULE_DEVICE_TABLE(of, trusty_of_match);
+
+static struct platform_driver trusty_driver = {
+	.probe = trusty_probe,
+	.remove = trusty_remove,
+	.driver	= {
+		.name = "trusty",
+		.of_match_table = trusty_of_match,
+		.dev_groups = trusty_groups,
+	},
+};
+
+static int __init trusty_driver_init(void)
+{
+	int ret;
+
+	/* allocate dynamic cpuhp state slot */
+	ret = cpuhp_setup_state_multi(CPUHP_AP_ONLINE_DYN,
+				      "trusty:online",
+				      trusty_cpu_up,
+				      trusty_cpu_down);
+	if (ret < 0)
+		goto err_cpuhp_setup;
+
+	trusty_cpuhp_slot = ret;
+
+	ret = platform_driver_register(&trusty_driver);
+	if (ret < 0)
+		goto err_driver_register;
+
+	return 0;
+
+err_driver_register:
+	cpuhp_remove_multi_state(trusty_cpuhp_slot);
+	trusty_cpuhp_slot = -1;
+err_cpuhp_setup:
+	return ret;
+}
+
+static void __exit trusty_driver_exit(void)
+{
+	platform_driver_unregister(&trusty_driver);
+	cpuhp_remove_multi_state(trusty_cpuhp_slot);
+	trusty_cpuhp_slot = -1;
+}
+
+subsys_initcall(trusty_driver_init);
+module_exit(trusty_driver_exit);
+
+#define CREATE_TRACE_POINTS
+#include "trusty-trace.h"
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Trusty core driver");
