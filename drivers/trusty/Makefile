@@ -7,6 +7,6 @@
 ccflags-y += -I$(src)
 
 obj-$(CONFIG_TRUSTY)		+= trusty-core.o
-trusty-core-objs		+= trusty.o
+trusty-core-objs		+= trusty.o trusty-mem.o
 trusty-core-$(CONFIG_ARM)	+= trusty-smc-arm.o
 trusty-core-$(CONFIG_ARM64)	+= trusty-smc-arm64.o
