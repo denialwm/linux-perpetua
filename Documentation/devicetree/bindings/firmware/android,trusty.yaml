@@ -1,0 +1,113 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/firmware/android,trusty.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Trusty secure OS
+
+maintainers:
+  - Noswad <64293615+TheNoswad@users.noreply.github.com>
+
+description:
+  Trusty is the secure OS of Android's Trusted Execution Environment. It
+  runs beside Linux on the same CPUs, in the secure world, and Linux reaches
+  it through SMC calls. The bootloader starts it; the node only tells Linux
+  that it is there and which of its services to use.
+
+properties:
+  compatible:
+    const: android,trusty-smc-v1
+
+  irq:
+    type: object
+    additionalProperties: false
+    description:
+      Forwards to Trusty the non-secure interrupts it asks for. Trusty names
+      its interrupts by its own numbers; ipi-range maps a range of them onto
+      the software-generated interrupts (SGIs) Linux leaves unused.
+
+    properties:
+      compatible:
+        const: android,trusty-irq-v1
+
+      ipi-range:
+        $ref: /schemas/types.yaml#/definitions/uint32-array
+        items:
+          - description: first Trusty interrupt of the range
+          - description: last Trusty interrupt of the range
+          - description: SGI that the first one maps to
+            maximum: 15
+
+      interrupt-templates:
+        $ref: /schemas/types.yaml#/definitions/uint32-matrix
+        description:
+          Interrupt specifiers without their number, each led by the phandle
+          of the interrupt controller and the position of the number in the
+          specifier.
+
+      interrupt-ranges:
+        $ref: /schemas/types.yaml#/definitions/uint32-matrix
+        description:
+          Ranges of Trusty interrupts, each as its first and last number and
+          the index of the interrupt-templates entry that describes them.
+        items:
+          items:
+            - description: first Trusty interrupt of the range
+            - description: last Trusty interrupt of the range
+            - description: index into interrupt-templates
+
+    required:
+      - compatible
+
+  log:
+    type: object
+    additionalProperties: false
+    description: Copies Trusty's log into the kernel log.
+
+    properties:
+      compatible:
+        const: android,trusty-log-v1
+
+    required:
+      - compatible
+
+  virtio:
+    type: object
+    additionalProperties: false
+    description:
+      The virtio devices Trusty offers, among them the IPC channel to its
+      services.
+
+    properties:
+      compatible:
+        const: android,trusty-virtio-v1
+
+    required:
+      - compatible
+
+required:
+  - compatible
+
+additionalProperties: false
+
+examples:
+  - |
+    firmware {
+        trusty {
+            compatible = "android,trusty-smc-v1";
+
+            irq {
+                compatible = "android,trusty-irq-v1";
+                ipi-range = <8 15 8>;
+            };
+
+            log {
+                compatible = "android,trusty-log-v1";
+            };
+
+            virtio {
+                compatible = "android,trusty-virtio-v1";
+            };
+        };
+    };
