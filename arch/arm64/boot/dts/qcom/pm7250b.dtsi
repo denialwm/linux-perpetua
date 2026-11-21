@@ -50,6 +50,12 @@
 			status = "disabled";
 		};
 
+		pm7250b_charger: charger@1000 {
+			compatible = "qcom,pm7250b-charger";
+			reg = <0x1000>;
+			status = "disabled";
+		};
+
 		pm7250b_typec: typec@1500 {
 			compatible = "qcom,pm7250b-typec", "qcom,pm8150b-typec";
 			reg = <0x1500>,

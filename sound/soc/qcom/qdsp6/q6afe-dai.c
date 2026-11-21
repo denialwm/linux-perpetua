@@ -25,6 +25,7 @@ struct q6afe_dai_priv_data {
 	uint32_t invert_sync;
 	uint32_t data_delay;
 	uint32_t data_align;
+	bool tdm_clk_no_invert;
 };
 
 struct q6afe_dai_data {
@@ -276,6 +277,9 @@ static int q6tdm_hw_params(struct snd_pcm_substream *substream,
 	tdm->sample_rate = params_rate(params);
 	tdm->num_channels = params_channels(params);
 	tdm->data_align_type = dai_data->priv[dai->id].data_align;
+	tdm->data_out_enable = dai_data->priv[dai->id].data_out_enable;
+	tdm->invert_sync = dai_data->priv[dai->id].invert_sync;
+	tdm->sync_data_delay = dai_data->priv[dai->id].data_delay;
 	tdm->sync_src = dai_data->priv[dai->id].sync_src;
 	tdm->sync_mode = dai_data->priv[dai->id].sync_mode;
 
@@ -511,6 +515,8 @@ static int q6afe_mi2s_set_sysclk(struct snd_soc_dai *dai,
 					     freq, dir);
 	case Q6AFE_LPASS_CLK_ID_PRI_TDM_IBIT ... Q6AFE_LPASS_CLK_ID_QUIN_TDM_EBIT:
 		return q6afe_port_set_sysclk(port, clk_id,
+					     dai_data->priv[dai->id].tdm_clk_no_invert ?
+					     Q6AFE_LPASS_CLK_ATTRIBUTE_COUPLE_NO :
 					     Q6AFE_LPASS_CLK_ATTRIBUTE_INVERT_COUPLE_NO,
 					     Q6AFE_LPASS_CLK_ROOT_DEFAULT,
 					     freq, dir);
@@ -1111,6 +1117,8 @@ static void of_q6afe_parse_dai_data(struct device *dev,
 			break;
 		case PRIMARY_TDM_RX_0 ... QUINARY_TDM_TX_7:
 			priv = &data->priv[id];
+			priv->tdm_clk_no_invert = of_property_read_bool(node,
+						"qcom,tdm-clk-no-invert");
 			ret = of_property_read_u32(node, "qcom,tdm-sync-mode",
 						   &priv->sync_mode);
 			if (ret) {
