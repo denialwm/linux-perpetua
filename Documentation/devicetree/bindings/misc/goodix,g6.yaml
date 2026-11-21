@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/misc/goodix,g6.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Goodix G6 optical fingerprint platform control
+
+maintainers:
+  - Noswad <64293615+TheNoswad@users.noreply.github.com>
+
+description: |
+  Power, reset and interrupt wiring for a Goodix G6 under-display optical
+  fingerprint sensor. The secure world owns the sensor's SPI bus:
+  Trusty drives the SPI controller and biometric commands go to the
+  sensor's signed trusted application. Linux clocks that controller, so
+  it keeps the controller's clocks running while the sensor is in use.
+
+properties:
+  compatible:
+    const: goodix,g6
+
+  reset-gpios:
+    maxItems: 1
+    description: Active-low sensor reset.
+
+  interrupt-gpios:
+    maxItems: 1
+    description: Active-high sensor interrupt, sampled on the rising edge.
+
+  clocks:
+    minItems: 1
+    maxItems: 3
+    description:
+      Clocks of the SPI controller the secure world drives the sensor
+      through.
+
+  vdd-supply:
+    description: Sensor analog supply.
+
+  pinctrl-0: true
+  pinctrl-names:
+    const: default
+
+required:
+  - compatible
+  - reset-gpios
+  - interrupt-gpios
+  - clocks
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/google,gs101.h>
+    #include <dt-bindings/gpio/gpio.h>
+
+    fingerprint {
+        compatible = "goodix,g6";
+        reset-gpios = <&gpp4 3 GPIO_ACTIVE_LOW>;
+        interrupt-gpios = <&gpa9 2 GPIO_ACTIVE_HIGH>;
+        clocks = <&cmu_peric1 CLK_GOUT_PERIC1_PERIC1_TOP0_PCLK_1>,
+                 <&cmu_peric1 CLK_GOUT_PERIC1_PERIC1_TOP0_IPCLK_1>,
+                 <&cmu_peric1 CLK_GOUT_PERIC1_CLK_PERIC1_USI0_USI_CLK>;
+        vdd-supply = <&s2mpg10_ldo27m>;
+    };
