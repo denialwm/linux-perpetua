@@ -250,6 +250,7 @@ struct qca_serdev {
 	struct clk	 *susclk;
 	enum qca_btsoc_type btsoc_type;
 	struct qca_power *bt_power;
+	struct device *wakeup_host;
 	u32 init_speed;
 	u32 oper_speed;
 	bool bdaddr_property_broken;
@@ -2643,6 +2644,43 @@ static int qca_init_regulators(struct qca_power *qca,
 	return 0;
 }
 
+static void qca_restore_uart_wakeup(void *data)
+{
+	struct qca_serdev *qcadev = data;
+	struct device *host = qcadev->wakeup_host;
+	int ret;
+
+	if (!device_may_wakeup(host)) {
+		ret = device_set_wakeup_enable(host, true);
+		if (ret)
+			dev_warn(host, "failed to restore UART wake policy: %d\n",
+				 ret);
+	}
+	put_device(host);
+	qcadev->wakeup_host = NULL;
+}
+
+static int qca_disable_uart_wakeup(struct qca_serdev *qcadev)
+{
+	struct serdev_device *serdev = qcadev->serdev_hu.serdev;
+	struct device *host = serdev->ctrl->host;
+
+	if (!host)
+		return -ENODEV;
+	if (!device_may_wakeup(host))
+		return 0;
+
+	/*
+	 * The UART hardware device owns its dedicated system-wake IRQ.
+	 * Borrow its enabled policy while the no-IBS client is bound; leave
+	 * wake capability, runtime-PM wake and other ancestors untouched.
+	 */
+	qcadev->wakeup_host = get_device(host);
+	device_set_wakeup_enable(host, false);
+	return devm_add_action_or_reset(&serdev->dev, qca_restore_uart_wakeup,
+				       qcadev);
+}
+
 static int qca_serdev_probe(struct serdev_device *serdev)
 {
 	struct qca_serdev *qcadev;
@@ -2668,6 +2706,17 @@ static int qca_serdev_probe(struct serdev_device *serdev)
 	qcadev->bdaddr_property_broken = device_property_read_bool(&serdev->dev,
 			"qcom,local-bd-address-broken");
 	qcadev->no_ibs = device_property_read_bool(&serdev->dev, "qcom,no-inband-sleep");
+
+	/*
+	 * The controller stays awake with IBS disabled and keeps its wake
+	 * line asserted. Suppress system wake on the UART host while bound,
+	 * restoring its previous enabled policy on removal or probe failure.
+	 */
+	if (qcadev->no_ibs) {
+		err = qca_disable_uart_wakeup(qcadev);
+		if (err)
+			return err;
+	}
 
 	if (data)
 		qcadev->btsoc_type = data->soc_type;
