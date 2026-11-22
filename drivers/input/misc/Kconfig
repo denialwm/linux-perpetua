@@ -170,6 +170,18 @@ config INPUT_BMA150
 	  To compile this driver as a module, choose M here: the
 	  module will be called bma150.
 
+config INPUT_CS40L25
+	tristate "Cirrus Logic CS40L25A haptics"
+	depends on I2C
+	select FW_CS_DSP
+	select REGMAP_I2C
+	help
+	  Say Y here to enable support for the Cirrus Logic CS40L25A boosted
+	  haptic driver. It needs its DSP firmware and wavetable.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called cs40l25.
+
 config INPUT_CS40L50_VIBRA
 	tristate "CS40L50 Haptic Driver support"
 	depends on MFD_CS40L50_CORE
