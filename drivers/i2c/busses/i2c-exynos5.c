@@ -164,6 +164,9 @@
 
 #define EXYNOS5_I2C_TIMEOUT (msecs_to_jiffies(100))
 
+/* HSI2C_AUTO_CONF holds the transfer length in 16 bits */
+#define EXYNOS5_I2C_MAX_LEN	0xffff
+
 enum i2c_type_exynos {
 	I2C_TYPE_EXYNOS5,
 	I2C_TYPE_EXYNOS7,
@@ -787,6 +790,19 @@ static bool exynos5_i2c_poll_irqs_timeout(struct exynos5_i2c *i2c,
 	return time_before(jiffies, time_left);
 }
 
+/*
+ * The margin for retries plus the time the message takes on the bus: the
+ * address byte and the data, 9 bits each.
+ */
+static unsigned long exynos5_i2c_timeout(struct exynos5_i2c *i2c)
+{
+	u64 bits = (u64)(i2c->msg->len + 1) * 9;
+
+	return EXYNOS5_I2C_TIMEOUT +
+	       usecs_to_jiffies(DIV_ROUND_UP_ULL(bits * USEC_PER_SEC,
+						 i2c->op_clock));
+}
+
 static int exynos5_i2c_xfer_msg(struct exynos5_i2c *i2c,
 			      struct i2c_msg *msgs, int stop)
 {
@@ -803,10 +819,10 @@ static int exynos5_i2c_xfer_msg(struct exynos5_i2c *i2c,
 
 	if (!i2c->atomic)
 		time_left = wait_for_completion_timeout(&i2c->msg_complete,
-							EXYNOS5_I2C_TIMEOUT);
+							exynos5_i2c_timeout(i2c));
 	else
 		time_left = exynos5_i2c_poll_irqs_timeout(i2c,
-							  EXYNOS5_I2C_TIMEOUT);
+							  exynos5_i2c_timeout(i2c));
 
 	if (time_left == 0)
 		ret = -ETIMEDOUT;
@@ -884,6 +900,11 @@ static const struct i2c_algorithm exynos5_i2c_algorithm = {
 	.functionality = exynos5_i2c_func,
 };
 
+static const struct i2c_adapter_quirks exynos5_i2c_quirks = {
+	.max_read_len = EXYNOS5_I2C_MAX_LEN,
+	.max_write_len = EXYNOS5_I2C_MAX_LEN,
+};
+
 static int exynos5_i2c_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
@@ -900,6 +921,7 @@ static int exynos5_i2c_probe(struct platform_device *pdev)
 	strscpy(i2c->adap.name, "exynos5-i2c", sizeof(i2c->adap.name));
 	i2c->adap.owner   = THIS_MODULE;
 	i2c->adap.algo    = &exynos5_i2c_algorithm;
+	i2c->adap.quirks  = &exynos5_i2c_quirks;
 	i2c->adap.retries = 3;
 
 	i2c->dev = &pdev->dev;
