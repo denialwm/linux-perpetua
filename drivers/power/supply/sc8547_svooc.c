@@ -59,8 +59,22 @@
 #define SVOOC_IGNORE_MAX	6
 /* Late replies in a row tolerated after the battery curve. */
 #define SVOOC_SKIP_MAX		3
+/*
+ * Failed battery or thermistor reads in a row a session or a top-up rides
+ * out on the last readings; the charger firmware answers one now and then
+ * with an error.
+ */
+#define SVOOC_READ_ERRORS	5
 /* New sessions after protocol failures, until one runs or a replug. */
 #define SVOOC_RETRIES		3
+/*
+ * New sessions for an adapter that stays silent, each after a reset: the
+ * charger input off, then time to settle (oplus_chg_vooc.c:1632-1658,
+ * :1874-1916, RETRY_15S_COUNT).
+ */
+#define SVOOC_SILENT_RETRIES	2
+#define SVOOC_RESET_MS		1000
+#define SVOOC_RESET_SETTLE_MS	500
 
 #define SVOOC_TICK_MS		50
 #define SVOOC_BUCK_TICK_MS	20
@@ -114,6 +128,33 @@
  * step's battery voltage or two below its current.
  */
 #define SVOOC_FFC_MS		5000
+/*
+ * The top-up starts this long after the full session (FFC_START_DELAY):
+ * the adapter takes VBUS away for about a second as it leaves SuperVOOC.
+ */
+#define SVOOC_FFC_START_MS	15000
+/*
+ * Bypass over the pumps while the battery holds charging, as the stock
+ * kernel's PLC does with a SuperVOOC adapter (oplus_chg_vooc.c:3710-3823,
+ * oplus_chg_plc.c, the "svooc" strategy): the adapter current is the
+ * board's range, here steered once a second so that the battery current
+ * stays near SVOOC_PLC_TARGET_UA. At the bottom of the range the pumps
+ * keep running as stock's do, the battery taking the surplus: stock's
+ * strategy only moves the adapter between the two ends of the range as
+ * the charge falls or rises and never gives a held bypass back to the
+ * buck (the adapter does not always answer a new session while the
+ * system draws on the battery). The session's own limits (full, voltage,
+ * temperature) still end it.
+ */
+#define SVOOC_PLC_MS		1000
+#define SVOOC_PLC_TARGET_UA	100000
+#define SVOOC_PLC_BAND_UA	200000
+#define SVOOC_PLC_STEP_UA	200000
+#define SVOOC_PLC_RAMP_MS	1000
+/* Discharge with the buck held that starts a session, at two checks. */
+#define SVOOC_PLC_ENTRY_UA	300000
+#define SVOOC_PLC_ENTRY_COUNT	2
+#define SVOOC_PLC_CHECK_MS	10000
 #define SVOOC_FFC_VOLT_COUNT	4
 #define SVOOC_FFC_CURR_COUNT	2
 
@@ -183,6 +224,10 @@ enum svooc_therm {
 
 static const char * const svooc_therm_names[] = {
 	"usb-connector", "battery-connector", "board", "mos",
+};
+
+static const char * const svooc_therm_hot[] = {
+	"USB connector hot", "battery connector hot", "board hot", "MOSFET hot",
 };
 
 /* Full current up to the soft limit, none at the hard limit, in m°C. */
@@ -261,6 +306,7 @@ struct sc8547_svooc {
 	unsigned int worst_us;
 	unsigned int quiet;
 	unsigned int disagree;
+	unsigned int read_errors;
 	int limit_ua;
 	/* The board's limit on the adapter current, at most SVOOC_MAX_UA. */
 	int max_ua;
@@ -272,6 +318,11 @@ struct sc8547_svooc {
 	/* The PHY's last RX byte and flags, for the stop message. */
 	u8 rx;
 	u8 flags;
+	/* The check a session failed, for the stop message. */
+	const char *why;
+	/* The charger's last readings while the buck lets go. */
+	int usb_ua;
+	int usb_uv;
 	bool phy_on;
 	bool route;
 	bool buck_off;
@@ -280,7 +331,23 @@ struct sc8547_svooc {
 	bool change;
 	unsigned int skipped;
 	unsigned int retries;
+	/* The adapter reset before a retry: 1 with the input off, 2 settling. */
+	unsigned int reset;
+	unsigned long reset_at;
 	bool stopping;
+	/* The battery holds charging; its next change may lift that. */
+	bool held;
+	/* The board's bypass range of the adapter current, 0 for none. */
+	u32 plc_min_ua;
+	u32 plc_max_ua;
+	/* This session bypasses: it powers the system, not the battery. */
+	bool plc;
+	int plc_ua;
+	unsigned long plc_at;
+	unsigned int plc_entry;
+	/* The battery's charge when the bypass started, -1 before it is read. */
+	int plc_soc;
+	int plc_top;
 	/* The board's charge strategy and adapters, or NULL. */
 	struct svooc_strategy *strategy;
 	/*
@@ -367,6 +434,49 @@ static int svooc_read_therms(struct sc8547_svooc *sv, int *mc)
 	return 0;
 }
 
+enum svooc_hold {
+	SVOOC_FREE,
+	/* The battery holds its charge: a bypass may power the system. */
+	SVOOC_HOLD,
+	/* The battery is to discharge: nothing may power the system. */
+	SVOOC_DISCHARGE,
+};
+
+/*
+ * Whether the battery holds charging, as a host charge policy does: by a
+ * charge behaviour other than auto, or by its charge level thresholds,
+ * which it reports as Not charging. A battery without a charge behaviour
+ * never holds, and its status is not asked.
+ */
+static enum svooc_hold svooc_hold(struct sc8547_svooc *sv)
+{
+	int behaviour, status;
+
+	if (svooc_get(sv->battery, POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR, &behaviour))
+		return SVOOC_FREE;
+	if (behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE)
+		return SVOOC_DISCHARGE;
+	if (behaviour != POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO)
+		return SVOOC_HOLD;
+	return !svooc_get(sv->battery, POWER_SUPPLY_PROP_STATUS, &status) &&
+	       status == POWER_SUPPLY_STATUS_NOT_CHARGING ? SVOOC_HOLD : SVOOC_FREE;
+}
+
+static int svooc_plc_clamp(struct sc8547_svooc *sv, int ua)
+{
+	return clamp_t(int, ua / 100000 * 100000, sv->plc_min_ua, sv->plc_max_ua);
+}
+
+/* Enter the bypass, at @ua for the system's load. */
+static void svooc_plc_start(struct sc8547_svooc *sv, int ua)
+{
+	sv->plc = true;
+	sv->plc_ua = svooc_plc_clamp(sv, ua);
+	sv->plc_at = jiffies + msecs_to_jiffies(SVOOC_PLC_MS);
+	sv->plc_soc = -1;
+	sv->plc_top = -1;
+}
+
 static bool svooc_charger(struct sc8547_svooc *sv, int *vbus_uv)
 {
 	int online, type;
@@ -447,8 +557,23 @@ static int svooc_ibus(struct sc8547_svooc *sv)
 	return sv->sample[0].ibus_ua + (sv->second_on ? sv->sample[1].ibus_ua : 0);
 }
 
+/* Stop the session, naming the check for the stop message. */
+static int svooc_out_of_range(struct sc8547_svooc *sv, const char *check)
+{
+	sv->why = check;
+	return -ERANGE;
+}
+
+static int svooc_timed_out(struct sc8547_svooc *sv, const char *wait)
+{
+	sv->why = wait;
+	return -ETIMEDOUT;
+}
+
 static int svooc_min_ua(struct sc8547_svooc *sv)
 {
+	if (sv->plc)
+		return sv->plc_min_ua;
 	return sv->stock ? sv->strategy->min_ua : SVOOC_MIN_UA;
 }
 
@@ -538,7 +663,9 @@ static int svooc_stock_check(struct sc8547_svooc *sv)
 		dev_info(sv->dev, "SuperVOOC curve %d/%d from step %d at %d.%d C\n",
 			 sv->soc_band, sv->temp_band, sv->step, temp / 10, abs(temp) % 10);
 	}
-	if (st->timeout_s && time_after_eq(now, sv->started + st->timeout_s * HZ)) {
+	/* A bypass charges nothing: no time limit, no low-current full. */
+	if (!sv->plc && st->timeout_s &&
+	    time_after_eq(now, sv->started + st->timeout_s * HZ)) {
 		dev_info(sv->dev, "SuperVOOC time limit\n");
 		sv->full = true;
 		return 1;
@@ -564,7 +691,7 @@ static int svooc_stock_check(struct sc8547_svooc *sv)
 			return 1;
 		}
 	}
-	if (st->lcf_bands && time_after_eq(now, sv->curr_at)) {
+	if (!sv->plc && st->lcf_bands && time_after_eq(now, sv->curr_at)) {
 		sv->curr_at = now + msecs_to_jiffies(SVOOC_CURR_MS);
 		band = svooc_band(st->lcf_temp, st->lcf_bands, temp);
 		for (i = 0; band >= 0 && i < st->lcf_num[band]; i++)
@@ -695,7 +822,19 @@ static void svooc_stop_locked(struct sc8547_svooc *sv, int error)
 	if (sv->state < SVOOC_IDENTIFY || sv->state >= SVOOC_STOPPING)
 		return;
 	sv->error = error;
-	if (error)
+	if (error == -ETIMEDOUT && sv->why && sv->state == SVOOC_SUSPEND)
+		dev_warn(sv->dev, "SuperVOOC stopped in %s: %s (charger %d uA at %d uV)\n",
+			 svooc_state_names[sv->state], sv->why, sv->usb_ua, sv->usb_uv);
+	else if (error == -ETIMEDOUT && sv->why && sv->state < SVOOC_GRANTED)
+		dev_warn(sv->dev, "SuperVOOC stopped in %s: %s (%u frames, rx %02x flags %02x)\n",
+			 svooc_state_names[sv->state], sv->why, sv->frames, sv->rx, sv->flags);
+	else if (error && sv->why)
+		dev_warn(sv->dev,
+			 "SuperVOOC stopped in %s: %s (VBUS %d uV, battery %d/%d uV gauge/pump, IBUS %d of %d uA, battery %d uA %d%% %d dC)\n",
+			 svooc_state_names[sv->state], sv->why, sv->sample[0].vbus_uv,
+			 sv->bat.uv, sv->sample[0].vbat_uv, svooc_ibus(sv), sv->applied_ua,
+			 sv->bat.ua, sv->bat.capacity, sv->bat.temp);
+	else if (error)
 		dev_warn(sv->dev, "SuperVOOC stopped in %s: %d (rx %02x flags %02x)\n",
 			 svooc_state_names[sv->state], error, sv->rx, sv->flags);
 	else
@@ -759,14 +898,13 @@ static int svooc_power_command(struct sc8547_svooc *sv,
 		return 0;
 	case OPLUS_SVOOC_GET_CURRENT:
 		if (sv->state == SVOOC_STARTING && !sv->applied_ua)
-			ua = sv->limit_ua;
+			ua = sv->plc ? min(sv->limit_ua, sv->plc_ua) : sv->limit_ua;
 		else if (sv->state == SVOOC_STARTING || sv->state == SVOOC_RUNNING)
 			ua = sv->change ? sv->target_ua : sv->applied_ua;
 		else
 			return -EPROTO;
-		ret = oplus_svooc_current(ua, payload);
-		if (ret)
-			return ret;
+		if (oplus_svooc_current(ua, payload))
+			return svooc_out_of_range(sv, "current outside the protocol's steps");
 		ret = regmap_write(sv->regmap, SC8547_PHY_IRQ_MASK, SC8547_PHY_MASK_TX);
 		if (ret)
 			return ret;
@@ -859,7 +997,8 @@ static int svooc_receive(struct sc8547_svooc *sv, u8 rx, u8 flags)
 		sv->applied_ua = sv->pending_ua;
 		sv->pending_ua = 0;
 		sv->change = false;
-		sv->ramp_after = jiffies + msecs_to_jiffies(SVOOC_RAMP_MS);
+		sv->ramp_after = jiffies + msecs_to_jiffies(sv->plc ? SVOOC_PLC_RAMP_MS :
+								       SVOOC_RAMP_MS);
 		ret = regmap_write(sv->regmap, SC8547_PHY_IRQ_MASK, SC8547_PHY_MASK_RX);
 		if (ret)
 			return ret;
@@ -1008,7 +1147,13 @@ static void svooc_ffc_tick(struct sc8547_svooc *sv)
 		return;
 	}
 	sv->ffc_at = jiffies + msecs_to_jiffies(SVOOC_FFC_MS);
-	if (svooc_read_battery(sv, &bat) || bat.health != POWER_SUPPLY_HEALTH_GOOD)
+	if (svooc_read_battery(sv, &bat)) {
+		if (++sv->read_errors < SVOOC_READ_ERRORS)
+			goto next;
+		goto stop;
+	}
+	sv->read_errors = 0;
+	if (bat.health != POWER_SUPPLY_HEALTH_GOOD)
 		goto stop;
 	band = svooc_band(st->ffc_temp, st->ffc_bands, bat.temp);
 	if (band < 0)
@@ -1084,6 +1229,38 @@ static void svooc_start(struct sc8547_svooc *sv)
 				 msecs_to_jiffies(SVOOC_RETRY_MS));
 		return;
 	}
+	/*
+	 * The battery's next change starts the session once it lets go. A
+	 * held battery that discharges on the buck gets a bypass session.
+	 */
+	sv->plc = false;
+	switch (svooc_hold(sv)) {
+	case SVOOC_FREE:
+		WRITE_ONCE(sv->held, false);
+		sv->plc_entry = 0;
+		break;
+	case SVOOC_HOLD:
+		if (sv->plc_max_ua) {
+			if (bat.ua < -SVOOC_PLC_ENTRY_UA)
+				sv->plc_entry++;
+			else
+				sv->plc_entry = 0;
+			if (sv->plc_entry >= SVOOC_PLC_ENTRY_COUNT) {
+				WRITE_ONCE(sv->held, false);
+				sv->plc_entry = 0;
+				/* The buck's limit and the discharge: the load. */
+				svooc_plc_start(sv, sv->plc_min_ua - bat.ua / 2);
+				break;
+			}
+			mod_delayed_work(system_highpri_wq, &sv->work,
+					 msecs_to_jiffies(SVOOC_PLC_CHECK_MS));
+		}
+		WRITE_ONCE(sv->held, true);
+		return;
+	default:
+		WRITE_ONCE(sv->held, true);
+		return;
+	}
 
 	if (sv->ffc != SVOOC_FFC_OFF)
 		svooc_ffc_stop(sv);
@@ -1148,12 +1325,16 @@ static void svooc_start(struct sc8547_svooc *sv)
 	sv->worst_us = 0;
 	sv->rx = 0;
 	sv->flags = 0;
+	sv->why = NULL;
+	sv->usb_ua = 0;
+	sv->usb_uv = 0;
 	sv->ticks = 0;
 	sv->taper_ua = sv->limit_ua;
 	sv->target_ua = 0;
 	sv->change = false;
 	sv->skipped = 0;
 	sv->disagree = 0;
+	sv->read_errors = 0;
 	sv->discharge_since = 0;
 	sv->started = jiffies;
 	sv->vol_at = jiffies;
@@ -1177,20 +1358,29 @@ static int svooc_check_running(struct sc8547_svooc *sv)
 	int ibus = svooc_ibus(sv), vbat = sv->bat.uv;
 	s64 power = (s64)m->vbus_uv * ibus;
 
+	/*
+	 * No lower VBUS bound here: the pump stops itself with a fault when
+	 * VBUS falls out of its 2:1 window, as stock relies on (its VBUS to
+	 * battery window only steers the adapter while it adjusts,
+	 * oplus_ap_voocphy.c:2542-2614). The gauge reads above the pump's
+	 * output while charging, so a gauge bound stopped long floor stays.
+	 */
 	if (!m->switching)
 		return -EIO;
-	if (m->vbus_uv < 2 * vbat - 100000 || m->vbus_uv > 2 * vbat + 700000)
-		return -ERANGE;
-	if (ibus > sv->limit_ua + 300000 || m->ibus_ua > SVOOC_PUMP_MAX_UA ||
-	    (!sv->dual && ibus > SVOOC_PUMP_MAX_UA) ||
-	    power > SVOOC_POWER_MAX_UW * 1000000)
-		return -ERANGE;
+	if (m->vbus_uv > 2 * vbat + 700000)
+		return svooc_out_of_range(sv, "VBUS above twice the battery");
+	if (ibus > sv->limit_ua + 300000)
+		return svooc_out_of_range(sv, "IBUS over the session limit");
+	if (m->ibus_ua > SVOOC_PUMP_MAX_UA || (!sv->dual && ibus > SVOOC_PUMP_MAX_UA))
+		return svooc_out_of_range(sv, "IBUS over the main pump's limit");
+	if (power > SVOOC_POWER_MAX_UW * 1000000)
+		return svooc_out_of_range(sv, "input power over the limit");
 	if (sv->second_on && s->ibus_ua > SVOOC_PUMP_MAX_UA)
-		return -ERANGE;
+		return svooc_out_of_range(sv, "IBUS over the second pump's limit");
 	/* The pumps are sampled in turn: one pair may straddle a step. */
 	if (sv->second_on && abs(s->vbus_uv - m->vbus_uv) > 250000) {
 		if (++sv->disagree > 1)
-			return -ERANGE;
+			return svooc_out_of_range(sv, "the pumps disagree on VBUS");
 	} else {
 		sv->disagree = 0;
 	}
@@ -1198,7 +1388,7 @@ static int svooc_check_running(struct sc8547_svooc *sv)
 		return -EIO;
 	if (sv->state == SVOOC_RUNNING && !sv->pending_ua && !sv->change &&
 	    time_after_eq(jiffies, sv->ramp_after) && ibus > sv->applied_ua + 300000)
-		return -ERANGE;
+		return svooc_out_of_range(sv, "IBUS over the applied current");
 	return 0;
 }
 
@@ -1246,6 +1436,8 @@ static int svooc_regulate(struct sc8547_svooc *sv)
 	else
 		sv->taper_ua = min(sv->taper_ua, svooc_taper_ua(svooc_vbat(sv)));
 	ua = min(sv->limit_ua, sv->taper_ua);
+	if (sv->plc)
+		ua = min(ua, sv->plc_ua);
 	ua = min(ua, svooc_thermal_ua(sv));
 	ua = min_t(int, ua, div_s64(sv->power_uw * 1000000, vbus) - 100000);
 	if (power > sv->power_uw * 1000000)
@@ -1260,13 +1452,48 @@ static int svooc_regulate(struct sc8547_svooc *sv)
 	if (ua >= sv->applied_ua) {
 		if (time_before(jiffies, sv->ramp_after))
 			return 0;
-		ua = min(ua, sv->applied_ua + 100000);
+		ua = min(ua, sv->applied_ua + (sv->plc ? SVOOC_PLC_STEP_UA : 100000));
 	}
 	if (ua == sv->applied_ua)
 		return 0;
 	sv->target_ua = ua;
 	sv->change = true;
 	sv->change_deadline = jiffies + msecs_to_jiffies(SVOOC_CHANGE_MS);
+	return 0;
+}
+
+/*
+ * The bypass loop, once a second: the pumps give the battery side twice the
+ * adapter current and the system takes its load from there, so move the
+ * adapter current by a quarter of the battery current's error (half the
+ * gain, for the gauge's lag), within the board's range and no further than
+ * 500 mA past what the adapter gives. At the bottom of the range a surplus
+ * charges the battery, as stock's does; each percent it gains over the
+ * charge the bypass started at is logged.
+ */
+static int svooc_plc_step(struct sc8547_svooc *sv)
+{
+	int err = sv->bat.ua - SVOOC_PLC_TARGET_UA;
+	int ua = sv->plc_ua;
+
+	if (time_before(jiffies, sv->plc_at))
+		return 0;
+	sv->plc_at = jiffies + msecs_to_jiffies(SVOOC_PLC_MS);
+	if (sv->plc_soc < 0)
+		sv->plc_soc = sv->bat.capacity;
+	if (abs(err) > SVOOC_PLC_BAND_UA) {
+		ua -= err / 4;
+		if (sv->applied_ua)
+			ua = min(ua, sv->applied_ua + 500000);
+		/* Round toward the change, so that a small error still moves it. */
+		ua = err < 0 ? roundup(ua, 100000) : rounddown(ua, 100000);
+		sv->plc_ua = svooc_plc_clamp(sv, ua);
+	}
+	if (sv->bat.capacity > max(sv->plc_soc, sv->plc_top)) {
+		sv->plc_top = sv->bat.capacity;
+		dev_info(sv->dev, "bypass charged the battery from %d to %d %%, keeping the pumps\n",
+			 sv->plc_soc, sv->bat.capacity);
+	}
 	return 0;
 }
 
@@ -1281,34 +1508,38 @@ static int svooc_check(struct sc8547_svooc *sv)
 	    (!sv->stock && sv->bat.capacity >= 90))
 		return 1;
 	if (time_after(now, sv->last_rx + msecs_to_jiffies(frame_ms)))
-		return -ETIMEDOUT;
+		return svooc_timed_out(sv, sv->frames ? "the adapter went silent" :
+					   "no frame from the adapter");
 	if (sv->state < SVOOC_RUNNING &&
 	    time_after(now, sv->started + msecs_to_jiffies(SVOOC_IDENTIFY_MS)))
-		return -ETIMEDOUT;
+		return svooc_timed_out(sv, "the handshake took too long");
 	if (sv->pending_ua && time_after(now, sv->ack_deadline))
-		return -ETIMEDOUT;
+		return svooc_timed_out(sv, "no ack of the current");
 	if (sv->change && time_after(now, sv->change_deadline))
-		return -ETIMEDOUT;
-	if (sv->bat.health != POWER_SUPPLY_HEALTH_GOOD || sv->bat.temp >= 440 ||
-	    (!sv->stock && vbat >= SVOOC_VBAT_MAX_UV))
-		return -ERANGE;
-	if (sv->stock && ((sv->strategy->overvoltage_uv &&
-			   svooc_ov_vbat(sv->bat.uv, sv->sample[0].vbat_uv,
-					 sv->strategy->overvoltage_uv) >=
-			   sv->strategy->overvoltage_uv) ||
-			  sv->bat.temp < sv->strategy->temp[0] - SVOOC_TEMP_LOW_MARGIN))
-		return -ERANGE;
+		return svooc_timed_out(sv, "the adapter did not ask for the new current");
+	if (sv->bat.health != POWER_SUPPLY_HEALTH_GOOD)
+		return svooc_out_of_range(sv, "battery health");
+	if (sv->bat.temp >= 440)
+		return svooc_out_of_range(sv, "battery hot");
+	if (!sv->stock && vbat >= SVOOC_VBAT_MAX_UV)
+		return svooc_out_of_range(sv, "battery voltage at the limit");
+	if (sv->stock && sv->strategy->overvoltage_uv &&
+	    svooc_ov_vbat(sv->bat.uv, sv->sample[0].vbat_uv,
+			  sv->strategy->overvoltage_uv) >= sv->strategy->overvoltage_uv)
+		return svooc_out_of_range(sv, "battery overvoltage");
+	if (sv->stock && sv->bat.temp < sv->strategy->temp[0] - SVOOC_TEMP_LOW_MARGIN)
+		return svooc_out_of_range(sv, "battery cold");
 	for (i = 0; i < SVOOC_THERMS; i++)
 		if (sv->therm_mc[i] >= svooc_therm_limits[i].hard)
-			return -ERANGE;
+			return svooc_out_of_range(sv, svooc_therm_hot[i]);
 	if (max(sv->sample[0].temp, sv->sample[1].temp) >= 700)
-		return -ERANGE;
+		return svooc_out_of_range(sv, "pump die hot");
 	if (sv->bat.ua <= -3000000) {
 		if (!sv->discharge_since)
 			sv->discharge_since = now;
 		else if (time_after(now, sv->discharge_since +
 				    msecs_to_jiffies(SVOOC_DISCHARGE_MS)))
-			return -ERANGE;
+			return svooc_out_of_range(sv, "battery discharging");
 	} else {
 		sv->discharge_since = 0;
 	}
@@ -1325,7 +1556,7 @@ static int svooc_check(struct sc8547_svooc *sv)
 				 sv->proto.model, sv->applied_ua / 1000);
 		} else if (time_after(now, sv->enabled_at +
 				      msecs_to_jiffies(SVOOC_START_MS))) {
-			return -ETIMEDOUT;
+			return svooc_timed_out(sv, "the pump did not start");
 		}
 	}
 	if (sv->state == SVOOC_STARTING || sv->state == SVOOC_RUNNING) {
@@ -1338,6 +1569,11 @@ static int svooc_check(struct sc8547_svooc *sv)
 		if (i)
 			return i;
 	}
+	if (sv->plc && sv->state == SVOOC_RUNNING) {
+		i = svooc_plc_step(sv);
+		if (i)
+			return i;
+	}
 	return svooc_regulate(sv);
 }
 
@@ -1345,8 +1581,10 @@ static void svooc_tick(struct sc8547_svooc *sv)
 {
 	struct sc8547_sample sample[2] = {};
 	struct svooc_battery bat;
-	int therm[SVOOC_THERMS], usb_ua = 0, usb_uv = 0, online = 0;
-	bool read_main, read_bat, read_therm, read_usb, suspend = false, second = false, changed;
+	int therm[SVOOC_THERMS], usb_ua = 0, usb_uv = 0, online = 0, read_ret = 0;
+	bool read_main, read_bat, read_therm, read_usb, read_held;
+	enum svooc_hold hold = SVOOC_FREE;
+	bool suspend = false, second = false, changed;
 	enum svooc_state state;
 	int ret;
 
@@ -1355,6 +1593,7 @@ static void svooc_tick(struct sc8547_svooc *sv)
 	sv->ticks++;
 	read_bat = !(sv->ticks % 4);
 	read_therm = !(sv->ticks % 10);
+	read_held = !(sv->ticks % 20);
 	/* While the adapter talks, the PHY interrupt samples the main pump. */
 	read_main = time_after(jiffies, sv->sampled_at + msecs_to_jiffies(SVOOC_SAMPLE_MS));
 	mutex_unlock(&sv->lock);
@@ -1366,9 +1605,11 @@ static void svooc_tick(struct sc8547_svooc *sv)
 	if (!ret && sv->second)
 		ret = sc8547_sample(sv->second, &sample[1]);
 	if (!ret && read_bat)
-		ret = svooc_read_battery(sv, &bat);
-	if (!ret && read_therm)
-		ret = svooc_read_therms(sv, therm);
+		read_ret = svooc_read_battery(sv, &bat);
+	if (!ret && !read_ret && read_therm)
+		read_ret = svooc_read_therms(sv, therm);
+	if (!ret && read_held)
+		hold = svooc_hold(sv);
 	if (!ret && read_usb) {
 		ret = svooc_get(sv->usb, POWER_SUPPLY_PROP_ONLINE, &online);
 		if (!ret)
@@ -1388,12 +1629,44 @@ static void svooc_tick(struct sc8547_svooc *sv)
 		sv->sampled_at = jiffies;
 	}
 	sv->sample[1] = sample[1];
-	if (read_bat)
-		sv->bat = bat;
-	if (read_therm)
-		memcpy(sv->therm_mc, therm, sizeof(therm));
+	if (read_ret) {
+		ret = ++sv->read_errors < SVOOC_READ_ERRORS ? 0 : read_ret;
+		if (ret)
+			goto stop;
+	} else if (read_bat || read_therm) {
+		sv->read_errors = 0;
+		if (read_bat)
+			sv->bat = bat;
+		if (read_therm)
+			memcpy(sv->therm_mc, therm, sizeof(therm));
+	}
 	if (read_usb && !online) {
 		ret = -ENOTCONN;
+		goto stop;
+	}
+	/*
+	 * A held charge turns the session into a bypass where the board has
+	 * one, and ends it as a normal finish otherwise; a released one ends
+	 * the bypass, and the next session charges.
+	 */
+	if (read_held && hold == SVOOC_HOLD && sv->plc_max_ua && !sv->plc) {
+		dev_info(sv->dev, "charging held, SuperVOOC bypass\n");
+		svooc_plc_start(sv, sv->applied_ua);
+	} else if (read_held && hold != SVOOC_FREE && !sv->plc_max_ua) {
+		dev_info(sv->dev, "charging held, ending SuperVOOC\n");
+		WRITE_ONCE(sv->held, true);
+		ret = 1;
+		goto stop;
+	} else if (read_held && sv->plc && hold != SVOOC_HOLD) {
+		dev_info(sv->dev, "charging %s, ending the bypass\n",
+			 hold == SVOOC_FREE ? "released" : "held");
+		WRITE_ONCE(sv->held, true);
+		ret = 1;
+		goto stop;
+	} else if (read_held && hold == SVOOC_DISCHARGE) {
+		dev_info(sv->dev, "charging held, ending SuperVOOC\n");
+		WRITE_ONCE(sv->held, true);
+		ret = 1;
 		goto stop;
 	}
 
@@ -1405,6 +1678,8 @@ static void svooc_tick(struct sc8547_svooc *sv)
 		suspend = true;
 	} else if (sv->state == SVOOC_SUSPEND && !sv->proto.permit) {
 		/* The buck must be seen idle three times before the grant. */
+		sv->usb_ua = usb_ua;
+		sv->usb_uv = usb_uv;
 		if (usb_ua <= 25000 && usb_uv >= 4500000 && usb_uv <= 5500000)
 			sv->quiet++;
 		else
@@ -1412,7 +1687,7 @@ static void svooc_tick(struct sc8547_svooc *sv)
 		if (sv->quiet >= 3)
 			sv->proto.permit = true;
 		else if (time_after(jiffies, sv->ack_deadline))
-			ret = -ETIMEDOUT;
+			ret = svooc_timed_out(sv, "the buck did not let go");
 	}
 	if (!ret)
 		ret = svooc_check(sv);
@@ -1469,7 +1744,8 @@ static void svooc_restore(struct sc8547_svooc *sv)
 	sv->state = SVOOC_DONE;
 	if (sv->full && sv->ffc_armed && !sv->error && !sv->stopping) {
 		sv->ffc = SVOOC_FFC_PENDING;
-		sv->ffc_at = jiffies;
+		sv->read_errors = 0;
+		sv->ffc_at = jiffies + msecs_to_jiffies(SVOOC_FFC_START_MS);
 	}
 	mutex_unlock(&sv->lock);
 	pm_relax(sv->dev);
@@ -1480,21 +1756,69 @@ static void svooc_restore(struct sc8547_svooc *sv)
 }
 
 /*
+ * The step of an adapter reset due at @sv->reset_at: the input goes off,
+ * comes back, and the adapter settles. Returns true once it is over.
+ */
+static bool svooc_reset_step(struct sc8547_svooc *sv, bool *suspend, bool *resume)
+{
+	unsigned int ms;
+
+	if (sv->reset && time_before(jiffies, sv->reset_at)) {
+		mod_delayed_work(system_highpri_wq, &sv->work, sv->reset_at - jiffies);
+		return false;
+	}
+	switch (sv->reset) {
+	case 0:
+		*suspend = true;
+		ms = SVOOC_RESET_MS;
+		break;
+	case 1:
+		*resume = true;
+		ms = SVOOC_RESET_SETTLE_MS;
+		break;
+	default:
+		sv->reset = 0;
+		return true;
+	}
+	sv->reset++;
+	sv->reset_at = jiffies + msecs_to_jiffies(ms);
+	mod_delayed_work(system_highpri_wq, &sv->work, msecs_to_jiffies(ms));
+	return false;
+}
+
+/*
  * A replug starts over. Like the factory driver, retry after a protocol
  * failure or a timeout while the adapter stays plugged in; it drops back
- * to 5 V and answers a new handshake. A charger that never sent a frame
- * is no SuperVOOC adapter, and each attempt takes its D+/D- lines.
+ * to 5 V and answers a new handshake. One that never sent a frame may need
+ * a reset first, as after a stop that took VBUS away; a charger that stays
+ * silent is no SuperVOOC adapter, and each attempt takes its D+/D- lines.
  */
 static void svooc_done(struct sc8547_svooc *sv)
 {
+	bool restart = false, retry = false, suspend = false, resume = false;
+	enum svooc_hold hold = SVOOC_FREE;
 	unsigned long retry_at;
-	bool restart = false;
 	int online = 0;
 
 	svooc_get(sv->usb, POWER_SUPPLY_PROP_ONLINE, &online);
+	/*
+	 * The factory driver keeps the charger online through the adapter's
+	 * drop to 5 V (oplus_vooc_set_online_keep()) and tops up once it is
+	 * over (oplus_chg_vooc.c:3248-3271, FFC_START_DELAY); a top-up that
+	 * started at once was taken for unplugged in that drop.
+	 */
+	if (!online && sv->ffc == SVOOC_FFC_PENDING && !sv->stopping &&
+	    time_before(jiffies, sv->ffc_at)) {
+		mod_delayed_work(system_highpri_wq, &sv->work, sv->ffc_at - jiffies);
+		return;
+	}
+	if (online && !sv->stopping)
+		hold = svooc_hold(sv);
+	if (hold != SVOOC_FREE)
+		WRITE_ONCE(sv->held, true);
 	if (sv->ffc != SVOOC_FFC_OFF) {
 		if (online && READ_ONCE(sv->mode) == POWER_SUPPLY_CHARGE_TYPE_FAST &&
-		    !sv->stopping) {
+		    !sv->stopping && !sv->held) {
 			svooc_ffc_tick(sv);
 			if (sv->ffc != SVOOC_FFC_OFF)
 				return;
@@ -1508,18 +1832,46 @@ static void svooc_done(struct sc8547_svooc *sv)
 		sv->state = SVOOC_IDLE;
 		sv->error = 0;
 		sv->retries = 0;
-	} else if ((sv->error == -EPROTO || sv->error == -ETIMEDOUT) && sv->frames &&
-		   sv->retries < SVOOC_RETRIES && sv->mode == POWER_SUPPLY_CHARGE_TYPE_FAST) {
+		sv->held = false;
+	} else if (sv->held) {
+		/*
+		 * Idle until the battery lets go, then a new session; one that
+		 * let go already starts it now. A held battery is checked for a
+		 * bypass until then.
+		 */
+		sv->state = SVOOC_IDLE;
+		sv->error = 0;
+		sv->plc = false;
+		if (hold == SVOOC_FREE) {
+			sv->held = false;
+			restart = true;
+		} else if (hold == SVOOC_HOLD && sv->plc_max_ua) {
+			mod_delayed_work(system_highpri_wq, &sv->work,
+					 msecs_to_jiffies(SVOOC_PLC_CHECK_MS));
+		}
+	} else if ((sv->error == -EPROTO || sv->error == -ETIMEDOUT) &&
+		   sv->retries < (sv->frames ? SVOOC_RETRIES : SVOOC_SILENT_RETRIES) &&
+		   sv->mode == POWER_SUPPLY_CHARGE_TYPE_FAST) {
+		retry = true;
 		if (time_before(jiffies, retry_at)) {
 			mod_delayed_work(system_highpri_wq, &sv->work, retry_at - jiffies);
-		} else {
+		} else if (sv->frames || svooc_reset_step(sv, &suspend, &resume)) {
 			sv->state = SVOOC_IDLE;
 			sv->error = 0;
 			sv->retries++;
 			restart = true;
 		}
 	}
+	/* Whatever ends a reset early gives the input back. */
+	if (!retry && sv->reset) {
+		resume = sv->reset == 1;
+		sv->reset = 0;
+	}
 	mutex_unlock(&sv->lock);
+	if (suspend && svooc_set_input(sv, true))
+		dev_warn(sv->dev, "cannot reset the SuperVOOC adapter\n");
+	if (resume && svooc_set_input(sv, false))
+		dev_err(sv->dev, "cannot restore the charger input\n");
 	if (restart)
 		mod_delayed_work(system_highpri_wq, &sv->work, 0);
 }
@@ -1555,6 +1907,11 @@ static int svooc_supply_changed(struct notifier_block *nb, unsigned long event,
 	struct sc8547_svooc *sv = container_of(nb, struct sc8547_svooc, notifier);
 	int online = 0;
 
+	if (data == sv->battery && READ_ONCE(sv->held)) {
+		if (READ_ONCE(sv->state) == SVOOC_IDLE)
+			mod_delayed_work(system_highpri_wq, &sv->work, 0);
+		return NOTIFY_OK;
+	}
 	if (data != sv->usb)
 		return NOTIFY_DONE;
 	if (!svooc_get(sv->usb, POWER_SUPPLY_PROP_ONLINE, &online) && !online)
@@ -1663,7 +2020,8 @@ static int svooc_status_show(struct seq_file *s, void *data)
 	seq_printf(s, "state %s error %d frames %u irqs %u rx %02x flags %02x model %02x\n",
 		   svooc_state_names[sv->state], sv->error, sv->frames, sv->irqs,
 		   sv->rx, sv->flags, sv->proto.model);
-	seq_printf(s, "worst reply %u us\n", sv->worst_us);
+	seq_printf(s, "worst reply %u us held %d bypass %d at %d uA\n", sv->worst_us,
+		   sv->held, sv->plc, sv->plc ? sv->plc_ua : 0);
 	seq_printf(s, "limit %d target %d applied %d pending %d taper %d uA\n",
 		   sv->limit_ua, sv->change ? sv->target_ua : 0, sv->applied_ua,
 		   sv->pending_ua, sv->taper_ua);
@@ -1707,6 +2065,8 @@ static void svooc_cleanup(void *data)
 	if (sv->state == SVOOC_STOPPING)
 		svooc_restore(sv);
 	svooc_ffc_stop(sv);
+	if (sv->reset == 1 && svooc_set_input(sv, false))
+		dev_err(sv->dev, "cannot restore the charger input\n");
 	sc8547_set_phy_handler(sv->main, NULL, NULL);
 	debugfs_remove_recursive(sv->debugfs);
 	device_init_wakeup(sv->dev, false);
@@ -1986,6 +2346,17 @@ static int svooc_probe(struct auxiliary_device *adev,
 	if (max_ua < SVOOC_MIN_UA || max_ua > SVOOC_MAX_UA)
 		return dev_err_probe(dev, -EINVAL, "Invalid current limit %u\n", max_ua);
 	sv->max_ua = max_ua;
+	if (device_property_present(dev, "oneplus,svooc-bypass-microamp")) {
+		u32 range[2];
+
+		ret = device_property_read_u32_array(dev, "oneplus,svooc-bypass-microamp",
+						     range, 2);
+		if (ret || range[0] < 1000000 || range[0] > range[1] || range[1] > max_ua ||
+		    range[0] % 100000 || range[1] % 100000)
+			return dev_err_probe(dev, -EINVAL, "Invalid bypass range\n");
+		sv->plc_min_ua = range[0];
+		sv->plc_max_ua = range[1];
+	}
 
 	sv->main = sc8547_get(dev, dev_fwnode(dev->parent));
 	if (IS_ERR(sv->main))
@@ -2072,6 +2443,8 @@ static void svooc_shutdown(struct auxiliary_device *adev)
 	if (sv->state == SVOOC_STOPPING)
 		svooc_restore(sv);
 	svooc_ffc_stop(sv);
+	if (sv->reset == 1 && svooc_set_input(sv, false))
+		dev_err(sv->dev, "cannot restore the charger input\n");
 }
 
 static struct auxiliary_driver svooc_driver = {

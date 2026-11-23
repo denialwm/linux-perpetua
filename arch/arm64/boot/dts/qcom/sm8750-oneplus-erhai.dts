@@ -1214,6 +1214,14 @@
 			oneplus,svooc-max-microamp = <6200000>;
 
 			/*
+			 * While the battery holds its charge, power the
+			 * system through the pumps between these adapter
+			 * currents: the stock PLC "svooc" strategy
+			 * (cp_2t1_simple_strategy, strategy_curr_ma).
+			 */
+			oneplus,svooc-bypass-microamp = <1000000 3500000>;
+
+			/*
 			 * Sessions follow the stock board data; the driver's
 			 * debugfs stock_strategy switch turns it off for the
 			 * next session. Numbers from the stock DT

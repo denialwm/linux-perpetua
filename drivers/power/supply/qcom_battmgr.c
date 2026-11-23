@@ -347,6 +347,18 @@ struct qcom_battmgr_oplus {
 	u32 value;
 	/* The host's charge voltage limit in mV, 0 for the firmware's own. */
 	u32 voltage_mv;
+	/*
+	 * The host's charge policy, which the OnePlus SM8750 firmware does
+	 * not keep: the charge behaviour and the charge level thresholds.
+	 * @threshold_hold is set once the level reached the end threshold
+	 * and until it falls below the start one; @charging is what the
+	 * host last told the firmware.
+	 */
+	enum power_supply_charge_behaviour behaviour;
+	unsigned int start_threshold;
+	unsigned int end_threshold;
+	bool threshold_hold;
+	bool charging;
 };
 
 /*
@@ -609,6 +621,30 @@ static int qcom_battmgr_bat_sm8350_update(struct qcom_battmgr *battmgr,
 	return ret;
 }
 
+#define OPLUS_SM8750_BEHAVIOURS	(BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) |		\
+				 BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE) |	\
+				 BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE))
+
+/*
+ * Called with @battmgr->lock held. Whether the host holds charging: by the
+ * charge behaviour, or by the charge level thresholds in automatic mode.
+ * Only the OnePlus SM8750 battery offers either, so the others never hold.
+ */
+static bool qcom_battmgr_oplus_charge_held(struct qcom_battmgr *battmgr)
+{
+	return battmgr->oplus.behaviour != POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO ||
+	       battmgr->oplus.threshold_hold;
+}
+
+/* Called with @battmgr->lock held. Whether a source is attached now. */
+static bool qcom_battmgr_oplus_source_online(struct qcom_battmgr *battmgr)
+{
+	/* A failed read keeps the state read before. */
+	qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET, USB_ONLINE, 0);
+
+	return battmgr->usb.online;
+}
+
 /*
  * The Kaanapali Oplus firmware describes only its own buck. While the host
  * holds the buck input at zero an external charger owns charging, and the
@@ -617,7 +653,12 @@ static int qcom_battmgr_bat_sm8350_update(struct qcom_battmgr *battmgr,
  *
  * The SM8750 Oplus firmware reports Charging whenever its buck has input,
  * also while the load takes more than a weak source gives. The battery
- * then discharges, and the direction of its current says so.
+ * then discharges, and the direction of its current says so. While the
+ * host holds charging with a source attached, the battery is not charging
+ * whatever the firmware says, which is Discharging for disabled charging
+ * even with no load on the battery; also while a direct charger has the
+ * buck input, until it gives the input back. A forced discharge suspends the
+ * input, and the current tells the status as for any suspended input.
  */
 static int qcom_battmgr_bat_oplus_update(struct qcom_battmgr *battmgr,
 					 enum power_supply_property psp)
@@ -646,7 +687,11 @@ static int qcom_battmgr_bat_oplus_update(struct qcom_battmgr *battmgr,
 	if (ret)
 		goto out_unlock;
 
-	if (battmgr->oplus.input_suspended)
+	if (qcom_battmgr_oplus_charge_held(battmgr) &&
+	    battmgr->oplus.behaviour != POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE &&
+	    (battmgr->oplus.input_suspended || qcom_battmgr_oplus_source_online(battmgr)))
+		status->status = POWER_SUPPLY_STATUS_NOT_CHARGING;
+	else if (battmgr->oplus.input_suspended)
 		status->status = status->current_now > 0 ? POWER_SUPPLY_STATUS_CHARGING :
 							   POWER_SUPPLY_STATUS_DISCHARGING;
 	else if (battmgr->variant == OPLUS_BATTMGR_SM8750 &&
@@ -705,6 +750,23 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
 	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
 	enum qcom_battmgr_unit unit = battmgr->unit;
 	int ret;
+
+	/* The host's charge policy, which needs no firmware to read. */
+	if (battmgr->variant == OPLUS_BATTMGR_SM8750) {
+		switch (psp) {
+		case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+			val->intval = READ_ONCE(battmgr->oplus.behaviour);
+			return 0;
+		case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+			val->intval = READ_ONCE(battmgr->oplus.start_threshold);
+			return 0;
+		case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+			val->intval = READ_ONCE(battmgr->oplus.end_threshold);
+			return 0;
+		default:
+			break;
+		}
+	}
 
 	if (!qcom_battmgr_service_wait(battmgr))
 		return -EAGAIN;
@@ -1141,7 +1203,8 @@ static const struct power_supply_desc sm8550_bat_psy_desc = {
 /*
  * The OnePlus SM8750 firmware puts its own properties where the charge
  * control thresholds are (battery properties 25 and 26 set the PD voltage
- * and QC): leave them out.
+ * and QC), and keeps no charge policy of its own: the host keeps the charge
+ * behaviour and thresholds and only enables or disables charging.
  */
 static const enum power_supply_property oplus_sm8750_bat_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
@@ -1167,15 +1230,157 @@ static const enum power_supply_property oplus_sm8750_bat_props[] = {
 	POWER_SUPPLY_PROP_POWER_NOW,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
+	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD,
 };
 
 static int qcom_battmgr_apply_charge_limit(struct qcom_battmgr *battmgr);
+static int qcom_battmgr_oplus_set_input_limit(struct qcom_battmgr *battmgr, u32 limit_ua);
+static int qcom_battmgr_oplus_set_charging(struct qcom_battmgr *battmgr);
 
 static int qcom_battmgr_bat_oplus_is_writeable(struct power_supply *psy,
 					       enum power_supply_property psp)
 {
-	return psp == POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT ||
-	       psp == POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE;
+	switch (psp) {
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+/*
+ * Called with @battmgr->lock held. Follow the charge level with the
+ * threshold hold: set at the end threshold, cleared below the start one.
+ * A start threshold of 0, or at or above the end one, resumes charging
+ * CHARGE_CTRL_DELTA_SOC below the end threshold. An end threshold of 100
+ * leaves the end of charge to the firmware.
+ */
+static int qcom_battmgr_oplus_update_hold(struct qcom_battmgr *battmgr)
+{
+	struct qcom_battmgr_oplus *oplus = &battmgr->oplus;
+	unsigned int percent, resume;
+	int ret;
+
+	if (oplus->end_threshold >= 100) {
+		oplus->threshold_hold = false;
+		return 0;
+	}
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET, BATT_CAPACITY, 0);
+	if (ret)
+		return ret;
+	percent = battmgr->status.percent;
+	if (percent == (unsigned int)-1)
+		return -ENODATA;
+
+	if (oplus->start_threshold && oplus->start_threshold < oplus->end_threshold)
+		resume = oplus->start_threshold;
+	else
+		resume = oplus->end_threshold - min(oplus->end_threshold, CHARGE_CTRL_DELTA_SOC);
+
+	if (percent >= oplus->end_threshold)
+		oplus->threshold_hold = true;
+	else if (percent < resume)
+		oplus->threshold_hold = false;
+
+	return 0;
+}
+
+/*
+ * Called with @battmgr->lock held. Tell the firmware whether to charge
+ * when the host's decision changed. Returns whether it did.
+ */
+static bool qcom_battmgr_oplus_follow_policy(struct qcom_battmgr *battmgr)
+{
+	bool charging;
+
+	qcom_battmgr_oplus_update_hold(battmgr);
+	charging = !qcom_battmgr_oplus_charge_held(battmgr);
+	if (charging == battmgr->oplus.charging)
+		return false;
+
+	return !qcom_battmgr_oplus_set_charging(battmgr);
+}
+
+/*
+ * Inhibiting the charge disables only the charging of the battery: the buck
+ * keeps its input and its limit and powers the system, as the stock kernel
+ * holds a charge (oplus_chg_plc.c, the buck mode: charging disabled, input
+ * kept). Forcing a discharge suspends the input as well. A direct charger
+ * finds the charge held through the battery status and stops.
+ */
+static int qcom_battmgr_oplus_set_behaviour(struct qcom_battmgr *battmgr, int behaviour)
+{
+	struct qcom_battmgr_oplus *oplus = &battmgr->oplus;
+	enum power_supply_charge_behaviour old;
+	bool resume = false;
+	int ret = 0;
+
+	if (behaviour < 0 || behaviour >= BITS_PER_TYPE(u8) ||
+	    !(OPLUS_SM8750_BEHAVIOURS & BIT(behaviour)))
+		return -EINVAL;
+
+	mutex_lock(&battmgr->lock);
+	old = oplus->behaviour;
+	oplus->behaviour = behaviour;
+	if (behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE &&
+	    old != POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE) {
+		ret = qcom_battmgr_oplus_set_input_limit(battmgr, 0);
+		if (!ret)
+			oplus->input_suspended = true;
+	} else if (old == POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE &&
+		   behaviour != POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE) {
+		/*
+		 * A limit alone keeps a suspended input suspended: lift the
+		 * vote first, as the stock kernel resumes it; the charging
+		 * worker then ramps the input.
+		 */
+		ret = qcom_battmgr_oplus_set_input_limit(battmgr, U32_MAX);
+		if (!ret) {
+			oplus->input_suspended = false;
+			resume = true;
+		}
+	}
+	if (!ret)
+		ret = qcom_battmgr_oplus_set_charging(battmgr);
+	if (ret && !resume)
+		oplus->behaviour = old;
+	mutex_unlock(&battmgr->lock);
+
+	if (resume)
+		schedule_work(&battmgr->oplus_charging_work);
+	power_supply_changed(battmgr->bat_psy);
+
+	return ret;
+}
+
+static int qcom_battmgr_oplus_set_threshold(struct qcom_battmgr *battmgr,
+					    enum power_supply_property psp, int value)
+{
+	struct qcom_battmgr_oplus *oplus = &battmgr->oplus;
+
+	if (value < 0 || value > 100)
+		return -EINVAL;
+	if (psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD && !value)
+		return -EINVAL;
+
+	mutex_lock(&battmgr->lock);
+	if (psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD)
+		WRITE_ONCE(oplus->start_threshold, value);
+	else
+		WRITE_ONCE(oplus->end_threshold, value);
+	qcom_battmgr_oplus_follow_policy(battmgr);
+	mutex_unlock(&battmgr->lock);
+
+	power_supply_changed(battmgr->bat_psy);
+
+	return 0;
 }
 
 /*
@@ -1211,6 +1416,11 @@ static int qcom_battmgr_bat_oplus_set_property(struct power_supply *psy,
 			battmgr->oplus.voltage_mv = pval->intval / 1000;
 		mutex_unlock(&battmgr->lock);
 		return ret;
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		return qcom_battmgr_oplus_set_behaviour(battmgr, pval->intval);
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+		return qcom_battmgr_oplus_set_threshold(battmgr, psp, pval->intval);
 	default:
 		return -EINVAL;
 	}
@@ -1224,6 +1434,7 @@ static const struct power_supply_desc oplus_sm8750_bat_psy_desc = {
 	.get_property = qcom_battmgr_bat_get_property,
 	.set_property = qcom_battmgr_bat_oplus_set_property,
 	.property_is_writeable = qcom_battmgr_bat_oplus_is_writeable,
+	.charge_behaviours = OPLUS_SM8750_BEHAVIOURS,
 };
 
 static int qcom_battmgr_ac_get_property(struct power_supply *psy,
@@ -1307,18 +1518,28 @@ static bool qcom_battmgr_oplus_host_charging(struct qcom_battmgr *battmgr)
 	       battmgr->variant == OPLUS_BATTMGR_SM8750;
 }
 
-/* Called with @battmgr->lock held. */
-static int qcom_battmgr_oplus_enable_charging(struct qcom_battmgr *battmgr)
+/* Called with @battmgr->lock held. Enable charging unless the host holds it. */
+static int qcom_battmgr_oplus_set_charging(struct qcom_battmgr *battmgr)
 {
-	if (battmgr->variant == OPLUS_BATTMGR_SM8750)
-		return qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
-						     BATT_OPLUS_CHG_EN, 1);
+	bool charging = !qcom_battmgr_oplus_charge_held(battmgr);
+	int ret;
 
-	return qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET,
-					     OPLUS_CHG_EN, 1);
+	if (battmgr->variant == OPLUS_BATTMGR_SM8750)
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
+						    BATT_OPLUS_CHG_EN, charging);
+	else
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET,
+						    OPLUS_CHG_EN, charging);
+	if (!ret)
+		battmgr->oplus.charging = charging;
+
+	return ret;
 }
 
-/* Called with @battmgr->lock held. 0 suspends the input, U32_MAX lifts the vote. */
+/*
+ * Called with @battmgr->lock held. 0 suspends the input and U32_MAX lifts the
+ * vote; other limits leave a suspended input suspended.
+ */
 static int qcom_battmgr_oplus_set_input_limit(struct qcom_battmgr *battmgr, u32 limit_ua)
 {
 	if (battmgr->variant == OPLUS_BATTMGR_SM8750)
@@ -1500,7 +1721,17 @@ static int qcom_battmgr_usb_set_property(struct power_supply *psy,
 
 	if (qcom_battmgr_oplus_host_charging(battmgr)) {
 		mutex_lock(&battmgr->lock);
-		ret = qcom_battmgr_oplus_set_input_limit(battmgr, limit);
+		/* A forced discharge keeps the input suspended until it ends. */
+		if (battmgr->oplus.behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE) {
+			mutex_unlock(&battmgr->lock);
+			return 0;
+		}
+		ret = 0;
+		/* A limit alone keeps a suspended input suspended. */
+		if (battmgr->oplus.input_suspended && limit && limit != U32_MAX)
+			ret = qcom_battmgr_oplus_set_input_limit(battmgr, U32_MAX);
+		if (!ret)
+			ret = qcom_battmgr_oplus_set_input_limit(battmgr, limit);
 		if (!ret)
 			battmgr->oplus.input_suspended = !limit;
 		mutex_unlock(&battmgr->lock);
@@ -2616,7 +2847,18 @@ static void qcom_battmgr_oplus_charging_worker(struct work_struct *work)
 		return;
 	}
 
-	ret = qcom_battmgr_oplus_enable_charging(battmgr);
+	qcom_battmgr_oplus_update_hold(battmgr);
+	ret = qcom_battmgr_oplus_set_charging(battmgr);
+	if (!ret && battmgr->oplus.behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE) {
+		/* A plug event or a restarted firmware may have resumed it. */
+		ret = qcom_battmgr_oplus_set_input_limit(battmgr, 0);
+		if (!ret)
+			battmgr->oplus.input_suspended = true;
+		mutex_unlock(&battmgr->lock);
+		if (ret)
+			dev_err(battmgr->dev, "failed to suspend the input: %d\n", ret);
+		return;
+	}
 	mutex_unlock(&battmgr->lock);
 	if (ret) {
 		dev_err(battmgr->dev, "failed to enable charging\n");
@@ -2642,7 +2884,7 @@ static void qcom_battmgr_oplus_poll_worker(struct work_struct *work)
 {
 	struct qcom_battmgr *battmgr = container_of(to_delayed_work(work),
 						    struct qcom_battmgr, oplus_poll_work);
-	bool bat_changed, usb_changed;
+	bool bat_changed, usb_changed, policy_changed;
 	unsigned int usb_type;
 	int status, percent;
 	bool online;
@@ -2666,6 +2908,8 @@ static void qcom_battmgr_oplus_poll_worker(struct work_struct *work)
 		qcom_battmgr_usb_sm8350_update(battmgr, POWER_SUPPLY_PROP_USB_TYPE);
 
 	mutex_lock(&battmgr->lock);
+	/* The host keeps the charge thresholds: follow the charge level. */
+	policy_changed = qcom_battmgr_oplus_follow_policy(battmgr);
 	status = battmgr->status.status;
 	percent = battmgr->status.percent;
 	online = battmgr->usb.online;
@@ -2674,7 +2918,7 @@ static void qcom_battmgr_oplus_poll_worker(struct work_struct *work)
 
 	usb_changed = online != battmgr->poll_online ||
 		      usb_type != battmgr->poll_usb_type;
-	bat_changed = usb_changed || status != battmgr->poll_status ||
+	bat_changed = usb_changed || policy_changed || status != battmgr->poll_status ||
 		      percent != battmgr->poll_percent;
 	battmgr->poll_status = status;
 	battmgr->poll_percent = percent;
@@ -2767,6 +3011,9 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 		battmgr->variant = (unsigned long)match->data;
 	else
 		battmgr->variant = QCOM_BATTMGR_SM8350;
+
+	/* No end threshold: the firmware ends the charge. */
+	battmgr->oplus.end_threshold = 100;
 
 	ret = qcom_battmgr_charge_control_thresholds_init(battmgr);
 	if (ret < 0)
