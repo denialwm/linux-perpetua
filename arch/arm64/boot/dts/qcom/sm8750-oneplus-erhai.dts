@@ -1869,6 +1869,13 @@
 	};
 };
 
+/* OnePlus's signed VPU 3.5 firmware, from vendor's firmware/ */
+&iris {
+	firmware-name = "qcom/sm8750/erhai/vpu35_4v.mbn";
+
+	status = "okay";
+};
+
 &mdss {
 	/*
 	 * The display is handed over as the bootloader runs it, reading the
