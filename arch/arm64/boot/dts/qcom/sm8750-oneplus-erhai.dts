@@ -2108,6 +2108,13 @@
 	status = "okay";
 };
 
+&remoteproc_cdsp {
+	firmware-name = "qcom/sm8750/oneplus/erhai/cdsp.mdt",
+			"qcom/sm8750/oneplus/erhai/cdsp_dtb.mdt";
+
+	status = "okay";
+};
+
 &spi4 {
 	status = "okay";
 
