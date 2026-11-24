@@ -274,6 +274,8 @@ struct sc8547_svooc {
 	struct iio_channel *therm[SVOOC_THERMS];
 	struct power_supply *usb;
 	struct power_supply *battery;
+	/* What reports the host's charge hold: the charger, or the battery. */
+	struct power_supply *hold_status;
 	struct power_supply *psy;
 	struct notifier_block notifier;
 	struct delayed_work work;
@@ -445,8 +447,9 @@ enum svooc_hold {
 /*
  * Whether the battery holds charging, as a host charge policy does: by a
  * charge behaviour other than auto, or by its charge level thresholds,
- * which it reports as Not charging. A battery without a charge behaviour
- * never holds, and its status is not asked.
+ * which it reports as Not charging, or its charger does for a battery that
+ * a fuel gauge measures. A battery without a charge behaviour never holds,
+ * and its status is not asked.
  */
 static enum svooc_hold svooc_hold(struct sc8547_svooc *sv)
 {
@@ -458,7 +461,7 @@ static enum svooc_hold svooc_hold(struct sc8547_svooc *sv)
 		return SVOOC_DISCHARGE;
 	if (behaviour != POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO)
 		return SVOOC_HOLD;
-	return !svooc_get(sv->battery, POWER_SUPPLY_PROP_STATUS, &status) &&
+	return !svooc_get(sv->hold_status, POWER_SUPPLY_PROP_STATUS, &status) &&
 	       status == POWER_SUPPLY_STATUS_NOT_CHARGING ? SVOOC_HOLD : SVOOC_FREE;
 }
 
@@ -2051,6 +2054,31 @@ static void svooc_put_supply(void *psy)
 	power_supply_put(psy);
 }
 
+static bool svooc_supply_has(struct power_supply *psy, enum power_supply_property prop)
+{
+	size_t i;
+
+	for (i = 0; i < psy->desc->num_properties; i++)
+		if (psy->desc->properties[i] == prop)
+			return true;
+	return false;
+}
+
+/*
+ * The battery that the Qualcomm endpoint charges: the one its USB supply
+ * names, which is a fuel gauge's where one measures the pack, else its own.
+ */
+static struct power_supply *svooc_get_battery(struct sc8547_svooc *sv)
+{
+	struct power_supply *battery = NULL;
+
+	if (sv->usb->num_supplicants)
+		battery = power_supply_get_by_name(sv->usb->supplied_to[0]);
+	if (!battery)
+		battery = power_supply_get_by_name("qcom-battmgr-bat");
+	return battery;
+}
+
 static void svooc_cleanup(void *data)
 {
 	struct sc8547_svooc *sv = data;
@@ -2387,12 +2415,14 @@ static int svooc_probe(struct auxiliary_device *adev,
 	ret = devm_add_action_or_reset(dev, svooc_put_supply, sv->usb);
 	if (ret)
 		return ret;
-	sv->battery = power_supply_get_by_name("qcom-battmgr-bat");
+	sv->battery = svooc_get_battery(sv);
 	if (!sv->battery)
 		return -EPROBE_DEFER;
 	ret = devm_add_action_or_reset(dev, svooc_put_supply, sv->battery);
 	if (ret)
 		return ret;
+	sv->hold_status = svooc_supply_has(sv->usb, POWER_SUPPLY_PROP_STATUS) ?
+			  sv->usb : sv->battery;
 
 	cfg.drv_data = sv;
 	cfg.fwnode = dev_fwnode(dev);

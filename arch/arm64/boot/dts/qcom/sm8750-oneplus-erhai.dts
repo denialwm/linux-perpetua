@@ -34,6 +34,22 @@
 	 * where serial0 is the debug UART.
 	 */
 	aliases {
+		/*
+		 * The I2C buses in the order they probed before the hub's
+		 * second bus, for the fuel gauge, was enabled: the bus
+		 * numbers name the devices on them (sc8547 1-006f, ...).
+		 */
+		i2c0 = &i2c_hub_0;
+		i2c1 = &i2c_hub_2;
+		i2c2 = &i2c_hub_3;
+		i2c3 = &i2c_hub_4;
+		i2c4 = &i2c_hub_8;
+		i2c5 = &i2c_hub_9;
+		i2c6 = &i2c9;
+		i2c7 = &i2c11;
+		i2c8 = &i2c3;
+		i2c9 = &cci0_i2c1;
+		i2c10 = &i2c_hub_1;
 		serial1 = &uart14;
 		serial2 = &uart8;
 	};
@@ -250,6 +266,13 @@
 		qcom,charge-current-limits-microamp = <3900000 3400000 2900000
 						       2400000 1900000 1400000
 						       900000>;
+
+		/*
+		 * The pack fuel gauge of the EU units (stock gauge-id 2);
+		 * the others have only the PMIC's gauge. The driver probes
+		 * which one is fitted.
+		 */
+		oneplus,fuel-gauge = <&fuel_gauge>;
 
 		connector@0 {
 			compatible = "usb-c-connector";
@@ -1151,6 +1174,23 @@
 				remote-endpoint = <&csiphy5_in_ep>;
 			};
 		};
+	};
+};
+
+/*
+ * The EU units carry a TI BQ27Z561 pack gauge on hub i2c1
+ * (oplus-chg-pack-gauge.dtsi, stock gauge-id 2); the bootloader picks the
+ * stock overlay by that id, so here the charger driver probes the address
+ * and enables the node only on units where the gauge answers.
+ */
+&i2c_hub_1 {
+	clock-frequency = <100000>;
+	status = "okay";
+
+	fuel_gauge: fuel-gauge@55 {
+		compatible = "ti,bq27z561";
+		reg = <0x55>;
+		status = "fail-needs-probe";
 	};
 };
 
