@@ -328,7 +328,7 @@ config QCOM_QMI_HELPERS
 	depends on NET
 
 config QCOM_QMI_TMD
-	bool "Qualcomm remote subsystem TMD" if COMPILE_TEST
+	tristate "Qualcomm remote subsystem TMD" if COMPILE_TEST
 	depends on ARCH_QCOM && NET
 	select QRTR
 	select QCOM_QMI_HELPERS

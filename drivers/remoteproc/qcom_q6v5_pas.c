@@ -1071,6 +1071,13 @@ static const struct tmd_name cdsp_tmd_name[] = {
 	{ .name = "cdsp_sw", .id = QCOM_TMD_CDSP_SW },
 };
 
+static const struct tmd_name sm8650_cdsp_tmd_name[] = {
+	{ .name = "cdsp_sw", .id = QCOM_TMD_CDSP_SW },
+	{ .name = "cdsp_sw_hvx", .id = QCOM_TMD_CDSP_SW_HVX },
+	{ .name = "cdsp_sw_hmx", .id = QCOM_TMD_CDSP_SW_HMX },
+	{ .name = "cdsp_hw", .id = QCOM_TMD_CDSP_HW },
+};
+
 static const struct tmd_name modem_tmd_name[] = {
 	{ .name = "pa", .id = QCOM_TMD_PA },
 	{ .name = "modem", .id = QCOM_TMD_MODEM },
@@ -1828,6 +1835,9 @@ static const struct qcom_pas_data sm8650_cdsp_resource = {
 	.region_assign_count = 1,
 	.region_assign_shared = true,
 	.region_assign_vmid = QCOM_SCM_VMID_CDSP,
+	.tmd_instance_id = 0x43,
+	.tmd_name = sm8650_cdsp_tmd_name,
+	.num_tmd = ARRAY_SIZE(sm8650_cdsp_tmd_name),
 };
 
 static const struct qcom_pas_data sm8650_mpss_resource = {

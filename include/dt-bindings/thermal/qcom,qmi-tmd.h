@@ -12,6 +12,9 @@
 
 /* CDSP thermal mitigation device id */
 #define QCOM_TMD_CDSP_SW	0
+#define QCOM_TMD_CDSP_SW_HVX	1
+#define QCOM_TMD_CDSP_SW_HMX	2
+#define QCOM_TMD_CDSP_HW	3
 
 /* Modem thermal mitigation device id */
 #define QCOM_TMD_PA	0

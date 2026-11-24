@@ -538,6 +538,14 @@
 		io-channel-names = "sensor-channel";
 	};
 
+	/* The XO thermistor beside the SoC (stock sys-therm-0). */
+	xo_temp: thermal-sensor-xo {
+		compatible = "generic-adc-thermal";
+		#thermal-sensor-cells = <0>;
+		io-channels = <&pmk8550_vadc 0x44>;
+		io-channel-names = "sensor-channel";
+	};
+
 	thermal-zones {
 		/*
 		 * Charge-current mitigation, the in-tree counterpart of the
@@ -597,6 +605,19 @@
 					hysteresis = <2000>;
 					type = "passive";
 				};
+
+				/* No stock limit; the iceland skin limit. */
+				chg-hot {
+					temperature = <80000>;
+					hysteresis = <2000>;
+					type = "hot";
+				};
+
+				chg-critical {
+					temperature = <90000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
 			};
 
 			cooling-maps {
@@ -643,11 +664,14 @@
 		 * readings to the thermal HAL and the single passive trip
 		 * is a 125 C sentinel. The stock node's wake-capable-sensor
 		 * flag is omitted: the IIO-backed generic-adc-thermal
-		 * sensor does not implement it.
+		 * sensor does not implement it. Unlike stock it is polled,
+		 * for a shutdown at the Android default battery limit of
+		 * 68 C (config_shutdownBatteryTemperature) that does not
+		 * rely on userspace.
 		 */
 		batt-thermal {
 			polling-delay-passive = <0>;
-			polling-delay = <0>;
+			polling-delay = <5000>;
 			thermal-governor = "user_space";
 			thermal-sensors = <&batt_temp>;
 
@@ -656,6 +680,143 @@
 					temperature = <125000>;
 					hysteresis = <1000>;
 					type = "passive";
+				};
+
+				batt-hot {
+					temperature = <60000>;
+					hysteresis = <2000>;
+					type = "hot";
+				};
+
+				batt-critical {
+					temperature = <68000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+		};
+
+		/*
+		 * Stock sys-therm-0: the CPUs, the GPU and the DSPs are
+		 * throttled from 88 C and the tablet shuts down at 100 C.
+		 */
+		xo-thermal {
+			polling-delay-passive = <250>;
+			polling-delay = <5000>;
+
+			thermal-sensors = <&xo_temp>;
+
+			trips {
+				xo_passive: xo-passive {
+					temperature = <88000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				xo-critical {
+					temperature = <100000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&xo_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+
+				/* As stock: the CDSP from its level 5 up. */
+				map1 {
+					trip = <&xo_passive>;
+					cooling-device = <&remoteproc_cdsp QCOM_TMD_CDSP_SW
+							  5 THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		/*
+		 * The PM8550VE-G and -I supply the NSP's HVX and HMX rails.
+		 * As stock: limit the unit a hot regulator feeds from its
+		 * level 5 up at 95 C, power off at 145 C.
+		 */
+		pm8550ve-g-thermal {
+			polling-delay-passive = <100>;
+
+			thermal-sensors = <&pm8550ve_g_temp_alarm>;
+
+			trips {
+				pm8550ve_g_alert0: pm8550ve-g-alert0 {
+					temperature = <95000>;
+					hysteresis = <0>;
+					type = "passive";
+				};
+
+				pm8550ve-g-hot {
+					temperature = <115000>;
+					hysteresis = <0>;
+					type = "hot";
+				};
+
+				pm8550ve-g-critical {
+					temperature = <145000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&pm8550ve_g_alert0>;
+					cooling-device = <&remoteproc_cdsp QCOM_TMD_CDSP_SW_HVX
+							  5 THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		pm8550ve-i-thermal {
+			polling-delay-passive = <100>;
+
+			thermal-sensors = <&pm8550ve_i_temp_alarm>;
+
+			trips {
+				pm8550ve_i_alert0: pm8550ve-i-alert0 {
+					temperature = <95000>;
+					hysteresis = <0>;
+					type = "passive";
+				};
+
+				pm8550ve-i-hot {
+					temperature = <115000>;
+					hysteresis = <0>;
+					type = "hot";
+				};
+
+				pm8550ve-i-critical {
+					temperature = <145000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&pm8550ve_i_alert0>;
+					cooling-device = <&remoteproc_cdsp QCOM_TMD_CDSP_SW_HMX
+							  5 THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		/* As the other PMICs (pmih0108.dtsi): power off at 145 C. */
+		pm8550-thermal {
+			trips {
+				pm8550-critical {
+					temperature = <145000>;
+					hysteresis = <0>;
+					type = "critical";
 				};
 			};
 		};
@@ -1711,6 +1872,14 @@
 };
 
 &pmk8550_vadc {
+	channel@44 {
+		reg = <0x44>;
+		label = "xo_therm";
+		qcom,ratiometric;
+		qcom,hw-settle-time = <200>;
+	};
+
+
 	/* The stock numbers are the PMK8550's view of the PMIH010X AMUX inputs.
 	 * Stock marks these channels qcom,adc5-gen4: they return ratiometric
 	 * codes over the full 16 bits. */
@@ -2233,12 +2402,37 @@
 		};
 	};
 
-	/* The rear camera's reset line is its GPIO 5. */
+	/* Supplies the NSP's HVX rail; only its temperature alarm is used. */
+	pm8550ve_g: pmic@6 {
+		compatible = "qcom,pm8550ve", "qcom,spmi-pmic";
+		reg = <0x6 SPMI_USID>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		pm8550ve_g_temp_alarm: temp-alarm@a00 {
+			compatible = "qcom,spmi-temp-alarm";
+			reg = <0xa00>;
+			interrupts = <0x6 0xa 0x0 IRQ_TYPE_EDGE_BOTH>;
+			#thermal-sensor-cells = <0>;
+		};
+	};
+
+	/*
+	 * The rear camera's reset line is its GPIO 5; the temperature alarm
+	 * watches the NSP's HMX rail.
+	 */
 	pm8550ve_i: pmic@8 {
 		compatible = "qcom,pm8550ve", "qcom,spmi-pmic";
 		reg = <0x8 SPMI_USID>;
 		#address-cells = <1>;
 		#size-cells = <0>;
+
+		pm8550ve_i_temp_alarm: temp-alarm@a00 {
+			compatible = "qcom,spmi-temp-alarm";
+			reg = <0xa00>;
+			interrupts = <0x8 0xa 0x0 IRQ_TYPE_EDGE_BOTH>;
+			#thermal-sensor-cells = <0>;
+		};
 
 		pm8550ve_i_gpios: gpio@8800 {
 			compatible = "qcom,pm8550ve-gpio", "qcom,spmi-gpio";

@@ -433,14 +433,18 @@ static const struct dpu_perf_cfg sm8750_perf_data = {
 	.min_llcc_ib = 0,
 	.min_dram_ib = 800000,
 	.min_prefill_lines = 35,
-	.danger_lut_tbl = {0x3ffff, 0x3ffff, 0x0},
-	.safe_lut_tbl = {0xfe00, 0xfe00, 0xffff},
+	/*
+	 * The real-time LUTs of the stock kernel (qcom,sde-danger-lut,
+	 * qcom,sde-safe-lut, qcom,sde-creq-lut), the same as kaanapali's.
+	 */
+	.danger_lut_tbl = {0xffff, 0xffff, 0x0},
+	.safe_lut_tbl = {0xff00, 0xff00, 0xffff},
 	.qos_lut_tbl = {
-		{.nentry = ARRAY_SIZE(sc7180_qos_linear),
-		.entries = sc7180_qos_linear
+		{.nentry = ARRAY_SIZE(kaanapali_qos_linear),
+		.entries = kaanapali_qos_linear
 		},
-		{.nentry = ARRAY_SIZE(sc7180_qos_macrotile),
-		.entries = sc7180_qos_macrotile
+		{.nentry = ARRAY_SIZE(kaanapali_qos_macrotile),
+		.entries = kaanapali_qos_macrotile
 		},
 		{.nentry = ARRAY_SIZE(sc7180_qos_nrt),
 		.entries = sc7180_qos_nrt
