@@ -143,6 +143,14 @@
 		#size-cells = <2>;
 		ranges;
 
+		adsp_rpc_remote_heap_mem: adsp-rpc-remote-heap {
+			compatible = "shared-dma-pool";
+			alloc-ranges = <0x0 0x0 0x0 0xffffffff>;
+			alignment = <0x0 0x400000>;
+			size = <0x0 0xc00000>;
+			reusable;
+		};
+
 		cont_splash_mem: cont-splash@fc800000 {
 			reg = <0x0 0xfc800000 0x0 0x2b00000>;
 			no-map;
@@ -1803,6 +1811,13 @@
 			"qcom/kaanapali/nubia/nx809j/adsp_dtb.mdt";
 
 	status = "okay";
+
+	glink-edge {
+		fastrpc {
+			memory-region = <&adsp_rpc_remote_heap_mem>;
+			qcom,vmids = <QCOM_SCM_VMID_LPASS QCOM_SCM_VMID_ADSP_HEAP>;
+		};
+	};
 };
 
 &remoteproc_cdsp {
