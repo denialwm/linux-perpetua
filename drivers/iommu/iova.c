@@ -170,12 +170,14 @@ static int __alloc_and_insert_iova_range(struct iova_domain *iovad,
 	unsigned long flags;
 	unsigned long new_pfn, retry_pfn;
 	unsigned long align_mask = ~0UL << align_shift;
+	bool size_aligned = align_shift == fls_long(size - 1);
 	unsigned long high_pfn = limit_pfn, low_pfn = iovad->start_pfn;
 
 	/* Walk the tree backwards */
 	spin_lock_irqsave(&iovad->iova_rbtree_lock, flags);
-	if (limit_pfn <= iovad->dma_32bit_pfn &&
-			size >= iovad->max32_alloc_size)
+	/* A size-aligned failure says nothing about a less aligned hole. */
+	if (size_aligned && limit_pfn <= iovad->dma_32bit_pfn &&
+	    size >= iovad->max32_alloc_size)
 		goto iova32_full;
 
 	curr = __get_cached_rbnode(iovad, limit_pfn);
@@ -199,7 +201,8 @@ retry:
 			curr_iova = to_iova(curr);
 			goto retry;
 		}
-		iovad->max32_alloc_size = size;
+		if (size_aligned && limit_pfn == iovad->dma_32bit_pfn)
+			iovad->max32_alloc_size = size;
 		goto iova32_full;
 	}
 
