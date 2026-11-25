@@ -21,6 +21,7 @@ properties:
     items:
       - enum:
           - sprd,ums512-glbregs
+          - sprd,ums9230-glbregs
           - sprd,ums9620-glbregs
       - const: syscon
       - const: simple-mfd
@@ -40,9 +41,26 @@ properties:
 patternProperties:
   "^clock-controller@[0-9a-f]+$":
     type: object
-    $ref: /schemas/clock/sprd,ums512-clk.yaml#
     description:
       Clock controller for the SoC clocks.
+
+  "^phy@[0-9a-f]+$":
+    $ref: /schemas/phy/sprd,ums9230-hsphy.yaml#
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: sprd,ums9230-glbregs
+    then:
+      patternProperties:
+        "^clock-controller@[0-9a-f]+$":
+          $ref: /schemas/clock/sprd,ums9230-clk.yaml#
+    else:
+      patternProperties:
+        "^clock-controller@[0-9a-f]+$":
+          $ref: /schemas/clock/sprd,ums512-clk.yaml#
 
 required:
   - compatible

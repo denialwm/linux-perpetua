@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/phy/sprd,ums9230-hsphy.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Unisoc UMS9230 USB 2.0 PHY
+
+maintainers:
+  - Otto Pflüger <otto.pflueger@abscue.de>
+
+properties:
+  compatible:
+    const: sprd,ums9230-hsphy
+
+  reg:
+    maxItems: 1
+
+  '#phy-cells':
+    const: 0
+
+  sprd,syscon-aon-apb:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Always-on APB global register syscon.
+
+required:
+  - compatible
+  - reg
+  - '#phy-cells'
+  - sprd,syscon-aon-apb
+
+additionalProperties: false
