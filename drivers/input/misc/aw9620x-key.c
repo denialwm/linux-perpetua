@@ -198,6 +198,8 @@ static int aw9620x_probe(struct i2c_client *client)
 	ret = device_property_read_u32(dev, "linux,code", &aw->code);
 	if (ret)
 		return dev_err_probe(dev, ret, "linux,code\n");
+	if (aw->code > KEY_MAX)
+		return dev_err_probe(dev, -EINVAL, "linux,code %u is not a key\n", aw->code);
 	ret = device_property_read_string(dev, "firmware-name", &fw_name);
 	if (ret)
 		return dev_err_probe(dev, ret, "firmware-name\n");
