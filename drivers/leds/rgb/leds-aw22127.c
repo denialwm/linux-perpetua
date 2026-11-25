@@ -319,7 +319,7 @@ static void aw22127_work(struct work_struct *work)
 static void aw22127_update(struct aw22127 *aw, unsigned int task)
 {
 	aw->dirty |= BIT(task);
-	mod_delayed_work(system_wq, &aw->work, msecs_to_jiffies(AW22127_SETTLE_MS));
+	mod_delayed_work(system_dfl_wq, &aw->work, msecs_to_jiffies(AW22127_SETTLE_MS));
 }
 
 static struct aw22127_led *cdev_to_led(struct led_classdev *cdev)
