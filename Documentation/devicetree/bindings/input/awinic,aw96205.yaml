@@ -65,6 +65,6 @@ examples:
             vcc-supply = <&vreg_l9b_2p9>;
             firmware-name = "aw9620x_reg_0.bin";
             label = "Left shoulder trigger";
-            linux,code = <BTN_TL>;
+            linux,code = <KEY_MACRO1>;
         };
     };

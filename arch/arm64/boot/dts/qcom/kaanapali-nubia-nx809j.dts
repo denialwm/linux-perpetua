@@ -1595,7 +1595,7 @@
 		vcc-supply = <&vreg_l9b_2p9>;
 		firmware-name = "qcom/kaanapali/nubia/nx809j-vendor/aw9620x_reg_0.bin";
 		label = "Left shoulder trigger";
-		linux,code = <BTN_TL>;
+		linux,code = <KEY_MACRO1>;
 
 		pinctrl-0 = <&trigger_left_int_default>;
 		pinctrl-names = "default";
@@ -1612,7 +1612,7 @@
 		vcc-supply = <&vreg_l9b_2p9>;
 		firmware-name = "qcom/kaanapali/nubia/nx809j-vendor/aw9620x_reg_1.bin";
 		label = "Right shoulder trigger";
-		linux,code = <BTN_TR>;
+		linux,code = <KEY_MACRO2>;
 
 		pinctrl-0 = <&trigger_right_int_default>;
 		pinctrl-names = "default";
