@@ -12,7 +12,7 @@
  * The program runs up to three effect tasks side by side, each driving its
  * own units. On the NX809J task 0 drives the shoulder trigger lights, task 1
  * the four fan zones and task 2 the logo and the "game mode" light. Each
- * unit is one multicolor LED, addressed in the device tree by task and unit.
+ * unit is one multicolor LED; its device tree reg is task * 4 + unit.
  *
  * A task's command carries the steps of each of its units; a step is a
  * duration in ms (big endian), the brightness at its start and at its end,
@@ -354,7 +354,8 @@ static int aw22127_pattern_set(struct led_classdev *cdev,
 		return -EINVAL;
 
 	for (i = 0; i < len; i++)
-		if (!pattern[i].delta_t || pattern[i].delta_t > U16_MAX)
+		if (!pattern[i].delta_t || pattern[i].delta_t > U16_MAX ||
+		    pattern[i].brightness > cdev->max_brightness)
 			return -EINVAL;
 
 	mutex_lock(&aw->lock);
@@ -388,24 +389,27 @@ static int aw22127_add_led(struct aw22127 *aw, struct fwnode_handle *child)
 	struct led_init_data init = {};
 	struct aw22127_led *led;
 	struct aw22127_task *t;
-	u32 reg[2];
+	unsigned int task, unit;
+	u32 reg;
 	int ret;
 
-	ret = fwnode_property_read_u32_array(child, "reg", reg, ARRAY_SIZE(reg));
-	if (ret || reg[0] >= AW22127_TASKS || reg[1] >= AW22127_MAX_UNITS)
+	ret = fwnode_property_read_u32(child, "reg", &reg);
+	if (ret || reg >= AW22127_TASKS * AW22127_MAX_UNITS)
 		return dev_err_probe(aw->dev, -EINVAL, "%pfw: bad reg\n", child);
+	task = reg / AW22127_MAX_UNITS;
+	unit = reg % AW22127_MAX_UNITS;
 
-	t = &aw->tasks[reg[0]];
-	if (t->units[reg[1]])
+	t = &aw->tasks[task];
+	if (t->units[unit])
 		return dev_err_probe(aw->dev, -EINVAL, "%pfw: unit used twice\n", child);
 
 	led = devm_kzalloc(aw->dev, sizeof(*led), GFP_KERNEL);
 	if (!led)
 		return -ENOMEM;
 	led->aw = aw;
-	led->task = reg[0];
-	t->units[reg[1]] = led;
-	t->nunits = max(t->nunits, reg[1] + 1);
+	led->task = task;
+	t->units[unit] = led;
+	t->nunits = max(t->nunits, unit + 1);
 
 	led->subled[0].color_index = LED_COLOR_ID_RED;
 	led->subled[1].color_index = LED_COLOR_ID_GREEN;

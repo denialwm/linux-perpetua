@@ -1,0 +1,88 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/leds/awinic,aw22127.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Awinic AW22127 RGB LED driver
+
+maintainers:
+  - Doctor Logix <doctor.logix@gmail.com>
+
+description: |
+  The AW22127 drives an LED matrix through a small MCU that runs a program
+  kept in the chip's own flash. The program runs up to three effect tasks
+  side by side, each driving up to four units; every unit is one RGB LED.
+  A unit is addressed by its task and its place in that task, as
+  reg = task * 4 + unit.
+
+properties:
+  compatible:
+    const: awinic,aw22127
+
+  reg:
+    maxItems: 1
+
+  reset-gpios:
+    maxItems: 1
+
+  "#address-cells":
+    const: 1
+
+  "#size-cells":
+    const: 0
+
+patternProperties:
+  "^multi-led@[0-9a-b]$":
+    type: object
+    $ref: leds-class-multicolor.yaml#
+    unevaluatedProperties: false
+
+    properties:
+      reg:
+        description: The effect task times four, plus the unit in that task.
+        maximum: 11
+
+    required:
+      - reg
+
+required:
+  - compatible
+  - reg
+  - reset-gpios
+  - "#address-cells"
+  - "#size-cells"
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/leds/common.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        led-controller@6a {
+            compatible = "awinic,aw22127";
+            reg = <0x6a>;
+            reset-gpios = <&gpio 13 GPIO_ACTIVE_LOW>;
+            #address-cells = <1>;
+            #size-cells = <0>;
+
+            /* Task 0, unit 0 */
+            multi-led@0 {
+                reg = <0>;
+                color = <LED_COLOR_ID_RGB>;
+                function = "trigger-left";
+            };
+
+            /* Task 2, unit 0 */
+            multi-led@8 {
+                reg = <8>;
+                color = <LED_COLOR_ID_RGB>;
+                function = "logo";
+            };
+        };
+    };
