@@ -1,0 +1,5 @@
+# DOOGEE T20 Mini
+name='DOOGEE T20 Mini'
+vendor=sprd
+soc=ums9230
+boot=android-gki

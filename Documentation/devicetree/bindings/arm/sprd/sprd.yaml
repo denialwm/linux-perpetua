@@ -36,6 +36,10 @@ properties:
           - const: sprd,ums512
 
       - items:
+          - const: doogee,p3mini
+          - const: sprd,ums9230
+
+      - items:
           - enum:
               - sprd,ums9620-2h10
           - const: sprd,ums9620

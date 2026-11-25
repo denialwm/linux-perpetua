@@ -21,6 +21,8 @@ patternProperties:
   "^(pciclass|pinctrl-single|#pinctrl-single|PowerPC),.*": true
   "^(pl022|pxa-mmc|rcar_sound|rotary-encoder|s5m8767|sdhci),.*": true
   "^(simple-audio-card|st-plgpio|st-spics|ts|vsc8531),.*": true
+  "^doogee,.*":
+    description: Shenzhen DOOGEE Hengtong Technology Co., Ltd.
   "^pool[0-3],.*": true
 
   # Keep list in alphabetical order.

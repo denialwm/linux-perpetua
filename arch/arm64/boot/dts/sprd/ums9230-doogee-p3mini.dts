@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/dts-v1/;
+
+#include "ums9230.dtsi"
+
+/ {
+	model = "DOOGEE T20 Mini";
+	compatible = "doogee,p3mini", "sprd,ums9230";
+
+	chosen {
+		bootargs = "rdinit=/init panic=30 loglevel=7 clk_ignore_unused";
+
+		fdt-handoff {
+			stock-compatible = "sprd,ums9230";
+			stock-bootargs = "lcd_name=lcd_ums9230_huawei_boe_hx83102h_2k_mipi_2";
+			keep-initrd;
+		};
+	};
+};
+
+&hsphy {
+	status = "okay";
+};
+
+&sdio3 {
+	bus-width = <8>;
+	max-frequency = <26000000>;
+	no-sd;
+	no-sdio;
+	non-removable;
+	status = "okay";
+};
+
+&usb {
+	dr_mode = "peripheral";
+	status = "okay";
+};
