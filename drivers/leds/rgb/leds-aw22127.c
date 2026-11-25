@@ -66,6 +66,8 @@
 #define AW22127_STATIC_MS	500
 /* How long changes gather before they are sent */
 #define AW22127_SETTLE_MS	10
+/* The program takes commands only once it runs: one sent at once is lost */
+#define AW22127_START_MS	20
 
 /*
  * A task's command: this header with the task in its first byte, its start
@@ -158,6 +160,7 @@ static int aw22127_power_on(struct aw22127 *aw)
 	ret = ret ?: regmap_write(rm, AW22127_REG_MCUCTR, AW22127_MCUCTR_RUN);
 	if (ret)
 		goto err;
+	msleep(AW22127_START_MS);
 
 	aw->on = true;
 	return 0;
