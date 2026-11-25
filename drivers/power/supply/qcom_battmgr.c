@@ -378,6 +378,8 @@ struct qcom_battmgr_charge_limit {
 	u32 applied_ua;
 	/* A charger driver's own limit, as for a top-up charge; 0 for none. */
 	u32 host_ua;
+	/* The firmware charges at 0 uA for a held charge. */
+	bool held;
 };
 
 struct qcom_battmgr {
@@ -424,6 +426,12 @@ struct qcom_battmgr {
 	struct qcom_battmgr_wireless wireless;
 	struct qcom_battmgr_oplus oplus;
 	struct qcom_battmgr_charge_limit charge_limit;
+	/*
+	 * Charging held off while the charger stays connected: the system
+	 * runs from the charger and the battery neither charges nor drains.
+	 * Applied as a charge current limit of 0.
+	 */
+	bool charge_inhibited;
 
 	struct work_struct enable_work;
 	struct work_struct oplus_otg_work;
@@ -877,6 +885,14 @@ static int qcom_battmgr_bat_get(struct qcom_battmgr *battmgr,
 	if (!qcom_battmgr_service_wait(battmgr))
 		return -EAGAIN;
 
+	/* The host's charge hold, which the firmware does not report back. */
+	if (psp == POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR) {
+		val->intval = READ_ONCE(battmgr->charge_inhibited) ?
+			      POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE :
+			      POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO;
+		return 0;
+	}
+
 	/* The host's own limits, which the firmware does not report back. */
 	if (psp == POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT ||
 	    psp == POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE) {
@@ -903,6 +919,10 @@ static int qcom_battmgr_bat_get(struct qcom_battmgr *battmgr,
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
 		val->intval = battmgr->status.status;
+		/* The firmware still counts a held charge as charging. */
+		if (READ_ONCE(battmgr->charge_inhibited) &&
+		    val->intval == POWER_SUPPLY_STATUS_CHARGING)
+			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_TYPE:
 		val->intval = battmgr->info.charge_type;
@@ -1139,12 +1159,45 @@ static int qcom_battmgr_charge_control_thresholds_init(struct qcom_battmgr *batt
 	return 0;
 }
 
+static int qcom_battmgr_apply_charge_limit(struct qcom_battmgr *battmgr);
+
+static int qcom_battmgr_set_charge_behaviour(struct qcom_battmgr *battmgr, int behaviour)
+{
+	bool inhibited, was;
+	int ret;
+
+	switch (behaviour) {
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO:
+		inhibited = false;
+		break;
+	case POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE:
+		inhibited = true;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	mutex_lock(&battmgr->lock);
+	was = battmgr->charge_inhibited;
+	WRITE_ONCE(battmgr->charge_inhibited, inhibited);
+	ret = qcom_battmgr_apply_charge_limit(battmgr);
+	if (ret)
+		WRITE_ONCE(battmgr->charge_inhibited, was);
+	mutex_unlock(&battmgr->lock);
+
+	if (!ret)
+		power_supply_changed(battmgr->bat_psy);
+
+	return ret;
+}
+
 static int qcom_battmgr_bat_is_writeable(struct power_supply *psy,
 					 enum power_supply_property psp)
 {
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
 		return 1;
 	default:
 		return 0;
@@ -1167,6 +1220,8 @@ static int qcom_battmgr_bat_set_property(struct power_supply *psy,
 		return qcom_battmgr_set_charge_start_threshold(battmgr, pval->intval);
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
 		return qcom_battmgr_set_charge_end_threshold(battmgr, pval->intval);
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		return qcom_battmgr_set_charge_behaviour(battmgr, pval->intval);
 	default:
 		return -EINVAL;
 	}
@@ -1308,6 +1363,49 @@ static const struct power_supply_desc sm8550_bat_psy_desc = {
 	.type = POWER_SUPPLY_TYPE_BATTERY,
 	.properties = sm8550_bat_props,
 	.num_properties = ARRAY_SIZE(sm8550_bat_props),
+	.get_property = qcom_battmgr_bat_get_property,
+	.set_property = qcom_battmgr_bat_set_property,
+	.property_is_writeable = qcom_battmgr_bat_is_writeable,
+};
+
+/*
+ * Qualcomm's own firmware also holds the charge at a charge current of 0, so
+ * it offers the charge behaviour.
+ */
+static const enum power_supply_property qcom_sm8550_bat_props[] = {
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_HEALTH,
+	POWER_SUPPLY_PROP_PRESENT,
+	POWER_SUPPLY_PROP_CHARGE_TYPE,
+	POWER_SUPPLY_PROP_CAPACITY,
+	POWER_SUPPLY_PROP_VOLTAGE_OCV,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_VOLTAGE_MAX,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_TEMP,
+	POWER_SUPPLY_PROP_TECHNOLOGY,
+	POWER_SUPPLY_PROP_CHARGE_COUNTER,
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
+	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
+	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_MODEL_NAME,
+	POWER_SUPPLY_PROP_TIME_TO_FULL_AVG,
+	POWER_SUPPLY_PROP_TIME_TO_EMPTY_AVG,
+	POWER_SUPPLY_PROP_INTERNAL_RESISTANCE,
+	POWER_SUPPLY_PROP_STATE_OF_HEALTH,
+	POWER_SUPPLY_PROP_POWER_NOW,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD,
+	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
+};
+
+static const struct power_supply_desc qcom_sm8550_bat_psy_desc = {
+	.name = "qcom-battmgr-bat",
+	.type = POWER_SUPPLY_TYPE_BATTERY,
+	.properties = qcom_sm8550_bat_props,
+	.num_properties = ARRAY_SIZE(qcom_sm8550_bat_props),
+	.charge_behaviours = BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) |
+			     BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE),
 	.get_property = qcom_battmgr_bat_get_property,
 	.set_property = qcom_battmgr_bat_set_property,
 	.property_is_writeable = qcom_battmgr_bat_is_writeable,
@@ -2646,12 +2744,25 @@ static void qcom_battmgr_callback(const void *data, size_t len, void *priv)
 static int qcom_battmgr_apply_charge_limit(struct qcom_battmgr *battmgr)
 {
 	struct qcom_battmgr_charge_limit *limit = &battmgr->charge_limit;
+	bool held = battmgr->charge_inhibited;
 	u32 limit_ua;
 	int ret;
 
 	/* The enable worker applies the state once the service is up. */
 	if (!battmgr->service_up)
 		return 0;
+
+	/*
+	 * A charge current of 0 holds the charge: the input stays on and
+	 * carries the system, and the battery is neither charged nor used
+	 * while the charger covers the load.
+	 */
+	if (held) {
+		if (limit->held)
+			return 0;
+		limit_ua = 0;
+		goto apply;
+	}
 
 	if (!limit->max_ua) {
 		ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET,
@@ -2667,9 +2778,10 @@ static int qcom_battmgr_apply_charge_limit(struct qcom_battmgr *battmgr)
 		limit_ua = min(limit_ua, limit->levels_ua[limit->state - 1]);
 	if (limit->host_ua)
 		limit_ua = min(limit_ua, limit->host_ua);
-	if (limit_ua == limit->applied_ua)
+	if (!limit->held && limit_ua == limit->applied_ua)
 		return 0;
 
+apply:
 	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
 					    BATT_CHG_CTRL_LIM, limit_ua);
 	if (ret) {
@@ -2678,6 +2790,7 @@ static int qcom_battmgr_apply_charge_limit(struct qcom_battmgr *battmgr)
 		return ret;
 	}
 
+	limit->held = held;
 	limit->applied_ua = limit_ua;
 
 	return 0;
@@ -2803,11 +2916,14 @@ static void qcom_battmgr_enable_worker(struct work_struct *work)
 		schedule_work(&battmgr->oplus_charging_work);
 	}
 
-	if (battmgr->charge_limit.num_levels || battmgr->charge_limit.host_ua) {
+	if (battmgr->charge_limit.num_levels || battmgr->charge_limit.host_ua ||
+	    battmgr->charge_inhibited) {
 		/* A restarted firmware holds its defaults again. */
 		battmgr->charge_limit.max_ua = 0;
 		battmgr->charge_limit.applied_ua = 0;
-		if (battmgr->charge_limit.state || battmgr->charge_limit.host_ua)
+		battmgr->charge_limit.held = false;
+		if (battmgr->charge_limit.state || battmgr->charge_limit.host_ua ||
+		    battmgr->charge_inhibited)
 			qcom_battmgr_apply_charge_limit(battmgr);
 	}
 	/* And its own voltage limit. */
@@ -3427,8 +3543,9 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 			psy_desc = NULL;
 		else if (battmgr->variant == OPLUS_BATTMGR_SM8750)
 			psy_desc = &oplus_sm8750_bat_psy_desc;
-		else if (battmgr->variant == QCOM_BATTMGR_SM8550 ||
-			 battmgr->variant == OPLUS_BATTMGR_SM8550 ||
+		else if (battmgr->variant == QCOM_BATTMGR_SM8550)
+			psy_desc = &qcom_sm8550_bat_psy_desc;
+		else if (battmgr->variant == OPLUS_BATTMGR_SM8550 ||
 			 battmgr->variant == OPLUS_BATTMGR_KAANAPALI)
 			psy_desc = &sm8550_bat_psy_desc;
 		else
