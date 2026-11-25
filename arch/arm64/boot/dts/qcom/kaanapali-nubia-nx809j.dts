@@ -1493,6 +1493,9 @@
 };
 
 &i2c5 {
+	/* Fast mode, as stock: the LED chip takes its commands a byte at a time */
+	clock-frequency = <400000>;
+
 	status = "okay";
 
 	micropump: micropump@44 {
@@ -1502,6 +1505,116 @@
 		#cooling-cells = <2>;
 
 		pinctrl-0 = <&micropump_en_default>;
+		pinctrl-names = "default";
+	};
+
+	/*
+	 * The RGB lights: the program in the AW22127's flash runs three
+	 * effect tasks; each light is a unit of one, at task * 4 + unit.
+	 */
+	led-controller@6a {
+		compatible = "awinic,aw22127";
+		reg = <0x6a>;
+		reset-gpios = <&pmh0101_gpios 13 GPIO_ACTIVE_LOW>;
+
+		pinctrl-0 = <&rgb_reset_default>;
+		pinctrl-names = "default";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* Task 0: the shoulder trigger lights */
+		multi-led@0 {
+			reg = <0>;
+			color = <LED_COLOR_ID_RGB>;
+			function = "trigger-left";
+		};
+
+		multi-led@1 {
+			reg = <1>;
+			color = <LED_COLOR_ID_RGB>;
+			function = "trigger-right";
+		};
+
+		/* Task 1: the fan's four zones */
+		multi-led@4 {
+			reg = <4>;
+			color = <LED_COLOR_ID_RGB>;
+			function = "fan";
+			function-enumerator = <1>;
+		};
+
+		multi-led@5 {
+			reg = <5>;
+			color = <LED_COLOR_ID_RGB>;
+			function = "fan";
+			function-enumerator = <2>;
+		};
+
+		multi-led@6 {
+			reg = <6>;
+			color = <LED_COLOR_ID_RGB>;
+			function = "fan";
+			function-enumerator = <3>;
+		};
+
+		multi-led@7 {
+			reg = <7>;
+			color = <LED_COLOR_ID_RGB>;
+			function = "fan";
+			function-enumerator = <4>;
+		};
+
+		/* Task 2: the logo next to the cameras */
+		multi-led@8 {
+			reg = <8>;
+			color = <LED_COLOR_ID_RGB>;
+			function = "logo";
+		};
+
+		/* and the "game mode" light */
+		multi-led@9 {
+			reg = <9>;
+			color = <LED_COLOR_ID_RGB>;
+			function = "gamemode";
+		};
+	};
+};
+
+/*
+ * The shoulder triggers: an AW96205 capacitive sensor under each, set up
+ * from the stock register files. The program in their flash is left alone.
+ */
+&i2c9 {
+	status = "okay";
+
+	trigger@13 {
+		compatible = "awinic,aw96205";
+		reg = <0x13>;
+		interrupts-extended = <&tlmm 200 IRQ_TYPE_EDGE_FALLING>;
+		vcc-supply = <&vreg_l9b_2p9>;
+		firmware-name = "qcom/kaanapali/nubia/nx809j-vendor/aw9620x_reg_0.bin";
+		label = "Left shoulder trigger";
+		linux,code = <BTN_TL>;
+
+		pinctrl-0 = <&trigger_left_int_default>;
+		pinctrl-names = "default";
+	};
+};
+
+&i2c20 {
+	status = "okay";
+
+	trigger@12 {
+		compatible = "awinic,aw96205";
+		reg = <0x12>;
+		interrupts-extended = <&tlmm 201 IRQ_TYPE_EDGE_FALLING>;
+		vcc-supply = <&vreg_l9b_2p9>;
+		firmware-name = "qcom/kaanapali/nubia/nx809j-vendor/aw9620x_reg_1.bin";
+		label = "Right shoulder trigger";
+		linux,code = <BTN_TR>;
+
+		pinctrl-0 = <&trigger_right_int_default>;
 		pinctrl-names = "default";
 	};
 };
@@ -1719,6 +1832,13 @@
 		function = "normal";
 		power-source = <0>;
 		qcom,drive-strength = <PMIC_GPIO_STRENGTH_LOW>;
+	};
+
+	rgb_reset_default: rgb-reset-default-state {
+		pins = "gpio13";
+		function = "normal";
+		power-source = <0>;
+		qcom,drive-strength = <PMIC_GPIO_STRENGTH_MED>;
 	};
 };
 
@@ -2083,6 +2203,20 @@
 		function = "gpio";
 		drive-strength = <8>;
 		bias-pull-down;
+	};
+
+	trigger_left_int_default: trigger-left-int-default-state {
+		pins = "gpio200";
+		function = "gpio";
+		drive-strength = <6>;
+		bias-pull-up;
+	};
+
+	trigger_right_int_default: trigger-right-int-default-state {
+		pins = "gpio201";
+		function = "gpio";
+		drive-strength = <6>;
+		bias-pull-up;
 	};
 };
 
