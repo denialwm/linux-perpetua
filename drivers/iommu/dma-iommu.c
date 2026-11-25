@@ -803,6 +803,48 @@ done:
 	return (dma_addr_t)iova << shift;
 }
 
+/*
+ * Unlike a coherent allocation, a scatterlist mapping only needs its IOVA
+ * aligned to its size where a segment boundary could fall inside the
+ * device's DMA range (see iommu_dma_map_sg()). Aligning a large mapping to
+ * the largest IOMMU page that fits it is enough to map it with the largest
+ * pages its memory allows, while aligning it to its size can leave no hole
+ * for a mapping larger than a quarter of a 32-bit window that is not even
+ * half full.
+ */
+static dma_addr_t iommu_dma_alloc_iova_sg(struct iommu_domain *domain,
+		size_t size, struct device *dev)
+{
+	struct iova_domain *iovad = &domain->iova_cookie->iovad;
+	u64 dma_limit = dma_get_mask(dev);
+	unsigned long shift, pgsizes;
+	struct iova *iova;
+
+	if (domain->cookie_type != IOMMU_COOKIE_DMA_IOVA ||
+	    size <= iova_rcache_range() || dev_is_pci(dev))
+		goto aligned;
+
+	shift = iova_shift(iovad);
+	pgsizes = domain->pgsize_bitmap & GENMASK(__fls(size), 0);
+	pgsizes &= ~(iovad->granule - 1);
+	if (!pgsizes)
+		goto aligned;
+
+	dma_limit = min_not_zero(dma_limit, dev->bus_dma_limit);
+	if (domain->geometry.force_aperture)
+		dma_limit = min(dma_limit, (u64)domain->geometry.aperture_end);
+	if (dma_limit > dma_get_seg_boundary(dev))
+		goto aligned;
+
+	iova = alloc_iova_align(iovad, size >> shift, dma_limit >> shift,
+				__fls(pgsizes) - shift);
+	if (iova)
+		return (dma_addr_t)iova->pfn_lo << shift;
+
+aligned:
+	return iommu_dma_alloc_iova(domain, size, dma_get_mask(dev), dev);
+}
+
 static void iommu_dma_free_iova(struct iommu_domain *domain, dma_addr_t iova,
 				size_t size, struct iommu_iotlb_gather *gather)
 {
@@ -1483,7 +1525,9 @@ int iommu_dma_map_sg(struct device *dev, struct scatterlist *sg, int nents,
 		 * Due to the alignment of our single IOVA allocation, we can
 		 * depend on these assumptions about the segment boundary mask:
 		 * - If mask size >= IOVA size, then the IOVA range cannot
-		 *   possibly fall across a boundary, so we don't care.
+		 *   possibly fall across a boundary, so we don't care (it is
+		 *   aligned to its size unless the whole DMA range of the
+		 *   device lies within one boundary).
 		 * - If mask size < IOVA size, then the IOVA range must start
 		 *   exactly on a boundary, therefore we can lay things out
 		 *   based purely on segment lengths without needing to know
@@ -1504,7 +1548,7 @@ int iommu_dma_map_sg(struct device *dev, struct scatterlist *sg, int nents,
 	if (!iova_len)
 		return __finalise_sg(dev, sg, nents, 0);
 
-	iova = iommu_dma_alloc_iova(domain, iova_len, dma_get_mask(dev), dev);
+	iova = iommu_dma_alloc_iova_sg(domain, iova_len, dev);
 	if (!iova) {
 		ret = -ENOMEM;
 		goto out_restore_sg;

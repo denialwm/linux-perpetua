@@ -81,6 +81,8 @@
 /* MAX NUMBER of DSP ATTRIBUTES SUPPORTED */
 #define FASTRPC_MAX_DSP_ATTRIBUTES (256)
 #define FASTRPC_MAX_DSP_ATTRIBUTES_LEN (sizeof(u32) * FASTRPC_MAX_DSP_ATTRIBUTES)
+/* DSP maps DMA handles itself, through a reverse call to the user process */
+#define FASTRPC_DMA_HANDLE_REVERSE_RPC_CAP 129
 
 /* Retrives number of input buffers from the scalars parameter */
 #define REMOTE_SCALARS_INBUFS(sc)	(((sc) >> 16) & 0x0ff)
@@ -318,7 +320,8 @@ struct fastrpc_channel_ctx {
 	struct fastrpc_device *secure_fdevice;
 	struct fastrpc_device *fdevice;
 	struct fastrpc_buf *remote_heap;
-	struct list_head invoke_interrupted_mmaps;
+	/* Closed clients whose DSP work may still be running. */
+	struct list_head deferred_users;
 	bool secure;
 	bool unsigned_support;
 	bool poll_mode_supported;
@@ -463,14 +466,19 @@ static int fastrpc_map_lookup(struct fastrpc_user *fl, int fd,
 	return ret;
 }
 
+static void __fastrpc_buf_free(struct fastrpc_channel_ctx *cctx, struct fastrpc_buf *buf)
+{
+	dma_free_coherent(buf->dev, buf->size, buf->virt,
+			  fastrpc_ipa_to_dma_addr(cctx, buf->dma_addr));
+	kfree(buf);
+}
+
 static void fastrpc_buf_free(struct fastrpc_buf *buf)
 {
 	if (!buf)
 		return;
 
-	dma_free_coherent(buf->dev, buf->size, buf->virt,
-			  fastrpc_ipa_to_dma_addr(buf->fl->cctx, buf->dma_addr));
-	kfree(buf);
+	__fastrpc_buf_free(buf->fl->cctx, buf);
 }
 
 static int __fastrpc_buf_alloc(struct fastrpc_user *fl, struct device *dev,
@@ -597,6 +605,7 @@ static void fastrpc_context_free(struct kref *ref)
 	struct fastrpc_channel_ctx *cctx;
 	struct fastrpc_user *fl;
 	unsigned long flags;
+	unsigned long id;
 	int i;
 
 	ctx = container_of(ref, struct fastrpc_invoke_ctx, refcount);
@@ -608,8 +617,14 @@ static void fastrpc_context_free(struct kref *ref)
 
 	fastrpc_buf_free(ctx->buf);
 
+	/*
+	 * The rpmsg callback or fastrpc_reclaim_pending() may have removed
+	 * the ID already, and the slot may have been reused since.
+	 */
+	id = FIELD_GET(FASTRPC_CTXID_MASK, ctx->ctxid);
 	spin_lock_irqsave(&cctx->lock, flags);
-	idr_remove(&cctx->ctx_idr, FIELD_GET(FASTRPC_CTXID_MASK, ctx->ctxid));
+	if (idr_find(&cctx->ctx_idr, id) == ctx)
+		idr_remove(&cctx->ctx_idr, id);
 	spin_unlock_irqrestore(&cctx->lock, flags);
 
 	kfree(ctx->maps);
@@ -1044,12 +1059,25 @@ static u64 fastrpc_get_payload_size(struct fastrpc_invoke_ctx *ctx, int metalen)
 static int fastrpc_create_maps(struct fastrpc_invoke_ctx *ctx)
 {
 	struct device *dev = ctx->fl->sctx->dev;
+	struct fastrpc_channel_ctx *cctx = ctx->fl->cctx;
+	bool dsp_maps_handles;
 	int i, err;
+
+	dsp_maps_handles = cctx->valid_attributes &&
+		cctx->dsp_attributes[FASTRPC_DMA_HANDLE_REVERSE_RPC_CAP];
 
 	for (i = 0; i < ctx->nscalars; ++i) {
 
 		if (ctx->args[i].fd == 0 || ctx->args[i].fd == -1 ||
 		    ctx->args[i].length == 0)
+			continue;
+
+		/*
+		 * A DSP that advertises the reverse-RPC DMA handle capability
+		 * asks the user process to map each handle when it uses it, and
+		 * refuses a mapping passed in the invoke instead.
+		 */
+		if (i >= ctx->nbufs && dsp_maps_handles)
 			continue;
 
 		if (i < ctx->nbufs)
@@ -1353,8 +1381,6 @@ static int fastrpc_internal_invoke(struct fastrpc_user *fl,  u32 kernel,
 				   struct fastrpc_invoke_args *args)
 {
 	struct fastrpc_invoke_ctx *ctx = NULL;
-	struct fastrpc_buf *buf, *b;
-
 	int err = 0;
 
 	if (!fl->sctx)
@@ -1391,6 +1417,9 @@ static int fastrpc_internal_invoke(struct fastrpc_user *fl,  u32 kernel,
 		ctx->is_polled = true;
 
 	err = fastrpc_wait_for_completion(ctx, kernel);
+	/* Only an outstanding send owns both the pending and response refs. */
+	if (err == -ERESTARTSYS || err == -ETIMEDOUT)
+		return err;
 	if (err)
 		goto bail;
 
@@ -1407,22 +1436,10 @@ static int fastrpc_internal_invoke(struct fastrpc_user *fl,  u32 kernel,
 		goto bail;
 
 bail:
-	if (err != -ERESTARTSYS && err != -ETIMEDOUT) {
-		/* We are done with this compute context */
-		spin_lock(&fl->lock);
-		list_del(&ctx->node);
-		spin_unlock(&fl->lock);
-		fastrpc_context_put(ctx);
-	}
-
-	if (err == -ERESTARTSYS) {
-		spin_lock(&fl->lock);
-		list_for_each_entry_safe(buf, b, &fl->mmaps, node) {
-			list_del(&buf->node);
-			list_add_tail(&buf->node, &fl->cctx->invoke_interrupted_mmaps);
-		}
-		spin_unlock(&fl->lock);
-	}
+	spin_lock(&fl->lock);
+	list_del(&ctx->node);
+	spin_unlock(&fl->lock);
+	fastrpc_context_put(ctx);
 
 	if (err)
 		dev_dbg(fl->sctx->dev, "Error: Invoke Failed %d\n", err);
@@ -1734,22 +1751,83 @@ static int fastrpc_release_current_dsp_process(struct fastrpc_user *fl)
 				       sc, &args[0]);
 }
 
+/*
+ * An invoke that was interrupted by a signal (or a kernel invoke that timed
+ * out) leaves its context on fl->pending, and every context holds a
+ * reference to fl. Once the file is closed and the DSP process is gone
+ * nothing else would drop those references, so fl and all its maps would
+ * never be freed. Drop them here: the caller's reference, and the response
+ * reference too unless the rpmsg callback has already claimed it.
+ */
+static void fastrpc_reclaim_pending(struct fastrpc_user *fl)
+{
+	struct fastrpc_channel_ctx *cctx = fl->cctx;
+	struct fastrpc_invoke_ctx *ctx, *n;
+	unsigned long flags;
+	unsigned long id;
+	LIST_HEAD(pending);
+	bool claimed;
+
+	spin_lock(&fl->lock);
+	list_splice_init(&fl->pending, &pending);
+	spin_unlock(&fl->lock);
+
+	list_for_each_entry_safe(ctx, n, &pending, node) {
+		list_del_init(&ctx->node);
+
+		id = FIELD_GET(FASTRPC_CTXID_MASK, ctx->ctxid);
+		spin_lock_irqsave(&cctx->lock, flags);
+		claimed = idr_find(&cctx->ctx_idr, id) == ctx;
+		if (claimed)
+			idr_remove(&cctx->ctx_idr, id);
+		spin_unlock_irqrestore(&cctx->lock, flags);
+
+		if (claimed)
+			fastrpc_context_put(ctx);
+		fastrpc_context_put(ctx);
+	}
+}
+
+/* The DSP has released this process or the channel has shut down. */
+static void fastrpc_release_user(struct fastrpc_user *fl)
+{
+	fastrpc_reclaim_pending(fl);
+	fastrpc_session_free(fl->cctx, fl->sctx);
+	fastrpc_user_put(fl);
+}
+
 static int fastrpc_device_release(struct inode *inode, struct file *file)
 {
-	struct fastrpc_user *fl = (struct fastrpc_user *)file->private_data;
+	struct fastrpc_user *fl = file->private_data;
 	struct fastrpc_channel_ctx *cctx = fl->cctx;
 	unsigned long flags;
+	bool defer;
+	int err;
 
-	fastrpc_release_current_dsp_process(fl);
+	err = fastrpc_release_current_dsp_process(fl);
 
+	/*
+	 * A failed release can itself be pending. A static PD also outlives
+	 * its file, so interrupted calls may still access their buffers.
+	 * Transfer the open reference, including its DMA maps and session,
+	 * to the channel until removal confirms the DSP has stopped.
+	 */
 	spin_lock_irqsave(&cctx->lock, flags);
-	list_del(&fl->user);
+	spin_lock(&fl->lock);
+	defer = cctx->rpdev &&
+		((!list_empty(&fl->pending) && (err || !fl->init_mem)) ||
+		 (err && (fl->init_mem || !list_empty(&fl->maps) ||
+			  !list_empty(&fl->mmaps))));
+	spin_unlock(&fl->lock);
+	if (defer)
+		list_move_tail(&fl->user, &cctx->deferred_users);
+	else
+		list_del(&fl->user);
 	spin_unlock_irqrestore(&cctx->lock, flags);
 
-	fastrpc_session_free(cctx, fl->sctx);
 	file->private_data = NULL;
-	/* Release the reference taken in fastrpc_device_open */
-	fastrpc_user_put(fl);
+	if (!defer)
+		fastrpc_release_user(fl);
 
 	return 0;
 }
@@ -2635,7 +2713,7 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 	rdev->dma_mask = &data->dma_mask;
 	dma_set_mask_and_coherent(rdev, DMA_BIT_MASK(32));
 	INIT_LIST_HEAD(&data->users);
-	INIT_LIST_HEAD(&data->invoke_interrupted_mmaps);
+	INIT_LIST_HEAD(&data->deferred_users);
 	spin_lock_init(&data->lock);
 	idr_init(&data->ctx_idr);
 	data->domain_id = domain_id;
@@ -2674,13 +2752,14 @@ static void fastrpc_notify_users(struct fastrpc_user *user)
 static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
 {
 	struct fastrpc_channel_ctx *cctx = dev_get_drvdata(&rpdev->dev);
-	struct fastrpc_buf *buf, *b;
-	struct fastrpc_user *user;
+	struct fastrpc_user *user, *next;
 	unsigned long flags;
+	LIST_HEAD(deferred_users);
 
 	/* No invocations past this point */
 	spin_lock_irqsave(&cctx->lock, flags);
 	cctx->rpdev = NULL;
+	list_splice_init(&cctx->deferred_users, &deferred_users);
 	list_for_each_entry(user, &cctx->users, user)
 		fastrpc_notify_users(user);
 	spin_unlock_irqrestore(&cctx->lock, flags);
@@ -2691,11 +2770,13 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
 	if (cctx->secure_fdevice)
 		misc_deregister(&cctx->secure_fdevice->miscdev);
 
-	list_for_each_entry_safe(buf, b, &cctx->invoke_interrupted_mmaps, node)
-		list_del(&buf->node);
+	list_for_each_entry_safe(user, next, &deferred_users, user) {
+		list_del(&user->user);
+		fastrpc_release_user(user);
+	}
 
 	if (cctx->remote_heap)
-		fastrpc_buf_free(cctx->remote_heap);
+		__fastrpc_buf_free(cctx, cctx->remote_heap);
 
 	of_platform_depopulate(&rpdev->dev);
 
@@ -2729,9 +2810,8 @@ static int fastrpc_rpmsg_callback(struct rpmsg_device *rpdev, void *data,
 
 	spin_lock_irqsave(&cctx->lock, flags);
 	ctx = idr_find(&cctx->ctx_idr, ctxid);
-	spin_unlock_irqrestore(&cctx->lock, flags);
-
 	if (!ctx) {
+		spin_unlock_irqrestore(&cctx->lock, flags);
 		dev_err(&rpdev->dev, "No context ID matches response\n");
 		return -ENOENT;
 	}
@@ -2750,8 +2830,16 @@ static int fastrpc_rpmsg_callback(struct rpmsg_device *rpdev, void *data,
 			"Stale glink response ctx 0x%llx (expected seq 0x%llx), dropping\n",
 			rsp->ctx,
 			FIELD_GET(FASTRPC_CTXID_SEQ_MASK, ctx->ctxid));
+		spin_unlock_irqrestore(&cctx->lock, flags);
 		return 0;
 	}
+
+	/*
+	 * Claim the reference taken in fastrpc_invoke_send(): once the ID is
+	 * gone, fastrpc_reclaim_pending() leaves that reference to us.
+	 */
+	idr_remove(&cctx->ctx_idr, ctxid);
+	spin_unlock_irqrestore(&cctx->lock, flags);
 
 	ctx->retval = rsp->retval;
 	ctx->is_work_done = true;

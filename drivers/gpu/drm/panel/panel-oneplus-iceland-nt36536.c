@@ -635,19 +635,20 @@ static int nt36536_prepare(struct drm_panel *panel)
 	return 0;
 }
 
-static bool nt36536_error_raised(struct panel_info *pinfo)
+/* Return: the links whose error flag is raised, as a mask */
+static unsigned long nt36536_error_raised(struct panel_info *pinfo)
 {
 	struct gpio_descs *gpios = pinfo->error_gpios;
-	DECLARE_BITMAP(values, 2);
+	DECLARE_BITMAP(values, 2) = { 0 };
 	int ret;
 
 	ret = gpiod_get_array_value_cansleep(gpios->ndescs, gpios->desc,
 					     gpios->info, values);
 	/* A flag that cannot be read is no reason to blank the panel. */
 	if (ret)
-		return false;
+		return 0;
 
-	return !bitmap_empty(values, gpios->ndescs);
+	return values[0];
 }
 
 /*
@@ -696,8 +697,9 @@ static void nt36536_esd_work(struct work_struct *work)
 	struct panel_info *pinfo = container_of(to_delayed_work(work),
 						struct panel_info, esd_work);
 	unsigned int delay = ESD_CHECK_INTERVAL_MS;
+	unsigned long raised = nt36536_error_raised(pinfo);
 
-	if (!nt36536_error_raised(pinfo)) {
+	if (!raised) {
 		pinfo->esd_raised = false;
 		pinfo->esd_resets = 0;
 	} else if (!pinfo->esd_raised) {
@@ -706,8 +708,10 @@ static void nt36536_esd_work(struct work_struct *work)
 	} else if (pinfo->esd_resets < ESD_MAX_RESETS) {
 		pinfo->esd_raised = false;
 		pinfo->esd_resets++;
+		/* Bit 0 is the flag of the first link, bit 1 the second's. */
 		dev_warn(pinfo->panel.dev,
-			 "error flag raised, resetting the display pipe\n");
+			 "error flag raised (links 0x%lx), resetting the display pipe\n",
+			 raised);
 		/* Enabling the panel again restarts the checks. */
 		nt36536_schedule_reset(pinfo);
 		return;

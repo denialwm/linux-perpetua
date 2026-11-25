@@ -163,22 +163,21 @@ iova_insert_rbtree(struct rb_root *root, struct iova *iova,
 
 static int __alloc_and_insert_iova_range(struct iova_domain *iovad,
 		unsigned long size, unsigned long limit_pfn,
-			struct iova *new, bool size_aligned)
+			struct iova *new, unsigned int align_shift)
 {
 	struct rb_node *curr, *prev;
 	struct iova *curr_iova;
 	unsigned long flags;
 	unsigned long new_pfn, retry_pfn;
-	unsigned long align_mask = ~0UL;
+	unsigned long align_mask = ~0UL << align_shift;
+	bool size_aligned = align_shift == fls_long(size - 1);
 	unsigned long high_pfn = limit_pfn, low_pfn = iovad->start_pfn;
-
-	if (size_aligned)
-		align_mask <<= fls_long(size - 1);
 
 	/* Walk the tree backwards */
 	spin_lock_irqsave(&iovad->iova_rbtree_lock, flags);
-	if (limit_pfn <= iovad->dma_32bit_pfn &&
-			size >= iovad->max32_alloc_size)
+	/* A size-aligned failure says nothing about a less aligned hole. */
+	if (size_aligned && limit_pfn <= iovad->dma_32bit_pfn &&
+	    size >= iovad->max32_alloc_size)
 		goto iova32_full;
 
 	curr = __get_cached_rbnode(iovad, limit_pfn);
@@ -202,11 +201,12 @@ retry:
 			curr_iova = to_iova(curr);
 			goto retry;
 		}
-		iovad->max32_alloc_size = size;
+		if (size_aligned && limit_pfn == iovad->dma_32bit_pfn)
+			iovad->max32_alloc_size = size;
 		goto iova32_full;
 	}
 
-	/* pfn_lo will point to size aligned address if size_aligned is set */
+	/* pfn_lo is aligned to 1 << align_shift */
 	new->pfn_lo = new_pfn;
 	new->pfn_hi = new->pfn_lo + size - 1;
 
@@ -253,6 +253,24 @@ alloc_iova(struct iova_domain *iovad, unsigned long size,
 	unsigned long limit_pfn,
 	bool size_aligned)
 {
+	return alloc_iova_align(iovad, size, limit_pfn,
+				size_aligned ? fls_long(size - 1) : 0);
+}
+EXPORT_SYMBOL_GPL(alloc_iova);
+
+/**
+ * alloc_iova_align - allocates an iova with a given alignment
+ * @iovad: - iova domain in question
+ * @size: - size of page frames to allocate
+ * @limit_pfn: - max limit address
+ * @align_shift: - log2 of the alignment of iova->pfn_lo, in page frames
+ * Like alloc_iova(), but the allocated address iova->pfn_lo is aligned on
+ * 1 << @align_shift page frames rather than on the size.
+ */
+struct iova *
+alloc_iova_align(struct iova_domain *iovad, unsigned long size,
+	unsigned long limit_pfn, unsigned int align_shift)
+{
 	struct iova *new_iova;
 	int ret;
 
@@ -261,7 +279,7 @@ alloc_iova(struct iova_domain *iovad, unsigned long size,
 		return NULL;
 
 	ret = __alloc_and_insert_iova_range(iovad, size, limit_pfn + 1,
-			new_iova, size_aligned);
+			new_iova, align_shift);
 
 	if (ret) {
 		free_iova_mem(new_iova);
@@ -270,7 +288,7 @@ alloc_iova(struct iova_domain *iovad, unsigned long size,
 
 	return new_iova;
 }
-EXPORT_SYMBOL_GPL(alloc_iova);
+EXPORT_SYMBOL_GPL(alloc_iova_align);
 
 static struct iova *
 private_find_iova(struct iova_domain *iovad, unsigned long pfn)

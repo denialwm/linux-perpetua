@@ -7,12 +7,15 @@
 #include <linux/auxiliary_bus.h>
 #include <linux/delay.h>
 #include <linux/devm-helpers.h>
+#include <linux/i2c-of-prober.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/nvmem-consumer.h>
+#include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/power_supply.h>
 #include <linux/property.h>
+#include <linux/reboot.h>
 #include <linux/soc/qcom/pdr.h>
 #include <linux/soc/qcom/pmic_glink.h>
 #include <linux/spinlock.h>
@@ -347,6 +350,18 @@ struct qcom_battmgr_oplus {
 	u32 value;
 	/* The host's charge voltage limit in mV, 0 for the firmware's own. */
 	u32 voltage_mv;
+	/*
+	 * The host's charge policy, which the OnePlus SM8750 firmware does
+	 * not keep: the charge behaviour and the charge level thresholds.
+	 * @threshold_hold is set once the level reached the end threshold
+	 * and until it falls below the start one; @charging is what the
+	 * host last told the firmware.
+	 */
+	enum power_supply_charge_behaviour behaviour;
+	unsigned int start_threshold;
+	unsigned int end_threshold;
+	bool threshold_hold;
+	bool charging;
 };
 
 /*
@@ -375,6 +390,12 @@ struct qcom_battmgr {
 	struct power_supply *bat_psy;
 	struct power_supply *usb_psy;
 	struct power_supply *wls_psy;
+	/*
+	 * The pack fuel gauge measuring the battery, if the board has one:
+	 * then it is the battery, @bat_psy, and the firmware's is not shown.
+	 */
+	struct power_supply *gauge;
+	char *gauge_supplicant[1];
 
 	enum qcom_battmgr_unit unit;
 
@@ -414,6 +435,9 @@ struct qcom_battmgr {
 	int poll_percent;
 	bool poll_online;
 	unsigned int poll_usb_type;
+	/* Polls in a row that found the battery below its voltage floor. */
+	unsigned int vbat_low;
+	bool vbat_poweroff;
 
 	/*
 	 * @lock is used to prevent concurrent power supply requests to the
@@ -500,6 +524,94 @@ static int qcom_battmgr_request(struct qcom_battmgr *battmgr, void *data, size_t
 	return ret > 0 ? -EREMOTEIO : ret;
 }
 
+/*
+ * The battery properties that a pack fuel gauge measures, for a firmware
+ * that then has no gauge of its own: the gauge answers them, in the units
+ * of the firmware's answers.
+ */
+static const struct {
+	u8 property;
+	enum power_supply_property psp;
+} qcom_battmgr_gauge_props[] = {
+	{ BATT_STATUS, POWER_SUPPLY_PROP_STATUS },
+	{ BATT_HEALTH, POWER_SUPPLY_PROP_HEALTH },
+	{ BATT_PRESENT, POWER_SUPPLY_PROP_PRESENT },
+	{ BATT_CAPACITY, POWER_SUPPLY_PROP_CAPACITY },
+	{ BATT_VOLT_NOW, POWER_SUPPLY_PROP_VOLTAGE_NOW },
+	{ BATT_CURR_NOW, POWER_SUPPLY_PROP_CURRENT_NOW },
+	{ BATT_TEMP, POWER_SUPPLY_PROP_TEMP },
+	{ BATT_CHG_COUNTER, POWER_SUPPLY_PROP_CHARGE_NOW },
+	{ BATT_CYCLE_COUNT, POWER_SUPPLY_PROP_CYCLE_COUNT },
+	{ BATT_CHG_FULL_DESIGN, POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN },
+	{ BATT_CHG_FULL, POWER_SUPPLY_PROP_CHARGE_FULL },
+	{ BATT_TTF_AVG, POWER_SUPPLY_PROP_TIME_TO_FULL_NOW },
+	{ BATT_TTE_AVG, POWER_SUPPLY_PROP_TIME_TO_EMPTY_NOW },
+};
+
+/* Called with @battmgr->lock held. Returns 1 for a property it does not measure. */
+static int qcom_battmgr_gauge_property(struct qcom_battmgr *battmgr, int property)
+{
+	union power_supply_propval val;
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < ARRAY_SIZE(qcom_battmgr_gauge_props); i++)
+		if (qcom_battmgr_gauge_props[i].property == property)
+			break;
+	if (i == ARRAY_SIZE(qcom_battmgr_gauge_props))
+		return 1;
+
+	/* Directly: the charge controls on the gauge read it as well. */
+	ret = power_supply_get_property_direct(battmgr->gauge,
+					qcom_battmgr_gauge_props[i].psp, &val);
+	if (ret)
+		return ret;
+
+	switch (property) {
+	case BATT_STATUS:
+		battmgr->status.status = val.intval;
+		break;
+	case BATT_HEALTH:
+		battmgr->status.health = val.intval;
+		break;
+	case BATT_PRESENT:
+		battmgr->info.present = val.intval;
+		break;
+	case BATT_CAPACITY:
+		battmgr->status.percent = val.intval;
+		break;
+	case BATT_VOLT_NOW:
+		battmgr->status.voltage_now = val.intval;
+		break;
+	case BATT_CURR_NOW:
+		battmgr->status.current_now = val.intval;
+		break;
+	case BATT_TEMP:
+		battmgr->status.temperature = val.intval;
+		break;
+	case BATT_CHG_COUNTER:
+		battmgr->info.charge_count = val.intval;
+		break;
+	case BATT_CYCLE_COUNT:
+		battmgr->info.cycle_count = val.intval;
+		break;
+	case BATT_CHG_FULL_DESIGN:
+		battmgr->info.design_capacity = val.intval;
+		break;
+	case BATT_CHG_FULL:
+		battmgr->info.last_full_capacity = val.intval;
+		break;
+	case BATT_TTF_AVG:
+		battmgr->status.charge_time = val.intval;
+		break;
+	case BATT_TTE_AVG:
+		battmgr->status.discharge_time = val.intval;
+		break;
+	}
+
+	return 0;
+}
+
 static int qcom_battmgr_request_property(struct qcom_battmgr *battmgr, int opcode,
 					 int property, u32 value)
 {
@@ -511,6 +623,13 @@ static int qcom_battmgr_request_property(struct qcom_battmgr *battmgr, int opcod
 		.property = cpu_to_le32(property),
 		.value = cpu_to_le32(value),
 	};
+	int ret;
+
+	if (battmgr->gauge && opcode == BATTMGR_BAT_PROPERTY_GET) {
+		ret = qcom_battmgr_gauge_property(battmgr, property);
+		if (ret <= 0)
+			return ret;
+	}
 
 	return qcom_battmgr_request(battmgr, &request, sizeof(request));
 }
@@ -609,6 +728,30 @@ static int qcom_battmgr_bat_sm8350_update(struct qcom_battmgr *battmgr,
 	return ret;
 }
 
+#define OPLUS_SM8750_BEHAVIOURS	(BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO) |		\
+				 BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE) |	\
+				 BIT(POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE))
+
+/*
+ * Called with @battmgr->lock held. Whether the host holds charging: by the
+ * charge behaviour, or by the charge level thresholds in automatic mode.
+ * Only the OnePlus SM8750 battery offers either, so the others never hold.
+ */
+static bool qcom_battmgr_oplus_charge_held(struct qcom_battmgr *battmgr)
+{
+	return battmgr->oplus.behaviour != POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO ||
+	       battmgr->oplus.threshold_hold;
+}
+
+/* Called with @battmgr->lock held. Whether a source is attached now. */
+static bool qcom_battmgr_oplus_source_online(struct qcom_battmgr *battmgr)
+{
+	/* A failed read keeps the state read before. */
+	qcom_battmgr_request_property(battmgr, BATTMGR_USB_PROPERTY_GET, USB_ONLINE, 0);
+
+	return battmgr->usb.online;
+}
+
 /*
  * The Kaanapali Oplus firmware describes only its own buck. While the host
  * holds the buck input at zero an external charger owns charging, and the
@@ -617,7 +760,12 @@ static int qcom_battmgr_bat_sm8350_update(struct qcom_battmgr *battmgr,
  *
  * The SM8750 Oplus firmware reports Charging whenever its buck has input,
  * also while the load takes more than a weak source gives. The battery
- * then discharges, and the direction of its current says so.
+ * then discharges, and the direction of its current says so. While the
+ * host holds charging with a source attached, the battery is not charging
+ * whatever the firmware says, which is Discharging for disabled charging
+ * even with no load on the battery; also while a direct charger has the
+ * buck input, until it gives the input back. A forced discharge suspends the
+ * input, and the current tells the status as for any suspended input.
  */
 static int qcom_battmgr_bat_oplus_update(struct qcom_battmgr *battmgr,
 					 enum power_supply_property psp)
@@ -646,7 +794,11 @@ static int qcom_battmgr_bat_oplus_update(struct qcom_battmgr *battmgr,
 	if (ret)
 		goto out_unlock;
 
-	if (battmgr->oplus.input_suspended)
+	if (qcom_battmgr_oplus_charge_held(battmgr) &&
+	    battmgr->oplus.behaviour != POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE &&
+	    (battmgr->oplus.input_suspended || qcom_battmgr_oplus_source_online(battmgr)))
+		status->status = POWER_SUPPLY_STATUS_NOT_CHARGING;
+	else if (battmgr->oplus.input_suspended)
 		status->status = status->current_now > 0 ? POWER_SUPPLY_STATUS_CHARGING :
 							   POWER_SUPPLY_STATUS_DISCHARGING;
 	else if (battmgr->variant == OPLUS_BATTMGR_SM8750 &&
@@ -698,13 +850,29 @@ out_unlock:
 	return ret;
 }
 
-static int qcom_battmgr_bat_get_property(struct power_supply *psy,
-					 enum power_supply_property psp,
-					 union power_supply_propval *val)
+static int qcom_battmgr_bat_get(struct qcom_battmgr *battmgr,
+				enum power_supply_property psp,
+				union power_supply_propval *val)
 {
-	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
 	enum qcom_battmgr_unit unit = battmgr->unit;
 	int ret;
+
+	/* The host's charge policy, which needs no firmware to read. */
+	if (battmgr->variant == OPLUS_BATTMGR_SM8750) {
+		switch (psp) {
+		case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+			val->intval = READ_ONCE(battmgr->oplus.behaviour);
+			return 0;
+		case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+			val->intval = READ_ONCE(battmgr->oplus.start_threshold);
+			return 0;
+		case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+			val->intval = READ_ONCE(battmgr->oplus.end_threshold);
+			return 0;
+		default:
+			break;
+		}
+	}
 
 	if (!qcom_battmgr_service_wait(battmgr))
 		return -EAGAIN;
@@ -864,6 +1032,13 @@ static int qcom_battmgr_bat_get_property(struct power_supply *psy,
 	}
 
 	return 0;
+}
+
+static int qcom_battmgr_bat_get_property(struct power_supply *psy,
+					 enum power_supply_property psp,
+					 union power_supply_propval *val)
+{
+	return qcom_battmgr_bat_get(power_supply_get_drvdata(psy), psp, val);
 }
 
 static int qcom_battmgr_set_charge_control(struct qcom_battmgr *battmgr,
@@ -1141,7 +1316,8 @@ static const struct power_supply_desc sm8550_bat_psy_desc = {
 /*
  * The OnePlus SM8750 firmware puts its own properties where the charge
  * control thresholds are (battery properties 25 and 26 set the PD voltage
- * and QC): leave them out.
+ * and QC), and keeps no charge policy of its own: the host keeps the charge
+ * behaviour and thresholds and only enables or disables charging.
  */
 static const enum power_supply_property oplus_sm8750_bat_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
@@ -1167,15 +1343,157 @@ static const enum power_supply_property oplus_sm8750_bat_props[] = {
 	POWER_SUPPLY_PROP_POWER_NOW,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
+	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD,
 };
 
 static int qcom_battmgr_apply_charge_limit(struct qcom_battmgr *battmgr);
+static int qcom_battmgr_oplus_set_input_limit(struct qcom_battmgr *battmgr, u32 limit_ua);
+static int qcom_battmgr_oplus_set_charging(struct qcom_battmgr *battmgr);
 
 static int qcom_battmgr_bat_oplus_is_writeable(struct power_supply *psy,
 					       enum power_supply_property psp)
 {
-	return psp == POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT ||
-	       psp == POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE;
+	switch (psp) {
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+/*
+ * Called with @battmgr->lock held. Follow the charge level with the
+ * threshold hold: set at the end threshold, cleared below the start one.
+ * A start threshold of 0, or at or above the end one, resumes charging
+ * CHARGE_CTRL_DELTA_SOC below the end threshold. An end threshold of 100
+ * leaves the end of charge to the firmware.
+ */
+static int qcom_battmgr_oplus_update_hold(struct qcom_battmgr *battmgr)
+{
+	struct qcom_battmgr_oplus *oplus = &battmgr->oplus;
+	unsigned int percent, resume;
+	int ret;
+
+	if (oplus->end_threshold >= 100) {
+		oplus->threshold_hold = false;
+		return 0;
+	}
+
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET, BATT_CAPACITY, 0);
+	if (ret)
+		return ret;
+	percent = battmgr->status.percent;
+	if (percent == (unsigned int)-1)
+		return -ENODATA;
+
+	if (oplus->start_threshold && oplus->start_threshold < oplus->end_threshold)
+		resume = oplus->start_threshold;
+	else
+		resume = oplus->end_threshold - min(oplus->end_threshold, CHARGE_CTRL_DELTA_SOC);
+
+	if (percent >= oplus->end_threshold)
+		oplus->threshold_hold = true;
+	else if (percent < resume)
+		oplus->threshold_hold = false;
+
+	return 0;
+}
+
+/*
+ * Called with @battmgr->lock held. Tell the firmware whether to charge
+ * when the host's decision changed. Returns whether it did.
+ */
+static bool qcom_battmgr_oplus_follow_policy(struct qcom_battmgr *battmgr)
+{
+	bool charging;
+
+	qcom_battmgr_oplus_update_hold(battmgr);
+	charging = !qcom_battmgr_oplus_charge_held(battmgr);
+	if (charging == battmgr->oplus.charging)
+		return false;
+
+	return !qcom_battmgr_oplus_set_charging(battmgr);
+}
+
+/*
+ * Inhibiting the charge disables only the charging of the battery: the buck
+ * keeps its input and its limit and powers the system, as the stock kernel
+ * holds a charge (oplus_chg_plc.c, the buck mode: charging disabled, input
+ * kept). Forcing a discharge suspends the input as well. A direct charger
+ * finds the charge held through the battery status and stops.
+ */
+static int qcom_battmgr_oplus_set_behaviour(struct qcom_battmgr *battmgr, int behaviour)
+{
+	struct qcom_battmgr_oplus *oplus = &battmgr->oplus;
+	enum power_supply_charge_behaviour old;
+	bool resume = false;
+	int ret = 0;
+
+	if (behaviour < 0 || behaviour >= BITS_PER_TYPE(u8) ||
+	    !(OPLUS_SM8750_BEHAVIOURS & BIT(behaviour)))
+		return -EINVAL;
+
+	mutex_lock(&battmgr->lock);
+	old = oplus->behaviour;
+	oplus->behaviour = behaviour;
+	if (behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE &&
+	    old != POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE) {
+		ret = qcom_battmgr_oplus_set_input_limit(battmgr, 0);
+		if (!ret)
+			oplus->input_suspended = true;
+	} else if (old == POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE &&
+		   behaviour != POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE) {
+		/*
+		 * A limit alone keeps a suspended input suspended: lift the
+		 * vote first, as the stock kernel resumes it; the charging
+		 * worker then ramps the input.
+		 */
+		ret = qcom_battmgr_oplus_set_input_limit(battmgr, U32_MAX);
+		if (!ret) {
+			oplus->input_suspended = false;
+			resume = true;
+		}
+	}
+	if (!ret)
+		ret = qcom_battmgr_oplus_set_charging(battmgr);
+	if (ret && !resume)
+		oplus->behaviour = old;
+	mutex_unlock(&battmgr->lock);
+
+	if (resume)
+		schedule_work(&battmgr->oplus_charging_work);
+	power_supply_changed(battmgr->bat_psy);
+
+	return ret;
+}
+
+static int qcom_battmgr_oplus_set_threshold(struct qcom_battmgr *battmgr,
+					    enum power_supply_property psp, int value)
+{
+	struct qcom_battmgr_oplus *oplus = &battmgr->oplus;
+
+	if (value < 0 || value > 100)
+		return -EINVAL;
+	if (psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD && !value)
+		return -EINVAL;
+
+	mutex_lock(&battmgr->lock);
+	if (psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD)
+		WRITE_ONCE(oplus->start_threshold, value);
+	else
+		WRITE_ONCE(oplus->end_threshold, value);
+	qcom_battmgr_oplus_follow_policy(battmgr);
+	mutex_unlock(&battmgr->lock);
+
+	power_supply_changed(battmgr->bat_psy);
+
+	return 0;
 }
 
 /*
@@ -1184,11 +1502,10 @@ static int qcom_battmgr_bat_oplus_is_writeable(struct power_supply *psy,
  * charge control limit, in uA, and the voltage through the maximum battery
  * voltage, in mV. A current of 0 or less lifts the driver's limit.
  */
-static int qcom_battmgr_bat_oplus_set_property(struct power_supply *psy,
-					       enum power_supply_property psp,
-					       const union power_supply_propval *pval)
+static int qcom_battmgr_bat_oplus_set(struct qcom_battmgr *battmgr,
+				      enum power_supply_property psp,
+				      const union power_supply_propval *pval)
 {
-	struct qcom_battmgr *battmgr = power_supply_get_drvdata(psy);
 	int ret;
 
 	if (!qcom_battmgr_service_wait(battmgr))
@@ -1211,9 +1528,21 @@ static int qcom_battmgr_bat_oplus_set_property(struct power_supply *psy,
 			battmgr->oplus.voltage_mv = pval->intval / 1000;
 		mutex_unlock(&battmgr->lock);
 		return ret;
+	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+		return qcom_battmgr_oplus_set_behaviour(battmgr, pval->intval);
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD:
+	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
+		return qcom_battmgr_oplus_set_threshold(battmgr, psp, pval->intval);
 	default:
 		return -EINVAL;
 	}
+}
+
+static int qcom_battmgr_bat_oplus_set_property(struct power_supply *psy,
+					       enum power_supply_property psp,
+					       const union power_supply_propval *pval)
+{
+	return qcom_battmgr_bat_oplus_set(power_supply_get_drvdata(psy), psp, pval);
 }
 
 static const struct power_supply_desc oplus_sm8750_bat_psy_desc = {
@@ -1224,6 +1553,56 @@ static const struct power_supply_desc oplus_sm8750_bat_psy_desc = {
 	.get_property = qcom_battmgr_bat_get_property,
 	.set_property = qcom_battmgr_bat_oplus_set_property,
 	.property_is_writeable = qcom_battmgr_bat_oplus_is_writeable,
+	.charge_behaviours = OPLUS_SM8750_BEHAVIOURS,
+};
+
+/*
+ * With a pack gauge the gauge's power supply is the battery, and the
+ * firmware's own battery, which only forwards the gauge's measurements, is
+ * not registered: the charger's state and controls go onto the gauge's
+ * battery, as other charge controls go onto a battery they do not measure.
+ */
+static const enum power_supply_property oplus_sm8750_gauge_ext_props[] = {
+	POWER_SUPPLY_PROP_CHARGE_TYPE,
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
+	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD,
+	POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD,
+};
+
+static int qcom_battmgr_gauge_ext_get(struct power_supply *psy,
+				      const struct power_supply_ext *ext, void *data,
+				      enum power_supply_property psp,
+				      union power_supply_propval *val)
+{
+	return qcom_battmgr_bat_get(data, psp, val);
+}
+
+static int qcom_battmgr_gauge_ext_set(struct power_supply *psy,
+				      const struct power_supply_ext *ext, void *data,
+				      enum power_supply_property psp,
+				      const union power_supply_propval *val)
+{
+	return qcom_battmgr_bat_oplus_set(data, psp, val);
+}
+
+static int qcom_battmgr_gauge_ext_is_writeable(struct power_supply *psy,
+					       const struct power_supply_ext *ext,
+					       void *data,
+					       enum power_supply_property psp)
+{
+	return qcom_battmgr_bat_oplus_is_writeable(psy, psp);
+}
+
+static const struct power_supply_ext oplus_sm8750_gauge_ext = {
+	.name = "qcom-battmgr",
+	.charge_behaviours = OPLUS_SM8750_BEHAVIOURS,
+	.properties = oplus_sm8750_gauge_ext_props,
+	.num_properties = ARRAY_SIZE(oplus_sm8750_gauge_ext_props),
+	.get_property = qcom_battmgr_gauge_ext_get,
+	.set_property = qcom_battmgr_gauge_ext_set,
+	.property_is_writeable = qcom_battmgr_gauge_ext_is_writeable,
 };
 
 static int qcom_battmgr_ac_get_property(struct power_supply *psy,
@@ -1307,18 +1686,28 @@ static bool qcom_battmgr_oplus_host_charging(struct qcom_battmgr *battmgr)
 	       battmgr->variant == OPLUS_BATTMGR_SM8750;
 }
 
-/* Called with @battmgr->lock held. */
-static int qcom_battmgr_oplus_enable_charging(struct qcom_battmgr *battmgr)
+/* Called with @battmgr->lock held. Enable charging unless the host holds it. */
+static int qcom_battmgr_oplus_set_charging(struct qcom_battmgr *battmgr)
 {
-	if (battmgr->variant == OPLUS_BATTMGR_SM8750)
-		return qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
-						     BATT_OPLUS_CHG_EN, 1);
+	bool charging = !qcom_battmgr_oplus_charge_held(battmgr);
+	int ret;
 
-	return qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET,
-					     OPLUS_CHG_EN, 1);
+	if (battmgr->variant == OPLUS_BATTMGR_SM8750)
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_SET,
+						    BATT_OPLUS_CHG_EN, charging);
+	else
+		ret = qcom_battmgr_request_property(battmgr, BATTMGR_OPLUS_PROPERTY_SET,
+						    OPLUS_CHG_EN, charging);
+	if (!ret)
+		battmgr->oplus.charging = charging;
+
+	return ret;
 }
 
-/* Called with @battmgr->lock held. 0 suspends the input, U32_MAX lifts the vote. */
+/*
+ * Called with @battmgr->lock held. 0 suspends the input and U32_MAX lifts the
+ * vote; other limits leave a suspended input suspended.
+ */
 static int qcom_battmgr_oplus_set_input_limit(struct qcom_battmgr *battmgr, u32 limit_ua)
 {
 	if (battmgr->variant == OPLUS_BATTMGR_SM8750)
@@ -1423,6 +1812,14 @@ static int qcom_battmgr_usb_get_property(struct power_supply *psy,
 	if (!qcom_battmgr_service_wait(battmgr))
 		return -EAGAIN;
 
+	/* Only with a pack gauge, which measures the battery's status. */
+	if (psp == POWER_SUPPLY_PROP_STATUS) {
+		ret = qcom_battmgr_bat_oplus_update(battmgr, psp);
+		if (!ret)
+			val->intval = battmgr->status.status;
+		return ret;
+	}
+
 	if (battmgr->variant == QCOM_BATTMGR_SC8280XP ||
 	    battmgr->variant == QCOM_BATTMGR_X1E80100)
 		ret = qcom_battmgr_bat_sc8280xp_update(battmgr, psp);
@@ -1500,7 +1897,17 @@ static int qcom_battmgr_usb_set_property(struct power_supply *psy,
 
 	if (qcom_battmgr_oplus_host_charging(battmgr)) {
 		mutex_lock(&battmgr->lock);
-		ret = qcom_battmgr_oplus_set_input_limit(battmgr, limit);
+		/* A forced discharge keeps the input suspended until it ends. */
+		if (battmgr->oplus.behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE) {
+			mutex_unlock(&battmgr->lock);
+			return 0;
+		}
+		ret = 0;
+		/* A limit alone keeps a suspended input suspended. */
+		if (battmgr->oplus.input_suspended && limit && limit != U32_MAX)
+			ret = qcom_battmgr_oplus_set_input_limit(battmgr, U32_MAX);
+		if (!ret)
+			ret = qcom_battmgr_oplus_set_input_limit(battmgr, limit);
 		if (!ret)
 			battmgr->oplus.input_suspended = !limit;
 		mutex_unlock(&battmgr->lock);
@@ -1566,11 +1973,47 @@ static const enum power_supply_property sm8350_usb_props[] = {
 	POWER_SUPPLY_PROP_USB_TYPE,
 };
 
+/*
+ * With a pack gauge the battery reports what the gauge measures. The
+ * charger reports whether it charges, Not charging while the host holds the
+ * charge, as the firmware's battery would have.
+ */
+static const enum power_supply_property oplus_sm8750_gauge_usb_props[] = {
+	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_VOLTAGE_MAX,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_CURRENT_MAX,
+	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
+	POWER_SUPPLY_PROP_USB_TYPE,
+};
+
 static const struct power_supply_desc sm8350_usb_psy_desc = {
 	.name = "qcom-battmgr-usb",
 	.type = POWER_SUPPLY_TYPE_USB,
 	.properties = sm8350_usb_props,
 	.num_properties = ARRAY_SIZE(sm8350_usb_props),
+	.get_property = qcom_battmgr_usb_get_property,
+	.set_property = qcom_battmgr_usb_set_property,
+	.property_is_writeable = qcom_battmgr_usb_is_writeable,
+	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) |
+		     BIT(POWER_SUPPLY_USB_TYPE_SDP)     |
+		     BIT(POWER_SUPPLY_USB_TYPE_DCP)     |
+		     BIT(POWER_SUPPLY_USB_TYPE_CDP)     |
+		     BIT(POWER_SUPPLY_USB_TYPE_ACA)     |
+		     BIT(POWER_SUPPLY_USB_TYPE_C)       |
+		     BIT(POWER_SUPPLY_USB_TYPE_PD)      |
+		     BIT(POWER_SUPPLY_USB_TYPE_PD_DRP)  |
+		     BIT(POWER_SUPPLY_USB_TYPE_PD_PPS)  |
+		     BIT(POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID),
+};
+
+static const struct power_supply_desc oplus_sm8750_gauge_usb_psy_desc = {
+	.name = "qcom-battmgr-usb",
+	.type = POWER_SUPPLY_TYPE_USB,
+	.properties = oplus_sm8750_gauge_usb_props,
+	.num_properties = ARRAY_SIZE(oplus_sm8750_gauge_usb_props),
 	.get_property = qcom_battmgr_usb_get_property,
 	.set_property = qcom_battmgr_usb_set_property,
 	.property_is_writeable = qcom_battmgr_usb_is_writeable,
@@ -2616,7 +3059,18 @@ static void qcom_battmgr_oplus_charging_worker(struct work_struct *work)
 		return;
 	}
 
-	ret = qcom_battmgr_oplus_enable_charging(battmgr);
+	qcom_battmgr_oplus_update_hold(battmgr);
+	ret = qcom_battmgr_oplus_set_charging(battmgr);
+	if (!ret && battmgr->oplus.behaviour == POWER_SUPPLY_CHARGE_BEHAVIOUR_FORCE_DISCHARGE) {
+		/* A plug event or a restarted firmware may have resumed it. */
+		ret = qcom_battmgr_oplus_set_input_limit(battmgr, 0);
+		if (!ret)
+			battmgr->oplus.input_suspended = true;
+		mutex_unlock(&battmgr->lock);
+		if (ret)
+			dev_err(battmgr->dev, "failed to suspend the input: %d\n", ret);
+		return;
+	}
 	mutex_unlock(&battmgr->lock);
 	if (ret) {
 		dev_err(battmgr->dev, "failed to enable charging\n");
@@ -2638,11 +3092,59 @@ static void qcom_battmgr_oplus_charging_worker(struct work_struct *work)
 #define OPLUS_SM8750_POLL_ONLINE	(5 * HZ)
 #define OPLUS_SM8750_POLL_OFFLINE	(30 * HZ)
 
+/*
+ * The battery voltage floor of the stock charger, oplus_spec,vbat_uv_thr_mv
+ * and the lower vbat_charging_uv_thr_mv with a source attached: below it
+ * the stock kernel runs the reported level down to 0 within minutes, for
+ * Android to shut down. Shut down here at the floor, whatever the level: a
+ * level that never falls, as a firmware without a gauge of its own
+ * reports, would otherwise leave the battery to sag until the system
+ * browns out. A few polls in a row keep a load step from tripping it, and
+ * a reading below any working battery voltage is no measurement.
+ */
+#define OPLUS_SM8750_VBAT_FLOOR_UV		3300000
+#define OPLUS_SM8750_VBAT_FLOOR_ONLINE_UV	3200000
+#define OPLUS_SM8750_VBAT_VALID_UV		2500000
+#define OPLUS_SM8750_VBAT_LOW_POLLS		3
+#define OPLUS_SM8750_POLL_LOW			(5 * HZ)
+
+static void qcom_battmgr_oplus_check_floor(struct qcom_battmgr *battmgr, bool online)
+{
+	unsigned int floor_uv, uv;
+	int ret;
+
+	mutex_lock(&battmgr->lock);
+	ret = qcom_battmgr_request_property(battmgr, BATTMGR_BAT_PROPERTY_GET, BATT_VOLT_NOW, 0);
+	uv = battmgr->status.voltage_now;
+	mutex_unlock(&battmgr->lock);
+	if (ret)
+		return;
+
+	floor_uv = online ? OPLUS_SM8750_VBAT_FLOOR_ONLINE_UV : OPLUS_SM8750_VBAT_FLOOR_UV;
+	if (uv < OPLUS_SM8750_VBAT_VALID_UV || uv >= floor_uv) {
+		battmgr->vbat_low = 0;
+		return;
+	}
+
+	if (++battmgr->vbat_low < OPLUS_SM8750_VBAT_LOW_POLLS) {
+		dev_warn(battmgr->dev, "battery at %u mV, under the %u mV floor\n",
+			 uv / 1000, floor_uv / 1000);
+		return;
+	}
+
+	if (battmgr->vbat_poweroff)
+		return;
+	battmgr->vbat_poweroff = true;
+	dev_crit(battmgr->dev, "battery at %u mV, under the %u mV floor: powering off\n",
+		 uv / 1000, floor_uv / 1000);
+	orderly_poweroff(true);
+}
+
 static void qcom_battmgr_oplus_poll_worker(struct work_struct *work)
 {
 	struct qcom_battmgr *battmgr = container_of(to_delayed_work(work),
 						    struct qcom_battmgr, oplus_poll_work);
-	bool bat_changed, usb_changed;
+	bool bat_changed, usb_changed, policy_changed;
 	unsigned int usb_type;
 	int status, percent;
 	bool online;
@@ -2666,6 +3168,8 @@ static void qcom_battmgr_oplus_poll_worker(struct work_struct *work)
 		qcom_battmgr_usb_sm8350_update(battmgr, POWER_SUPPLY_PROP_USB_TYPE);
 
 	mutex_lock(&battmgr->lock);
+	/* The host keeps the charge thresholds: follow the charge level. */
+	policy_changed = qcom_battmgr_oplus_follow_policy(battmgr);
 	status = battmgr->status.status;
 	percent = battmgr->status.percent;
 	online = battmgr->usb.online;
@@ -2674,7 +3178,7 @@ static void qcom_battmgr_oplus_poll_worker(struct work_struct *work)
 
 	usb_changed = online != battmgr->poll_online ||
 		      usb_type != battmgr->poll_usb_type;
-	bat_changed = usb_changed || status != battmgr->poll_status ||
+	bat_changed = usb_changed || policy_changed || status != battmgr->poll_status ||
 		      percent != battmgr->poll_percent;
 	battmgr->poll_status = status;
 	battmgr->poll_percent = percent;
@@ -2686,8 +3190,11 @@ static void qcom_battmgr_oplus_poll_worker(struct work_struct *work)
 	if (bat_changed)
 		power_supply_changed(battmgr->bat_psy);
 
+	qcom_battmgr_oplus_check_floor(battmgr, online);
+
 out:
 	schedule_delayed_work(&battmgr->oplus_poll_work,
+			      battmgr->vbat_low ? OPLUS_SM8750_POLL_LOW :
 			      battmgr->poll_online ? OPLUS_SM8750_POLL_ONLINE :
 						     OPLUS_SM8750_POLL_OFFLINE);
 }
@@ -2732,6 +3239,110 @@ static const struct of_device_id qcom_battmgr_of_variants[] = {
 
 static char *qcom_battmgr_battery[] = { "battery" };
 
+static void qcom_battmgr_put_gauge(void *data)
+{
+	power_supply_put(data);
+}
+
+#if IS_ENABLED(CONFIG_I2C) && IS_ENABLED(CONFIG_OF_DYNAMIC)
+static int qcom_battmgr_probe_gauge(struct device *dev)
+{
+	struct i2c_of_probe_cfg cfg = { .type = "fuel-gauge" };
+
+	return i2c_of_probe_component(dev, &cfg, NULL);
+}
+#else
+static int qcom_battmgr_probe_gauge(struct device *dev)
+{
+	return -ENODEV;
+}
+#endif
+
+/*
+ * Some boards carry a pack fuel gauge in place of the PMIC's, and their
+ * firmware then reports a fixed battery state. One description serves
+ * both, with the gauge marked to be probed: enable it if it answers, and
+ * take the battery state from it.
+ */
+static int qcom_battmgr_get_gauge(struct qcom_battmgr *battmgr)
+{
+	struct device *dev = battmgr->dev;
+	struct fwnode_handle *fwnode = dev_fwnode(dev->parent);
+	struct device_node *np;
+	struct power_supply *psy;
+	bool fitted;
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_I2C) || !IS_ENABLED(CONFIG_OF_DYNAMIC))
+		return 0;
+
+	np = of_parse_phandle(to_of_node(fwnode), "oneplus,fuel-gauge", 0);
+	if (!np)
+		return 0;
+
+	/*
+	 * A bus or a gauge driver that never comes must not keep the
+	 * charger away: past the deferred probe timeout, go without.
+	 */
+	ret = qcom_battmgr_probe_gauge(dev);
+	fitted = of_device_is_available(np);
+	of_node_put(np);
+	if (ret == -EPROBE_DEFER) {
+		ret = driver_deferred_probe_check_state(dev);
+		if (ret == -EPROBE_DEFER)
+			return ret;
+		dev_warn(dev, "fuel gauge bus not available, not probed\n");
+	}
+	if (!fitted)
+		return 0;
+
+	psy = power_supply_get_by_reference(fwnode, "oneplus,fuel-gauge");
+	if (IS_ERR_OR_NULL(psy)) {
+		ret = psy ? PTR_ERR(psy) : driver_deferred_probe_check_state(dev);
+		if (ret == -EPROBE_DEFER)
+			return dev_err_probe(dev, ret, "fuel gauge not registered\n");
+		dev_warn(dev, "fuel gauge fitted but not available: %d\n", ret);
+		return 0;
+	}
+
+	ret = devm_add_action_or_reset(dev, qcom_battmgr_put_gauge, psy);
+	if (ret)
+		return ret;
+
+	battmgr->gauge = psy;
+	dev_info(dev, "battery measured by %s\n", psy->desc->name);
+
+	return 0;
+}
+
+static void qcom_battmgr_gauge_unregister_ext(void *data)
+{
+	power_supply_unregister_extension(data, &oplus_sm8750_gauge_ext);
+}
+
+/* Make the pack gauge the battery that the charger supplies and controls. */
+static int qcom_battmgr_gauge_battery(struct qcom_battmgr *battmgr,
+				      struct power_supply_config *psy_cfg_supply)
+{
+	struct device *dev = battmgr->dev;
+	int ret;
+
+	ret = power_supply_register_extension(battmgr->gauge, &oplus_sm8750_gauge_ext,
+					      dev, battmgr);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to extend the fuel gauge battery\n");
+
+	ret = devm_add_action_or_reset(dev, qcom_battmgr_gauge_unregister_ext, battmgr->gauge);
+	if (ret)
+		return ret;
+
+	battmgr->bat_psy = battmgr->gauge;
+	battmgr->gauge_supplicant[0] = (char *)battmgr->gauge->desc->name;
+	psy_cfg_supply->supplied_to = battmgr->gauge_supplicant;
+
+	return 0;
+}
+
 static int qcom_battmgr_probe(struct auxiliary_device *adev,
 			      const struct auxiliary_device_id *id)
 {
@@ -2768,6 +3379,15 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 	else
 		battmgr->variant = QCOM_BATTMGR_SM8350;
 
+	/* No end threshold: the firmware ends the charge. */
+	battmgr->oplus.end_threshold = 100;
+
+	if (battmgr->variant == OPLUS_BATTMGR_SM8750) {
+		ret = qcom_battmgr_get_gauge(battmgr);
+		if (ret)
+			return ret;
+	}
+
 	ret = qcom_battmgr_charge_control_thresholds_init(battmgr);
 	if (ret < 0)
 		return dev_err_probe(dev, ret,
@@ -2803,7 +3423,9 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 		/* The property firmware has no unit to ask for: it counts charge. */
 		battmgr->unit = QCOM_BATTMGR_UNIT_mAh;
 
-		if (battmgr->variant == OPLUS_BATTMGR_SM8750)
+		if (battmgr->gauge)
+			psy_desc = NULL;
+		else if (battmgr->variant == OPLUS_BATTMGR_SM8750)
 			psy_desc = &oplus_sm8750_bat_psy_desc;
 		else if (battmgr->variant == QCOM_BATTMGR_SM8550 ||
 			 battmgr->variant == OPLUS_BATTMGR_SM8550 ||
@@ -2812,12 +3434,20 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
 		else
 			psy_desc = &sm8350_bat_psy_desc;
 
-		battmgr->bat_psy = devm_power_supply_register(dev, psy_desc, &psy_cfg);
-		if (IS_ERR(battmgr->bat_psy))
-			return dev_err_probe(dev, PTR_ERR(battmgr->bat_psy),
-					     "failed to register battery power supply\n");
+		if (psy_desc) {
+			battmgr->bat_psy = devm_power_supply_register(dev, psy_desc, &psy_cfg);
+			if (IS_ERR(battmgr->bat_psy))
+				return dev_err_probe(dev, PTR_ERR(battmgr->bat_psy),
+						     "failed to register battery power supply\n");
+			psy_desc = &sm8350_usb_psy_desc;
+		} else {
+			ret = qcom_battmgr_gauge_battery(battmgr, &psy_cfg_supply);
+			if (ret)
+				return ret;
+			psy_desc = &oplus_sm8750_gauge_usb_psy_desc;
+		}
 
-		battmgr->usb_psy = devm_power_supply_register(dev, &sm8350_usb_psy_desc, &psy_cfg_supply);
+		battmgr->usb_psy = devm_power_supply_register(dev, psy_desc, &psy_cfg_supply);
 		if (IS_ERR(battmgr->usb_psy))
 			return dev_err_probe(dev, PTR_ERR(battmgr->usb_psy),
 					     "failed to register USB power supply\n");
@@ -2884,3 +3514,4 @@ module_auxiliary_driver(qcom_battmgr_driver);
 
 MODULE_DESCRIPTION("Qualcomm PMIC GLINK battery manager driver");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS("I2C_OF_PROBER");

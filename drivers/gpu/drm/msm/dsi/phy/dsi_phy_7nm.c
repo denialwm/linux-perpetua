@@ -77,6 +77,9 @@ struct pll_7nm_cached_state {
 	u8 pll_mux;
 };
 
+/* TIMING_CTRL_0 to TIMING_CTRL_13 */
+#define DSI_7NM_PHY_NUM_TIMINGS	14
+
 struct dsi_pll_7nm {
 	struct clk_hw clk_hw;
 
@@ -107,6 +110,14 @@ struct dsi_pll_7nm {
 	 * unconfigured, it turned the panel white until the host took over.
 	 */
 	bool handover;
+
+	/*
+	 * The lane timings of the PHY when the host took over the stream of
+	 * the bootloader, and the bit rate they ran at: the board's own
+	 * tuning for its panel, which the calculation does not reproduce.
+	 */
+	u32 boot_timing[DSI_7NM_PHY_NUM_TIMINGS];
+	unsigned long boot_bitclk_rate;
 
 	struct dsi_pll_7nm *slave;
 };
@@ -1014,6 +1025,67 @@ static void dsi_7nm_phy_take_over(struct msm_dsi_phy *phy)
 	phy->state_saved = false;
 }
 
+/*
+ * The lane timings of the bootloader are those of the board's panel
+ * description, set for the receivers and the blanking of that panel. The
+ * calculation gives other ones: on the OnePlus Pad 3 a 53 ns T_LPX, near
+ * the 50 ns minimum, for the 70 ns of the panel description, and longer
+ * exits from high speed. They are kept for the next enables at the same
+ * bit rate.
+ */
+static void dsi_7nm_phy_save_boot_timing(struct msm_dsi_phy *phy,
+					 struct msm_dsi_phy_clk_request *clk_req)
+{
+	struct dsi_pll_7nm *pll = phy->pll_data;
+	int i;
+
+	if (phy->cphy_mode)
+		return;
+
+	for (i = 0; i < DSI_7NM_PHY_NUM_TIMINGS; i++)
+		pll->boot_timing[i] = readl(phy->base +
+					    REG_DSI_7nm_PHY_CMN_TIMING_CTRL_0 + 4 * i);
+
+	/* Timings never set, with a zero T_LPX, are no tuning to keep. */
+	if (!pll->boot_timing[8])
+		return;
+
+	pll->boot_bitclk_rate = clk_req->bitclk_rate;
+}
+
+static void dsi_7nm_phy_load_boot_timing(struct msm_dsi_phy *phy,
+					 struct msm_dsi_phy_clk_request *clk_req)
+{
+	struct msm_dsi_dphy_timing *timing = &phy->timing;
+	struct dsi_pll_7nm *pll = phy->pll_data;
+	const u32 *t;
+
+	/*
+	 * Both PHYs of a bonded pair drive the one panel: a slave whose own
+	 * timings were not read takes those of its master.
+	 */
+	if (!pll->boot_bitclk_rate && phy->usecase == MSM_DSI_PHY_SLAVE &&
+	    pll_7nm_list[(phy->id + 1) % DSI_MAX])
+		pll = pll_7nm_list[(phy->id + 1) % DSI_MAX];
+	t = pll->boot_timing;
+
+	if (phy->cphy_mode || !pll->boot_bitclk_rate ||
+	    abs_diff(clk_req->bitclk_rate, pll->boot_bitclk_rate) >
+	    pll->boot_bitclk_rate / 8192)
+		return;
+
+	timing->clk_zero = t[1];
+	timing->clk_prepare = t[2];
+	timing->clk_trail = t[3];
+	timing->hs_exit = t[4];
+	timing->hs_zero = t[5];
+	timing->hs_prepare = t[6];
+	timing->hs_trail = t[7];
+	timing->hs_rqst = t[8];
+	timing->shared_timings.clk_pre = t[12];
+	timing->shared_timings.clk_post = t[13];
+}
+
 static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
 			      struct msm_dsi_phy_clk_request *clk_req)
 {
@@ -1043,12 +1115,14 @@ static int dsi_7nm_phy_enable(struct msm_dsi_phy *phy,
 			      "%s: PHY timing calculation failed\n", __func__);
 		return -EINVAL;
 	}
+	dsi_7nm_phy_load_boot_timing(phy, clk_req);
 
 	/*
 	 * The host takes over the video stream the bootloader started: the PHY
 	 * and its PLL carry it and stay as they run.
 	 */
 	if (pll->handover && clk_req->boot_stream) {
+		dsi_7nm_phy_save_boot_timing(phy, clk_req);
 		dsi_7nm_phy_take_over(phy);
 		return 0;
 	}

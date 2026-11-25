@@ -95,6 +95,20 @@ properties:
         maximum: 6200000
         multipleOf: 100000
 
+      oneplus,svooc-bypass-microamp:
+        description:
+          The lowest and highest adapter current of a bypass session, which
+          powers the system through the pumps while the battery holds its
+          charge (its charge behaviour or charge thresholds). Without it a
+          held battery ends the session and the standard charger holds it.
+        items:
+          - minimum: 1000000
+            maximum: 6200000
+            multipleOf: 100000
+          - minimum: 1000000
+            maximum: 6200000
+            multipleOf: 100000
+
       oneplus,svooc-battery-curve:
         $ref: /schemas/types.yaml#/definitions/uint32-matrix
         description:

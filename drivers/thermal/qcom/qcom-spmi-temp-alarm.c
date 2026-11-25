@@ -145,6 +145,8 @@ struct qpnp_tm_chip {
 	bool				initialized;
 	bool				require_stage2_shutdown;
 	long				temp_thresh_map[STAGE_COUNT];
+	/* The zone's trips, in stage order; their .priv belongs to the core */
+	const struct thermal_trip	*trips[STAGE_COUNT];
 
 	struct iio_channel		*adc;
 };
@@ -404,15 +406,27 @@ static int qpnp_tm_gen2_rev2_set_temp_thresh(struct qpnp_tm_chip *chip, unsigned
 	return 0;
 }
 
+/* The stage a trip configures, or STAGE_COUNT for none. Call with chip->lock held. */
+static unsigned int qpnp_tm_trip_stage(struct qpnp_tm_chip *chip,
+				       const struct thermal_trip *trip)
+{
+	unsigned int i;
+
+	for (i = 0; i < min(chip->ntrips, STAGE_COUNT); i++)
+		if (chip->trips[i] == trip)
+			return i;
+
+	return STAGE_COUNT;
+}
+
 static int qpnp_tm_gen2_rev2_set_trip_temp(struct thermal_zone_device *tz,
 					   const struct thermal_trip *trip, int temp)
 {
-	unsigned int trip_index = THERMAL_TRIP_PRIV_TO_INT(trip->priv);
 	struct qpnp_tm_chip *chip = thermal_zone_device_priv(tz);
 	int ret;
 
 	mutex_lock(&chip->lock);
-	ret = qpnp_tm_gen2_rev2_set_temp_thresh(chip, trip_index, temp);
+	ret = qpnp_tm_gen2_rev2_set_temp_thresh(chip, qpnp_tm_trip_stage(chip, trip), temp);
 	mutex_unlock(&chip->lock);
 
 	return ret;
@@ -499,12 +513,11 @@ static int qpnp_tm_lite_set_temp_thresh(struct qpnp_tm_chip *chip, unsigned int 
 static int qpnp_tm_lite_set_trip_temp(struct thermal_zone_device *tz,
 				      const struct thermal_trip *trip, int temp)
 {
-	unsigned int trip_index = THERMAL_TRIP_PRIV_TO_INT(trip->priv);
 	struct qpnp_tm_chip *chip = thermal_zone_device_priv(tz);
 	int ret;
 
 	mutex_lock(&chip->lock);
-	ret = qpnp_tm_lite_set_temp_thresh(chip, trip_index, temp);
+	ret = qpnp_tm_lite_set_temp_thresh(chip, qpnp_tm_trip_stage(chip, trip), temp);
 	mutex_unlock(&chip->lock);
 
 	return ret;
@@ -563,7 +576,8 @@ static int qpnp_tm_gen2_rev2_configure_trip_temps_cb(struct thermal_trip *trip, 
 	int ret;
 
 	mutex_lock(&chip->lock);
-	trip->priv = THERMAL_INT_TO_TRIP_PRIV(chip->ntrips);
+	if (chip->ntrips < STAGE_COUNT)
+		chip->trips[chip->ntrips] = trip;
 	ret = qpnp_tm_gen2_rev2_set_temp_thresh(chip, chip->ntrips, trip->temperature);
 	chip->ntrips++;
 	mutex_unlock(&chip->lock);
@@ -617,7 +631,8 @@ static int qpnp_tm_lite_configure_trip_temps_cb(struct thermal_trip *trip, void 
 	int ret;
 
 	mutex_lock(&chip->lock);
-	trip->priv = THERMAL_INT_TO_TRIP_PRIV(chip->ntrips);
+	if (chip->ntrips < STAGE_COUNT)
+		chip->trips[chip->ntrips] = trip;
 	ret = qpnp_tm_lite_set_temp_thresh(chip, chip->ntrips, trip->temperature);
 	chip->ntrips++;
 	mutex_unlock(&chip->lock);

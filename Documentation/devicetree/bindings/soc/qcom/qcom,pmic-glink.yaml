@@ -112,6 +112,14 @@ properties:
       The boost converter that OnePlus' SM8750 charger firmware drives for
       the stylus charger coil.
 
+  oneplus,fuel-gauge:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      The pack fuel gauge that some boards of a design carry in place of
+      the PMIC's gauge. Where it is fitted, it and not the charger
+      firmware measures the battery. A description shared by boards with
+      and without it marks the gauge node "fail-needs-probe".
+
 patternProperties:
   '^connector@\d$':
     $ref: /schemas/connector/usb-connector.yaml#
@@ -133,6 +141,7 @@ allOf:
               const: oneplus,sm8750-pmic-glink
     then:
       properties:
+        oneplus,fuel-gauge: false
         regulator-pen-boost: false
 
 additionalProperties: false
