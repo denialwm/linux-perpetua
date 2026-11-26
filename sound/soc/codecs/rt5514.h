@@ -265,9 +265,6 @@
 #define RT5514P_FIRMWARE3	"rt5514p_dsp_fw3.bin"
 #define RT5514P_FIRMWARE4	"rt5514p_dsp_fw4.bin"
 
-#define AMBIENT_COMMON_MAX_PAYLOAD_BUFFER_SIZE	(128)
-#define DSP_IDENTIFIER_SIZE			(40)
-
 #define DIVIDER_1_P024		1024000
 #define DIVIDER_1_P536		1536000
 #define DIVIDER_2_P048		2048000
@@ -275,8 +272,6 @@
 
 #define UNMUTE_TIMEOUT_MS	1000
 #define UNMUTE_SWITCH_MS	85
-
-#define RT5514_ENTRY_MAX_LEN 64
 
 /* System Clock Source */
 enum {
@@ -306,22 +301,11 @@ enum {
 	RT5514_DSP_FUNC_I2S,
 };
 
-struct _payload_st {
-	unsigned int size;
-	unsigned int status;
-	char data[AMBIENT_COMMON_MAX_PAYLOAD_BUFFER_SIZE];
-};
-
 struct _dsp_fw_ver_st {
 	unsigned short chip_id;
 	unsigned short feature_id;
 	unsigned short version;
 	unsigned short sub_version;
-};
-
-struct _dsp_mem_st {
-	unsigned int iram;
-	unsigned int dram;
 };
 
 struct rt5514_priv {
@@ -338,45 +322,22 @@ struct rt5514_priv {
 	int pll_src;
 	int pll_in;
 	int pll_out;
-	int dsp_enabled, dsp_enabled_last, dsp_test, spi_switch;
-	int dsp_adc_enabled, dsp_buffer_channel;
-	int dsp_req, adc_req;
-	u8 *hotword_model_buf, *musdet_model_buf;
-	unsigned int hotword_model_len, musdet_model_len;
+	int dsp_enabled, dsp_adc_enabled, dsp_buffer_channel;
 	int divider_param;
-	struct _payload_st payload;
 	bool v_p;
 	int i2c_patch_size;
 	char *fw_name[4];
 	unsigned int fw_addr[4];
 	bool is_streaming;
-	bool need_reload;
-#if IS_ENABLED(CONFIG_SND_SOC_RT5514_QMI)
-	bool need_reset;
-#endif
 	struct mutex stream_lock;
 	unsigned int sound_model_addr[2];
-	bool load_default_sound_model;
 	struct delayed_work unmute_work;
-	struct delayed_work buffer_status_work;
-	bool buffer_status;
-	int zlatency_delay;
 };
 
 
 
 /* Compatibility definitions for symbols the vendor driver expects. */
-enum {
-	RT5514_DSP_STREAM_HOTWORD = 0,
-	RT5514_DSP_STREAM_MUSDET,
-};
-
-enum {
-	RT5514_DSP_CHRE = 0,
-};
-
 #define RT5514_SPI_SWITCH_GPIO		0
-#define ZEOR_LATENCY_BUFFER_MS		20
 
 int rt5514_set_gpio(int gpio, bool output);
 void rt5514_spi_bus_switch(bool host);
