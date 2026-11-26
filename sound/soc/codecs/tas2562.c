@@ -63,6 +63,7 @@ struct tas2562_data {
 	int model_id;
 	bool dac_powered;
 	bool unmuted;
+	bool classd_cmp_hyst;
 };
 
 enum tas256x_model {
@@ -341,10 +342,11 @@ static int tas2562_hw_params(struct snd_pcm_substream *substream,
 
 	/*
 	 * The LPASS power-up wipes the LPI pad mux, so the pinctrl applied
-	 * at probe is gone by the time audio starts. Vendor reapplies it in
-	 * kona_tdm_snd_startup(); force sleep->default here to reprogram it.
+	 * at probe is gone by the time audio starts. Only the paired board
+	 * carries its LPI pads in this node's pinctrl; force sleep->default
+	 * there to reprogram it, and leave the pads alone on the others.
 	 */
-	if (tas2562->dev) {
+	if (tas2562->paired) {
 		pinctrl_pm_select_sleep_state(tas2562->dev);
 		pinctrl_pm_select_default_state(tas2562->dev);
 	}
@@ -356,12 +358,23 @@ static int tas2562_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	ret = tas2562_set_samplerate(tas2562, params_rate(params));
-	if (ret)
+	if (ret) {
 		dev_err(tas2562->dev, "set sample rate failed, %d\n", ret);
+		return ret;
+	}
 
-	ret = snd_soc_component_update_bits(component, TAS2562_MISC_CLASSD,
-					     TAS2562_CMP_HYST_MASK,
-					     TAS2562_CMP_HYST_MASK);
+	/*
+	 * The class-D comparator hysteresis quietens the idle switching of
+	 * the amp; boards that do not ask for it keep the reset default.
+	 */
+	if (tas2562->classd_cmp_hyst)
+		ret = snd_soc_component_update_bits(component,
+						    TAS2562_MISC_CLASSD,
+						    TAS2562_CMP_HYST_MASK,
+						    TAS2562_CMP_HYST_MASK);
+	else
+		ret = 0;
+
 	tas2562_sync_pair(tas2562);
 
 	return ret;
@@ -838,6 +851,9 @@ static int tas2562_parse_dt(struct tas2562_data *tas2562)
 		dev_err(dev, "Vsense slot must be greater than Isense slot\n");
 		return -EINVAL;
 	}
+
+	tas2562->classd_cmp_hyst = fwnode_property_read_bool(dev->fwnode,
+							     "ti,classd-cmp-hyst");
 
 	return 0;
 }

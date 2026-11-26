@@ -628,6 +628,7 @@
 		#sound-dai-cells = <1>;
 		ti,left-channel = <0x4c>;
 		ti,right-channel = <0x4d>;
+		ti,classd-cmp-hyst;
 		reset-gpios = <&pm8150l_gpios 10 GPIO_ACTIVE_HIGH>;
 		shutdown-gpios = <&pm8150l_gpios 11 GPIO_ACTIVE_HIGH>;
 		pinctrl-names = "default", "sleep";
