@@ -39,10 +39,8 @@
 		/*
 		 * clk_ignore_unused, pd_ignore_unused: the bootloader's framebuffer
 		 * lives on its clocks and domains until the display driver takes over.
-		 * quiet, loglevel=3, no cursor, no systemd status: the boot splash
-		 * owns the screen; read the log over SSH (dmesg, journalctl).
 		 */
-		bootargs = "rdinit=/init panic=10 quiet loglevel=3 vt.global_cursor_default=0 systemd.show_status=0 log_buf_len=2M clk_ignore_unused pd_ignore_unused bootconfig";
+		bootargs = "rdinit=/init panic=10 loglevel=7 log_buf_len=2M clk_ignore_unused pd_ignore_unused bootconfig";
 
 		/*
 		 * The bootloader passes the vendor_boot ramdisk followed by the
