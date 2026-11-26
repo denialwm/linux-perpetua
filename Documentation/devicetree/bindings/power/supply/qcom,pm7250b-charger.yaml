@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/qcom,pm7250b-charger.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm PM7250B switch-mode battery charger
+
+description: |
+  The charger block of the PM7250B. The driver reports the charging state and
+  lets userspace stop and resume battery charging; it never touches current
+  or voltage limits. When the hardware drives the charge-enable pin instead
+  of the command register, charging can only be reported.
+
+maintainers:
+  - Bronson <bronsonmathews@gmail.com>
+
+allOf:
+  - $ref: power-supply.yaml#
+
+properties:
+  compatible:
+    const: qcom,pm7250b-charger
+
+  reg:
+    maxItems: 1
+    description: Offset of the charger peripheral within the PMIC.
+
+  power-supplies:
+    maxItems: 1
+    description: |
+      The fuel gauge the charge limit is read from. When it names a supply,
+      the driver also implements a laptop style charge limit with
+      charge_control_start_threshold and charge_control_end_threshold.
+
+required:
+  - compatible
+  - reg
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    pmic {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        charger@1000 {
+            compatible = "qcom,pm7250b-charger";
+            reg = <0x1000>;
+        };
+    };
+...
