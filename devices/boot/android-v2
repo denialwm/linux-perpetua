@@ -9,8 +9,8 @@ kernel, ramdisk and DTB change.
 The template's kernel format selects the packing path. An LZ4-frame kernel
 (Pixel 5a) is recompressed with the template's own settings and its arm64
 text_offset adopts the template's; a raw arm64 Image (Galaxy Tab S7 FE) is
-used as it is, and any signer trailer between the DTB and the AVB blob is
-kept.
+used as it is, and any signer trailer before the AVB blob is kept, moving
+after the tail when there is one.
 
 The template's DTB is kept unless --dtb names a replacement. A device whose
 kernel carries the tree it must boot (Pixel 5a) passes --dtb; a device whose
@@ -23,10 +23,10 @@ Usage: android-v2 TEMPLATE IMAGE RAMDISK OUTPUT [--dtb DTB] [--tail FILE]
                    [--append-cmdline WORDS] [--evidence DIR] [EVIDENCE]
 
 --tail, for a device with modules or firmware to carry, writes a filesystem
-image right after the DTB, at the next page, and before any signer trailer.
-The bootloader loads only what the header lists and never reads it; Linux
-mounts it in place from the partition. A template whose signer trailer is
-non-empty cannot carry a tail, because the trailer's offset would move.
+image at the page after the DTB. Any signer trailer follows the tail, and the
+AVB blob follows the trailer. The bootloader loads only what the header lists
+and never reads the tail; Linux mounts it in place from the partition. The
+header's sizes do not change, so the tail does not appear in them.
 
 --evidence, when given, is a directory that receives the avbtool
 verification, the unpacked header and a JSON record of the result.
@@ -313,11 +313,7 @@ def pack_raw(template, image, ramdisk, dtb, tail, output, append, evidence):
     body = bytes(header)
     for data in (img, initrd, dtb_data):
         body += data + bytes(-len(data) % PAGE)
-    if tail:
-        if trailer:
-            fail(f'{template}: a tail would move the signer trailer after '
-                 f'the DTB; this layout cannot carry one')
-        body += tail
+    body += tail
     body += trailer
     original_size = len(body)
     body += bytes(-original_size % PAGE)
@@ -353,6 +349,9 @@ def pack_raw(template, image, ramdisk, dtb, tail, output, append, evidence):
                  align(len(dtb_data)))
         if tail and packed[start:start + len(tail)] != tail:
             fail(f'{output}: the tail is not after the DTB')
+        if trailer and packed[start + len(tail):
+                              start + len(tail) + len(trailer)] != trailer:
+            fail(f'{output}: the signer trailer is not after the tail')
         info = subprocess.run(['avbtool', 'info_image', '--image', output],
                               check=True, capture_output=True).stdout
         record = {
