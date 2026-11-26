@@ -68,6 +68,16 @@ Perpetua since the design was written:
   at 54 to 56 %. The battery took a flat +4.03 A, so the firmware's charge
   current, not the input, held it below 3 A. Battery connector 30.3 to
   32.8 C, USB connector 29.0 to 31.1 C, case estimate 27.0 to 27.5 C.
+  A second run of 30 minutes on the same charger, 74 to 88 %, battery
+  4.34 to 4.53 V: the battery current held 4.02 to 4.03 A throughout, so
+  the buck never throttled itself, and input stayed at 8.89 V × 2.2 to
+  2.35 A. Everything had settled: battery connector 32.8 to 33.0 C, USB
+  connector 31.0 to 31.1 C, pump MOSFETs 33.2 to 33.4 C, board 27.1 to
+  27.2 C, case estimate 27.5 to 27.6 C. Stock's `pd-iclmax-ma` 2000,
+  `input-power-mw` 13500 for PD and `fccmax-ma` at most 3300 on the buck
+  are therefore not hardware limits; the 4 A battery current is the
+  firmware's. The PMIC temperature alarms (pmh0104, pmih0108) read a
+  fixed 37 C and measure nothing.
 
 The commit split in section 4 still applies.
 
