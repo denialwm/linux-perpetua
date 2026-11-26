@@ -46,9 +46,15 @@ struct aw88461 {
 	/* Serialize DAPM power transitions and mixer/DAI register access. */
 	struct mutex lock;
 	struct work_struct start_work;
+	/* Register sections of the firmware's profiles, as aw88461_profiles */
+	const struct aw_sec_data_desc *profiles[2];
+	unsigned int profile;
+	/* The I2S format hw_params set; a profile load resets it. */
+	unsigned int i2s;
 	unsigned int volume;
 	unsigned int profile_volume;
 	unsigned int profile_txen;
+	bool on;
 	bool enabled;
 	bool running;
 	bool powered;
@@ -131,7 +137,7 @@ static int aw88461_stop(struct aw88461 *amp)
 
 static bool aw88461_active(struct aw88461 *amp)
 {
-	return READ_ONCE(amp->enabled) && READ_ONCE(amp->running);
+	return READ_ONCE(amp->on) && READ_ONCE(amp->enabled) && READ_ONCE(amp->running);
 }
 
 static int aw88461_start(struct aw88461 *amp)
@@ -199,55 +205,18 @@ stop:
 	return aw88461_fault(amp, ret);
 }
 
-static int aw88461_load_profile(struct aw88461 *amp)
+/* The firmware's profiles the driver offers: speakers, and the earpiece. */
+static const char * const aw88461_profile_names[] = { "Music", "Receiver" };
+static const unsigned int aw88461_profile_ids[] = {
+	AW88395_PROFILE_MUSIC, AW88395_PROFILE_RECEIVER,
+};
+
+static bool aw88461_valid_regs(const struct aw_sec_data_desc *regs)
 {
-	struct aw_device *aw_dev = &amp->aw_dev;
-	const struct firmware *fw;
-	struct aw_container *cfg;
-	struct aw_sec_data_desc *regs = NULL;
-	const char *name;
 	unsigned int i, address, value;
-	int ret;
 
-	ret = device_property_read_string(aw_dev->dev, "firmware-name", &name);
-	if (ret)
-		return ret;
-	ret = request_firmware(&fw, name, aw_dev->dev);
-	if (ret)
-		return ret;
-	if (fw->size < sizeof(struct aw_cfg_hdr)) {
-		ret = -EINVAL;
-		goto release;
-	}
-	if (fw->size > INT_MAX) {
-		ret = -EFBIG;
-		goto release;
-	}
-	cfg = devm_kzalloc(aw_dev->dev, struct_size(cfg, data, fw->size), GFP_KERNEL);
-	if (!cfg) {
-		ret = -ENOMEM;
-		goto release;
-	}
-	cfg->len = fw->size;
-	memcpy(cfg->data, fw->data, fw->size);
-	ret = aw88395_dev_load_acf_check(aw_dev, cfg);
-	if (ret)
-		goto release;
-	ret = aw88395_dev_cfg_load(aw_dev, cfg);
-	if (ret)
-		goto release;
-	for (i = 0; i < aw_dev->prof_info.count; i++) {
-		struct aw_prof_desc *profile = &aw_dev->prof_info.prof_desc[i];
-
-		if (profile->id == AW88395_PROFILE_MUSIC) {
-			regs = &profile->sec_desc[AW88395_DATA_TYPE_REG];
-			break;
-		}
-	}
-	ret = -EINVAL;
-	if (!regs || !regs->len || regs->len % 4)
-		goto release;
-	/* Validate the entire section before writing any of its registers. */
+	if (!regs->len || regs->len % 4)
+		return false;
 	for (i = 0; i < regs->len; i += 4) {
 		address = get_unaligned_le16(regs->data + i);
 		value = get_unaligned_le16(regs->data + i + 2);
@@ -257,11 +226,22 @@ static int aw88461_load_profile(struct aw88461 *amp)
 		      (address >= 0x30 && address <= 0x38) ||
 		      (address >= 0x3a && address <= 0x3f) ||
 		      (address >= 0x50 && address <= 0x6d)))
-			goto release;
+			return false;
 	}
-	ret = regmap_write(aw_dev->regmap, AW88461_ID, AW88461_SOFT_RESET);
+	return true;
+}
+
+/* Resets the amplifier into the current profile, powered down. */
+static int aw88461_write_profile(struct aw88461 *amp)
+{
+	const struct aw_sec_data_desc *regs = amp->profiles[amp->profile];
+	struct regmap *map = amp->aw_dev.regmap;
+	unsigned int i, address, value;
+	int ret;
+
+	ret = regmap_write(map, AW88461_ID, AW88461_SOFT_RESET);
 	if (ret)
-		goto release;
+		return ret;
 	usleep_range(1000, 1200);
 	for (i = 0; i < regs->len; i += 4) {
 		address = get_unaligned_le16(regs->data + i);
@@ -281,10 +261,63 @@ static int aw88461_load_profile(struct aw88461 *amp)
 			amp->profile_volume = value & AW88461_VOLUME;
 			value |= AW88461_VOLUME;
 		}
-		ret = regmap_write(aw_dev->regmap, address, value);
+		ret = regmap_write(map, address, value);
 		if (ret)
-			goto release;
+			return ret;
 	}
+	if (amp->i2s)
+		ret = regmap_update_bits(map, AW88461_I2SCTRL1, GENMASK(9, 0), amp->i2s);
+	return ret;
+}
+
+static int aw88461_load_firmware(struct aw88461 *amp)
+{
+	struct aw_device *aw_dev = &amp->aw_dev;
+	const struct firmware *fw;
+	struct aw_container *cfg;
+	const char *name;
+	unsigned int i, j;
+	int ret;
+
+	ret = device_property_read_string(aw_dev->dev, "firmware-name", &name);
+	if (ret)
+		return ret;
+	ret = request_firmware(&fw, name, aw_dev->dev);
+	if (ret)
+		return ret;
+	if (fw->size < sizeof(struct aw_cfg_hdr)) {
+		ret = -EINVAL;
+		goto release;
+	}
+	if (fw->size > INT_MAX) {
+		ret = -EFBIG;
+		goto release;
+	}
+	/* The profiles point into this copy for the device's lifetime. */
+	cfg = devm_kzalloc(aw_dev->dev, struct_size(cfg, data, fw->size), GFP_KERNEL);
+	if (!cfg) {
+		ret = -ENOMEM;
+		goto release;
+	}
+	cfg->len = fw->size;
+	memcpy(cfg->data, fw->data, fw->size);
+	ret = aw88395_dev_load_acf_check(aw_dev, cfg);
+	if (ret)
+		goto release;
+	ret = aw88395_dev_cfg_load(aw_dev, cfg);
+	if (ret)
+		goto release;
+	for (i = 0; i < aw_dev->prof_info.count; i++) {
+		struct aw_prof_desc *profile = &aw_dev->prof_info.prof_desc[i];
+		struct aw_sec_data_desc *regs = &profile->sec_desc[AW88395_DATA_TYPE_REG];
+
+		for (j = 0; j < ARRAY_SIZE(aw88461_profile_ids); j++)
+			if (profile->id == aw88461_profile_ids[j] && !amp->profiles[j] &&
+			    aw88461_valid_regs(regs))
+				amp->profiles[j] = regs;
+	}
+	/* Music is required; a firmware without an earpiece tuning has none. */
+	ret = amp->profiles[0] ? aw88461_write_profile(amp) : -EINVAL;
 release:
 	release_firmware(fw);
 	return ret;
@@ -316,9 +349,8 @@ static int aw88461_hw_params(struct snd_pcm_substream *substream,
 	guard(mutex)(&amp->lock);
 	if (amp->faulted)
 		return -EIO;
-	ret = regmap_update_bits(amp->aw_dev.regmap, AW88461_I2SCTRL1,
-				 GENMASK(9, 0), FIELD_PREP(GENMASK(7, 6), width) |
-				 FIELD_PREP(GENMASK(5, 4), frame) | 8);
+	amp->i2s = FIELD_PREP(GENMASK(7, 6), width) | FIELD_PREP(GENMASK(5, 4), frame) | 8;
+	ret = regmap_update_bits(amp->aw_dev.regmap, AW88461_I2SCTRL1, GENMASK(9, 0), amp->i2s);
 	return ret ? aw88461_fault(amp, ret) : 0;
 }
 
@@ -409,9 +441,85 @@ static int aw88461_volume_put(struct snd_kcontrol *kcontrol,
 	return 1;
 }
 
+static int aw88461_switch_get(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_value *value)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct aw88461 *amp = snd_soc_component_get_drvdata(component);
+
+	guard(mutex)(&amp->lock);
+	value->value.integer.value[0] = amp->on;
+	return 0;
+}
+
+/* Off keeps the amplifier powered down while its link plays. */
+static int aw88461_switch_put(struct snd_kcontrol *kcontrol,
+			      struct snd_ctl_elem_value *value)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct aw88461 *amp = snd_soc_component_get_drvdata(component);
+	bool on = value->value.integer.value[0];
+	int ret;
+
+	guard(mutex)(&amp->lock);
+	if (amp->on == on)
+		return 0;
+	WRITE_ONCE(amp->on, on);
+	if (on) {
+		schedule_work(&amp->start_work);
+		return 1;
+	}
+	ret = aw88461_stop(amp);
+	return ret ? ret : 1;
+}
+
+static int aw88461_profile_get(struct snd_kcontrol *kcontrol,
+			       struct snd_ctl_elem_value *value)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct aw88461 *amp = snd_soc_component_get_drvdata(component);
+
+	guard(mutex)(&amp->lock);
+	value->value.enumerated.item[0] = amp->profile;
+	return 0;
+}
+
+/* A profile change while playing fades out, loads it and starts again. */
+static int aw88461_profile_put(struct snd_kcontrol *kcontrol,
+			       struct snd_ctl_elem_value *value)
+{
+	struct snd_soc_component *component = snd_kcontrol_chip(kcontrol);
+	struct aw88461 *amp = snd_soc_component_get_drvdata(component);
+	unsigned int profile = value->value.enumerated.item[0];
+	int ret;
+
+	if (profile >= ARRAY_SIZE(amp->profiles))
+		return -EINVAL;
+	guard(mutex)(&amp->lock);
+	if (amp->faulted)
+		return -EIO;
+	if (amp->profile == profile)
+		return 0;
+	if (!amp->profiles[profile])
+		return -ENOENT;
+	ret = aw88461_stop(amp);
+	if (ret)
+		return ret;
+	amp->profile = profile;
+	ret = aw88461_write_profile(amp);
+	if (ret)
+		return aw88461_fault(amp, ret);
+	schedule_work(&amp->start_work);
+	return 1;
+}
+
+static SOC_ENUM_SINGLE_EXT_DECL(aw88461_profile_enum, aw88461_profile_names);
+
 static const struct snd_kcontrol_new aw88461_controls[] = {
 	SOC_SINGLE_EXT("Playback Volume", SND_SOC_NOPM, 0, 1023, 0,
 		       aw88461_volume_get, aw88461_volume_put),
+	SOC_SINGLE_BOOL_EXT("Playback Switch", 0, aw88461_switch_get, aw88461_switch_put),
+	SOC_ENUM_EXT("Profile", aw88461_profile_enum, aw88461_profile_get, aw88461_profile_put),
 };
 
 static int aw88461_event(struct snd_soc_dapm_widget *w,
@@ -490,6 +598,7 @@ static int aw88461_probe(struct i2c_client *client)
 		return ret;
 	mutex_init(&amp->lock);
 	INIT_WORK(&amp->start_work, aw88461_start_work);
+	amp->on = true;
 	i2c_set_clientdata(client, amp);
 	amp->aw_dev.regmap = devm_regmap_init_i2c(client, &aw88461_regmap_config);
 	if (IS_ERR(amp->aw_dev.regmap))
@@ -508,7 +617,7 @@ static int aw88461_probe(struct i2c_client *client)
 		return ret;
 	if (id != AW88461_CHIP_ID)
 		return dev_err_probe(&client->dev, -ENODEV, "unexpected chip ID %#x\n", id);
-	ret = aw88461_load_profile(amp);
+	ret = aw88461_load_firmware(amp);
 	if (ret)
 		return dev_err_probe(&client->dev, ret, "amplifier profile load failed\n");
 	ret = devm_add_action_or_reset(&client->dev, aw88461_cancel_work, amp);
