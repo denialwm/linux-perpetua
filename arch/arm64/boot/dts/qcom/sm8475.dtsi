@@ -162,7 +162,7 @@
 };
 
 &tlmm {
-	compatible = "qcom,sm8475-tlmm";
+	compatible = "qcom,sm8475-tlmm", "qcom,sm8450-tlmm";
 };
 
 /* The PCIe port 0 PHY is the SM8475 one: another register sequence than SM8450's. */

@@ -1137,3 +1137,7 @@
 
 	status = "okay";
 };
+
+&usb_1_qmpphy_out {
+	remote-endpoint = <&pmic_glink_ss_in>;
+};

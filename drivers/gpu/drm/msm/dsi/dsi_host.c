@@ -1984,14 +1984,12 @@ static int dsi_populate_dsc_params(struct msm_dsi_host *msm_host, struct drm_dsc
 	if (dsc->dsc_version_minor == 2) {
 		dsc->first_line_bpg_offset = dsi_dsc_1_2_first_line_bpg_offset(dsc);
 	} else if (dsc->bits_per_component == 10 && drm_dsc_get_bpp_int(dsc) == 8 &&
-		   /* SM8475's NT37705 follows Table E-5 (4), as the stock driver does */
-		   !of_device_is_compatible(msm_host->pdev->dev.of_node,
-					    "qcom,sm8475-dsi-ctrl")) {
+		   !(msm_host->mode_flags & MIPI_DSI_MODE_DSC_TABLE_E5)) {
 		/*
 		 * The helper follows VESA DSC 1.1 Table E-5 (range_max_qp[0] =
 		 * 4 at 10 bpc, 8 bpp); the DSC model's pre-SCR configuration,
-		 * which panel decoders and the downstream driver follow, uses
-		 * 8.
+		 * which most panel decoders and the downstream driver follow,
+		 * uses 8. A panel whose decoder follows Table E-5 says so.
 		 */
 		dsc->rc_range_params[0].range_max_qp = 8;
 	}
