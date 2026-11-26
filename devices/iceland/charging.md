@@ -59,6 +59,15 @@ Perpetua since the design was written:
   retried ten seconds after a protocol error or timeout, up to three times.
   battmgr reports Charging from the battery current while the buck input is
   suspended, and computes POWER_NOW from voltage and current.
+- devices-408 on 2026-11-26: a PD source is no longer held at the stock
+  9 V × 1.5 A (13.2 W, less than a 5 V brick). Once VBUS is at 9 V, battmgr
+  reads the source PDOs (READ_BUFFER 0x10004, PDOs from the third word) and
+  ramps to the fixed 9 V PDO's current, at most 3 A; an unreadable offer
+  keeps 1.5 A. A 45 W charger (5/9/15 V at 3 A, 20 V at 2.25 A) got a
+  3 A limit and drew 8.84 V × 2.2 to 2.44 A, about 21 W, for five minutes
+  at 54 to 56 %. The battery took a flat +4.03 A, so the firmware's charge
+  current, not the input, held it below 3 A. Battery connector 30.3 to
+  32.8 C, USB connector 29.0 to 31.1 C, case estimate 27.0 to 27.5 C.
 
 The commit split in section 4 still applies.
 
