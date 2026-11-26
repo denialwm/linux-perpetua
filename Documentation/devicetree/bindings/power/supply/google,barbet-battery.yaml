@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/power/supply/google,barbet-battery.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Google Pixel 5a (barbet) battery gauge
+
+description: |
+  A voltage-only gauge for the Pixel 5a battery. It reads the PM7250B VADC
+  battery voltage channel and reports the state of charge over a linear
+  open-circuit window between the two voltage properties. The status follows
+  the PM7250B charger when it is present.
+
+maintainers:
+  - Bronson <bronsonmathews@gmail.com>
+
+properties:
+  compatible:
+    const: google,barbet-battery
+
+  io-channels:
+    maxItems: 1
+    description: The VADC channel connected to the battery voltage sense.
+
+  voltage-min-microvolt:
+    default: 3200000
+    description: Battery voltage reported as an empty battery.
+
+  voltage-max-microvolt:
+    default: 4350000
+    description: Battery voltage reported as a full battery.
+
+required:
+  - compatible
+  - io-channels
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    battery {
+        compatible = "google,barbet-battery";
+        io-channels = <&pm7250b_adc 0x84>;
+        voltage-min-microvolt = <3200000>;
+        voltage-max-microvolt = <4350000>;
+    };
+...
