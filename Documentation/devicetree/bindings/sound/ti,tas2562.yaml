@@ -45,12 +45,31 @@ properties:
     maxItems: 1
     description: GPIO used to control the state of the device.
 
+  reset-gpios:
+    minItems: 1
+    maxItems: 2
+    description: |
+      GPIO used to control the state of the device. A second entry resets the
+      right amplifier of a pair (see ti,left-channel).
+
   interrupts:
     maxItems: 1
 
   ti,imon-slot-no:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: TDM TX current sense time slot.
+
+  ti,left-channel:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: |
+      I2C address of the left amplifier of a stereo pair. When both this and
+      ti,right-channel are present, one node describes both amplifiers: the
+      driver drives the left one through this node's I2C client and the right
+      one through a dummy client at ti,right-channel.
+
+  ti,right-channel:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: I2C address of the right amplifier of a stereo pair.
 
   '#sound-dai-cells':
     # The codec has a single DAI, the #sound-dai-cells=<1>; case is left in for backward
@@ -79,5 +98,23 @@ examples:
             interrupts = <14>;
             shutdown-gpios = <&gpio1 15 GPIO_ACTIVE_HIGH>;
             ti,imon-slot-no = <0>;
+        };
+    };
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        // One node drives both amplifiers of a stereo pair.
+        speaker-amp@4c {
+            compatible = "ti,tas2562";
+            reg = <0x4c>;
+            #sound-dai-cells = <1>;
+            reset-gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>,
+                          <&gpio1 11 GPIO_ACTIVE_HIGH>;
+            ti,left-channel = <0x4c>;
+            ti,right-channel = <0x4d>;
         };
     };

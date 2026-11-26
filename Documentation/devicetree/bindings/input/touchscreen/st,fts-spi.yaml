@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/touchscreen/st,fts-spi.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: STMicroelectronics FingerTipS SPI touchscreen controller
+
+description: |
+  The FingerTipS controller sits on an SPI bus and reports multitouch events
+  through an interrupt line. The controller firmware is loaded by the
+  bootloader; the driver resets the controller, reads its SYS_INFO and runs
+  the panel initialization the firmware expects.
+
+maintainers:
+  - Bronson <bronsonmathews@gmail.com>
+
+allOf:
+  - $ref: touchscreen.yaml#
+  - $ref: /schemas/spi/spi-peripheral-props.yaml#
+
+properties:
+  compatible:
+    const: st,fts-spi
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  reset-gpios:
+    maxItems: 1
+    description: Reset line of the controller.
+
+  lpi2ap-gpios:
+    maxItems: 1
+    description: Line that hands the bus from the low-power island to the AP.
+
+  ap2lpi-gpios:
+    maxItems: 1
+    description: Line that hands the bus from the AP to the low-power island.
+
+  vdd-supply:
+    description: Power supply of the controller.
+
+  st,panel_map:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    description: |
+      Phandle to the panel this touchscreen is paired with and the panel
+      index assigned to it.
+    items:
+      - items:
+          - description: phandle to the panel
+          - description: panel index
+
+  st,force-pi-cfg-ver-map:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: |
+      Configuration versions for which the driver runs a full panel
+      initialization even when the AFE and panel configuration versions
+      match.
+
+  st,save-golden-ms-raw:
+    type: boolean
+    description: |
+      Ask the controller to save its golden mutual-raw baseline after the
+      panel initialization.
+
+  st,max-coords:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 2
+    maxItems: 2
+    description: Maximum X and Y coordinates reported by the controller.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - vdd-supply
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/gpio/gpio.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+
+    spi {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        touchscreen@0 {
+            compatible = "st,fts-spi";
+            reg = <0>;
+            spi-max-frequency = <10000000>;
+            interrupt-parent = <&tlmm>;
+            interrupts = <9 IRQ_TYPE_LEVEL_LOW>;
+            reset-gpios = <&tlmm 8 GPIO_ACTIVE_LOW>;
+            ap2lpi-gpios = <&tlmm 35 GPIO_ACTIVE_HIGH>;
+            lpi2ap-gpios = <&tlmm 5 GPIO_ACTIVE_HIGH>;
+            vdd-supply = <&vreg_l13a_3p3>;
+            touchscreen-size-x = <1080>;
+            touchscreen-size-y = <2400>;
+            st,max-coords = <1079 2399>;
+            st,force-pi-cfg-ver-map = <0x300 0x306>;
+            st,save-golden-ms-raw;
+        };
+    };
+...

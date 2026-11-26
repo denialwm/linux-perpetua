@@ -617,9 +617,7 @@
 		reg = <0x5a>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&drv2624_rst>;
-		reset-gpio = <&pm7250b_gpios 1 GPIO_ACTIVE_HIGH>;
-		ti,smart-loop = <1>;
-		ti,actuator = <1>;
+		reset-gpios = <&pm7250b_gpios 1 GPIO_ACTIVE_HIGH>;
 		ti,rated-voltage = /bits/ 8 <109>;
 		ti,odclamp-voltage = /bits/ 8 <161>;
 	};
