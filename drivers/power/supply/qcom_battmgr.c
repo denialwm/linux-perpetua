@@ -141,6 +141,22 @@ enum qcom_battmgr_variant {
 #define OPLUS_CHG_EN					70
 #define OPLUS_SET_PDO					71
 
+/* Kaanapali: the source capabilities of the PD contract, in a fixed buffer. */
+#define BATTMGR_OPLUS_READ_BUFFER			0x10004
+#define OPLUS_SOURCE_PDOS				7
+
+struct qcom_battmgr_oplus_buffer_request {
+	struct pmic_glink_hdr hdr;
+	__le32 data_size;
+};
+
+/* The size follows the buffer. The PDOs start at its third word. */
+struct qcom_battmgr_oplus_buffer_response {
+	struct pmic_glink_hdr hdr;
+	__le32 data[128];
+	__le32 data_size;
+};
+
 struct qcom_battmgr_enable_request {
 	struct pmic_glink_hdr hdr;
 	__le32 battery_id;
@@ -362,6 +378,8 @@ struct qcom_battmgr_oplus {
 	unsigned int end_threshold;
 	bool threshold_hold;
 	bool charging;
+	/* The source PDOs of the last READ_BUFFER reply, 0 past the last. */
+	u32 source_pdos[OPLUS_SOURCE_PDOS];
 };
 
 /*
@@ -2459,6 +2477,26 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
 
 	if (battmgr->variant == OPLUS_BATTMGR_KAANAPALI) {
 		switch (opcode) {
+		case BATTMGR_OPLUS_READ_BUFFER: {
+			const struct qcom_battmgr_oplus_buffer_response *buffer = (const void *)resp;
+			unsigned int i;
+			u32 size;
+
+			if (len != sizeof(*buffer)) {
+				battmgr->error = -ENODATA;
+				goto out_complete;
+			}
+			size = le32_to_cpu(buffer->data_size);
+			if (size < (2 + OPLUS_SOURCE_PDOS) * sizeof(__le32) ||
+			    size > sizeof(buffer->data)) {
+				battmgr->error = -ENODATA;
+				goto out_complete;
+			}
+			for (i = 0; i < OPLUS_SOURCE_PDOS; i++)
+				battmgr->oplus.source_pdos[i] = le32_to_cpu(buffer->data[i + 2]);
+			battmgr->error = 0;
+			goto out_complete;
+		}
 		case BATTMGR_OPLUS_PROPERTY_SET:
 		case BATTMGR_OPLUS_PROPERTY_GET:
 			property = le32_to_cpu(resp->intval.property);
@@ -3009,9 +3047,56 @@ static const u32 qcom_battmgr_oplus_input_steps_ma[] = {
 	500, 900, 1200, 1350, 1500, 1750, 2000, 2500, 3000,
 };
 
-/* Stock limits a PD source to 13.5 W and calls VBUS above 7.5 V raised. */
+/*
+ * Stock limits a PD source to 9 V at 1.5 A, 13.5 W, less than the 5 V ramp
+ * takes from a plain wall charger. Kaanapali draws what the source offers
+ * at 9 V, up to the 3 A its buck takes at 5 V, and the stock 1.5 A when the
+ * offer cannot be read. VBUS above 7.5 V counts as raised.
+ */
 #define OPLUS_PD_9V_LIMIT_MA		1500
+#define OPLUS_PD_9V_MAX_MA		3000
 #define OPLUS_PD_9V_MIN_UV		7500000
+
+/* Called with @battmgr->lock held. */
+static u32 qcom_battmgr_oplus_pd_9v_limit_ma(struct qcom_battmgr *battmgr)
+{
+	struct qcom_battmgr_oplus_buffer_request request = {
+		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_BATTMGR),
+		.hdr.type = cpu_to_le32(PMIC_GLINK_REQ_RESP),
+		.hdr.opcode = cpu_to_le32(BATTMGR_OPLUS_READ_BUFFER),
+		.data_size = cpu_to_le32(512),
+	};
+	u32 *pdos = battmgr->oplus.source_pdos;
+	u32 pdo, offer_ma = 0;
+	unsigned int i;
+	int ret;
+
+	if (battmgr->variant != OPLUS_BATTMGR_KAANAPALI)
+		return OPLUS_PD_9V_LIMIT_MA;
+
+	memset(pdos, 0, sizeof(battmgr->oplus.source_pdos));
+	ret = qcom_battmgr_request(battmgr, &request, sizeof(request));
+	if (ret) {
+		dev_info(battmgr->dev, "PD source offer unreadable (%d), 9 V at %u mA\n",
+			 ret, OPLUS_PD_9V_LIMIT_MA);
+		return OPLUS_PD_9V_LIMIT_MA;
+	}
+
+	/* Fixed supply PDOs: type 0, voltage in 50 mV units, current in 10 mA. */
+	for (i = 0; i < OPLUS_SOURCE_PDOS && pdos[i]; i++) {
+		pdo = pdos[i];
+		if (pdo >> 30 || ((pdo >> 10) & 0x3ff) * 50 != 9000)
+			continue;
+		offer_ma = (pdo & 0x3ff) * 10;
+		break;
+	}
+	dev_info(battmgr->dev, "PD source PDOs %08x %08x %08x %08x %08x %08x %08x\n",
+		 pdos[0], pdos[1], pdos[2], pdos[3], pdos[4], pdos[5], pdos[6]);
+	if (offer_ma <= 500)
+		return OPLUS_PD_9V_LIMIT_MA;
+
+	return min(offer_ma, OPLUS_PD_9V_MAX_MA);
+}
 
 /* A valid 5 V source reads above this even at no load. */
 #define OPLUS_VBUS_VALID_UV		4500000
@@ -3120,19 +3205,24 @@ static int qcom_battmgr_oplus_ramp_input(struct qcom_battmgr *battmgr)
 	case POWER_SUPPLY_USB_TYPE_PD_DRP:
 	case POWER_SUPPLY_USB_TYPE_PD_PPS:
 		if (qcom_battmgr_oplus_pd_9v(battmgr)) {
-			limit_ma = OPLUS_PD_9V_LIMIT_MA;
+			mutex_lock(&battmgr->lock);
+			limit_ma = qcom_battmgr_oplus_pd_9v_limit_ma(battmgr);
+			mutex_unlock(&battmgr->lock);
 			min_uv = OPLUS_PD_9V_MIN_UV;
+			dev_info(battmgr->dev, "PD source at 9 V, input up to %u mA\n", limit_ma);
 		}
 		break;
 	default:
 		break;
 	}
+	/* The steps up to the limit, then the limit itself if it falls between. */
 	for (i = 0; i < ARRAY_SIZE(qcom_battmgr_oplus_input_steps_ma) &&
-		    steps[i] <= limit_ma; i++) {
+		    (i == 0 || steps[i - 1] < limit_ma); i++) {
 		mutex_lock(&battmgr->lock);
 		if (battmgr->oplus.input_suspended)
 			goto out;
-		ret = qcom_battmgr_oplus_set_input_limit(battmgr, steps[i] * 1000);
+		ret = qcom_battmgr_oplus_set_input_limit(battmgr,
+							 min(steps[i], limit_ma) * 1000);
 		mutex_unlock(&battmgr->lock);
 		if (ret)
 			return ret;
