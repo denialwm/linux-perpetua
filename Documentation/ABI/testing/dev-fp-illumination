@@ -39,3 +39,7 @@ Description:
 
                 csot,nt37706-v3: the factory local-HBM command set, its
                 brightness-band register and DBV alpha table, 30000 ms.
+
+                samsung,s6e3fc3: the factory local-HBM gamma (read from
+                D8, written to 65) and circle location, the panel at
+                90 Hz while lit and the LHBM bit of WRCTRLD, 3000 ms.

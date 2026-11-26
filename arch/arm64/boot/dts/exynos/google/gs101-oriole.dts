@@ -60,6 +60,21 @@
 		};
 	};
 
+	/*
+	 * The Goodix G6 under the display. Trusty drives it through USI0's
+	 * SPI controller; Linux keeps that controller's clocks and the
+	 * sensor's supply on while the sensor is in use.
+	 */
+	fingerprint {
+		compatible = "goodix,g6";
+		reset-gpios = <&gpp4 3 GPIO_ACTIVE_LOW>;
+		interrupt-gpios = <&gpa9 2 GPIO_ACTIVE_HIGH>;
+		clocks = <&cmu_peric1 CLK_GOUT_PERIC1_PERIC1_TOP0_PCLK_1>,
+			 <&cmu_peric1 CLK_GOUT_PERIC1_PERIC1_TOP0_IPCLK_1>,
+			 <&cmu_peric1 CLK_GOUT_PERIC1_CLK_PERIC1_USI0_USI_CLK>;
+		vdd-supply = <&s2mpg10_ldo27m>;
+	};
+
 	/* 8 GiB; the bootloader passes what is usable. */
 	memory@80000000 {
 		device_type = "memory";

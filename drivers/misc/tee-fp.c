@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Power, reset and interrupt control for fingerprint sensors whose SPI bus
- * QTEE owns: /dev/tee_fp. The sensor's trusted application does the rest.
- * Reset timing and IRQ polarity follow each sensor's stock module: the
- * NX809J's zte_fingerprint for the Goodix GUM5228, the Edge 70's
- * anc_fps_mmi for the JIIOV JV0307. They differ only in how long the sensor
+ * the secure world owns, QTEE or Trusty: /dev/tee_fp. The sensor's trusted
+ * application does the rest. Reset timing and IRQ polarity follow each
+ * sensor's stock module: the NX809J's zte_fingerprint for the Goodix
+ * GUM5228, the Edge 70's anc_fps_mmi for the JIIOV JV0307, the Pixel 6's
+ * goodixfp for the Goodix G6. They differ only in how long the sensor
  * settles after reset.
+ *
+ * Where the secure world drives an SPI controller that Linux clocks, as
+ * Trusty does on the gs101, the node lists the controller's clocks, and
+ * they run while the sensor is powered.
  */
 #include <linux/atomic.h>
+#include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/fs.h>
 #include <linux/tee_fp.h>
@@ -31,6 +37,8 @@ struct tee_fp {
 	struct kref ref;
 	struct gpio_desc *reset, *interrupt;
 	struct regulator *vdd;
+	struct clk_bulk_data *clks;
+	int num_clks;
 	wait_queue_head_t wait;
 	atomic_t sequence;
 	u32 seen, reset_sequence;
@@ -62,6 +70,11 @@ static int tee_fp_power_on(struct tee_fp *fp)
 	ret = regulator_enable(fp->vdd);
 	if (ret)
 		return ret;
+	ret = clk_bulk_prepare_enable(fp->num_clks, fp->clks);
+	if (ret) {
+		regulator_disable(fp->vdd);
+		return ret;
+	}
 	tee_fp_reset(fp);
 	fp->powered = true;
 	enable_irq(fp->irq);
@@ -81,6 +94,7 @@ static int tee_fp_power_off(struct tee_fp *fp)
 		enable_irq(fp->irq);
 		return ret;
 	}
+	clk_bulk_disable_unprepare(fp->num_clks, fp->clks);
 	fp->powered = false;
 	return 0;
 }
@@ -255,6 +269,11 @@ static int tee_fp_probe(struct platform_device *pdev)
 		ret = PTR_ERR(fp->vdd);
 		goto fail;
 	}
+	fp->num_clks = devm_clk_bulk_get_all(dev, &fp->clks);
+	if (fp->num_clks < 0) {
+		ret = fp->num_clks;
+		goto fail;
+	}
 	fp->irq = gpiod_to_irq(fp->interrupt);
 	if (fp->irq < 0) {
 		ret = fp->irq;
@@ -315,7 +334,11 @@ static int tee_fp_suspend(struct device *dev)
 static DEFINE_SIMPLE_DEV_PM_OPS(tee_fp_pm_ops, tee_fp_suspend, NULL);
 
 static const struct of_device_id tee_fp_of_match[] = {
-	/* Stock gf_hw_reset settles 5 ms, anc_reset 10 ms. */
+	/*
+	 * Stock gf_hw_reset settles 5 ms, anc_reset 10 ms, and goodixfp
+	 * 10 ms when the sensor is opened.
+	 */
+	{ .compatible = "goodix,g6", .data = (void *)10000 },
 	{ .compatible = "goodix,gum5228", .data = (void *)5000 },
 	{ .compatible = "jiiov,jv0307", .data = (void *)10000 },
 	{ }
@@ -333,5 +356,5 @@ static struct platform_driver tee_fp_driver = {
 };
 module_platform_driver(tee_fp_driver);
 
-MODULE_DESCRIPTION("Fingerprint platform control for QTEE-owned sensors");
+MODULE_DESCRIPTION("Fingerprint platform control for secure-world sensors");
 MODULE_LICENSE("GPL");

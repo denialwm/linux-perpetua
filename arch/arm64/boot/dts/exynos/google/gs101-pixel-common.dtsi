@@ -413,7 +413,7 @@
 				regulator-max-microvolt = <3300000>;
 			};
 
-			ldo27m {
+			s2mpg10_ldo27m: ldo27m {
 				/* under-display fingerprint scanner */
 				regulator-name = "avdd_udfps";
 				regulator-min-microvolt = <2500000>;

@@ -25,11 +25,17 @@
 #include <linux/backlight.h>
 #include <linux/delay.h>
 #include <linux/devm-helpers.h>
+#include <linux/fp_illumination.h>
+#include <linux/fs.h>
 #include <linux/gpio/consumer.h>
+#include <linux/kref.h>
+#include <linux/miscdevice.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/regulator/consumer.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
 #include <linux/workqueue.h>
 
 #include <video/mipi_display.h>
@@ -56,14 +62,19 @@
 
 static const char * const s6e3fc3_supplies[] = { "vci", "vddi" };
 
+struct s6e3fc3_fp;
+
 struct s6e3fc3 {
 	struct drm_panel panel;
 	struct mipi_dsi_device *dsi;
 	struct drm_connector *connector;
 	struct gpio_desc *reset;
 	struct delayed_work bl_work;
+	struct s6e3fc3_fp *fp;
 	/* Serialises brightness writes against display on and off. */
 	struct mutex lock;
+	/* The frequency register of the mode last enabled. */
+	u8 freq;
 	/* Display on was sent: brightness writes take effect. */
 	bool on;
 	/* Still as the bootloader left it: awake, tear and display on. */
@@ -129,6 +140,8 @@ static void s6e3fc3_set_freq(struct mipi_dsi_multi_context *dsi_ctx, u8 freq)
 	mipi_dsi_dcs_write_seq_multi(dsi_ctx, 0xf0, 0xa5, 0xa5);
 }
 
+#include "panel-samsung-s6e3fc3-fp.h"
+
 /* Called with ctx->lock held. */
 static int s6e3fc3_write_brightness(struct s6e3fc3 *ctx)
 {
@@ -141,12 +154,15 @@ static int s6e3fc3_write_brightness(struct s6e3fc3 *ctx)
 	if (level && level < S6E3FC3_BRIGHTNESS_MIN)
 		level = S6E3FC3_BRIGHTNESS_MIN;
 
-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_CONTROL_DISPLAY,
-				     S6E3FC3_WRCTRLD_BCTRL);
-	if (dsi_ctx.accum_err)
-		return dsi_ctx.accum_err;
+	mutex_lock(&ctx->fp->lock);
+	mipi_dsi_dcs_write_var_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_CONTROL_DISPLAY,
+					 s6e3fc3_fp_wrctrld(ctx->fp));
+	if (!dsi_ctx.accum_err)
+		dsi_ctx.accum_err =
+			mipi_dsi_dcs_set_display_brightness_large(ctx->dsi, level);
+	mutex_unlock(&ctx->fp->lock);
 
-	return mipi_dsi_dcs_set_display_brightness_large(ctx->dsi, level);
+	return dsi_ctx.accum_err;
 }
 
 static void s6e3fc3_bl_work(struct work_struct *work)
@@ -203,7 +219,9 @@ static int s6e3fc3_enable(struct drm_panel *panel)
 	if (!ctx->boot_on)
 		mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
 	ctx->boot_on = false;
+	ctx->freq = freq;
 	ctx->on = !dsi_ctx.accum_err;
+	s6e3fc3_fp_panel(ctx->fp, ctx->on);
 	mutex_unlock(&ctx->lock);
 
 	if (ctx->on)
@@ -221,6 +239,7 @@ static int s6e3fc3_disable(struct drm_panel *panel)
 	cancel_delayed_work_sync(&ctx->bl_work);
 
 	mutex_lock(&ctx->lock);
+	s6e3fc3_fp_panel(ctx->fp, false);
 	ctx->on = false;
 	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
 	mutex_unlock(&ctx->lock);
@@ -309,6 +328,12 @@ static int s6e3fc3_probe(struct mipi_dsi_device *dsi)
 	if (IS_ERR(ctx->reset))
 		return dev_err_probe(dev, PTR_ERR(ctx->reset),
 				     "failed to get reset GPIO\n");
+
+	/* Before the backlight: its writes take the illumination lock. */
+	ret = s6e3fc3_fp_init(ctx);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "failed to register fingerprint illumination\n");
 
 	ctx->panel.backlight = devm_backlight_device_register(dev, dev_name(dev),
 							      dev, ctx,
