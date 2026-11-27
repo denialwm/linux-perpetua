@@ -422,6 +422,18 @@ static const struct pmic_glink_data pmic_glink_oneplus_sm8750_data = {
 	.charger_pdr_service_path = "msm/adsp/charger_pd",
 };
 
+/*
+ * OnePlus' Kaanapali charger firmware drives the same stylus boost converter
+ * as SM8750. The vendor compatible selects it; without the entry the device
+ * falls back to the SoCCP data below and the coil never gets a regulator.
+ */
+static const struct pmic_glink_data pmic_glink_oneplus_kaanapali_data = {
+	.client_mask = BIT(PMIC_GLINK_CLIENT_BATT) |
+		       BIT(PMIC_GLINK_CLIENT_ALTMODE) |
+		       BIT(PMIC_GLINK_CLIENT_UCSI) |
+		       BIT(PMIC_GLINK_CLIENT_PEN_BOOST),
+};
+
 static const struct pmic_glink_data pmic_glink_soccp_data = {
 	.client_mask = BIT(PMIC_GLINK_CLIENT_BATT) |
 		       BIT(PMIC_GLINK_CLIENT_ALTMODE) |
@@ -441,6 +453,7 @@ static const struct of_device_id pmic_glink_of_match[] = {
 	{ .compatible = "qcom,glymur-pmic-glink", .data = &pmic_glink_soccp_data },
 	{ .compatible = "qcom,kaanapali-pmic-glink", .data = &pmic_glink_soccp_data },
 	{ .compatible = "oneplus,sm8750-pmic-glink", .data = &pmic_glink_oneplus_sm8750_data },
+	{ .compatible = "oneplus,kaanapali-pmic-glink", .data = &pmic_glink_oneplus_kaanapali_data },
 	{ .compatible = "xiaomi,kaanapali-pmic-glink", .data = &pmic_glink_xiaomi_soccp_data },
 	{ .compatible = "qcom,pmic-glink", .data = &pmic_glink_adsp_data },
 	{}

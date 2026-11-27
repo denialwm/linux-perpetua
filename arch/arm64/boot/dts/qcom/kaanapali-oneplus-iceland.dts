@@ -223,6 +223,16 @@
 				};
 			};
 		};
+
+		/*
+		 * The stylus charger coil's boost, driven by the charger firmware
+		 * over PMIC GLINK.
+		 */
+		pen_boost: regulator-pen-boost {
+			regulator-name = "pen_boost";
+			regulator-min-microvolt = <7000000>;
+			regulator-max-microvolt = <10000000>;
+		};
 	};
 
 	reserved-memory {
