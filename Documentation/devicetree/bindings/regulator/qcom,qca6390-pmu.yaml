@@ -82,6 +82,12 @@ properties:
   vddpcie1p9-supply:
     description: VDD_PCIE_1P9 supply regulator handle
 
+  vddipa-supply:
+    description:
+      Optional supply of the internal power amplifier, for boards that feed it
+      from a rail of their own. It is enabled and disabled with the other
+      supplies.
+
   vddio-supply:
     description: VDD_IO supply regulator handle
 

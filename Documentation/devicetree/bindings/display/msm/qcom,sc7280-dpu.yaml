@@ -16,13 +16,17 @@ $ref: /schemas/display/msm/dpu-common.yaml#
 
 properties:
   compatible:
-    enum:
-      - qcom,sar2130p-dpu
-      - qcom,sc7280-dpu
-      - qcom,sc8280xp-dpu
-      - qcom,sm8350-dpu
-      - qcom,sm8450-dpu
-      - qcom,sm8550-dpu
+    oneOf:
+      - enum:
+          - qcom,sar2130p-dpu
+          - qcom,sc7280-dpu
+          - qcom,sc8280xp-dpu
+          - qcom,sm8350-dpu
+          - qcom,sm8450-dpu
+          - qcom,sm8550-dpu
+      - items:
+          - const: qcom,sm8475-dpu
+          - const: qcom,sm8450-dpu
 
   reg:
     items:
